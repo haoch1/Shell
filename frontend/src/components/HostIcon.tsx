@@ -3,65 +3,35 @@ import type { HostIconId, Profile, ProfileColor } from '../types/shell';
 import { profileColorHex } from '../lib/themes';
 
 interface BrandTheme {
-  lightFg: string;
-  darkFg: string;
+  tileBg: string;
+  brandColor: string;
 }
 
 const BRAND_THEMES: Record<Exclude<HostIconId, ''>, BrandTheme> = {
-  ubuntu: {
-    lightFg: '#E95420',
-    darkFg: '#F47B4E',
-  },
-  debian: {
-    lightFg: '#D70A53',
-    darkFg: '#F05682',
-  },
-  centos: {
-    lightFg: '#8E24AA',
-    darkFg: '#B98EFF',
-  },
-  rocky: {
-    lightFg: '#0D9469',
-    darkFg: '#4ED39E',
-  },
-  alpine: {
-    lightFg: '#0D6B99',
-    darkFg: '#5BB8F0',
-  },
-  arch: {
-    lightFg: '#1793D1',
-    darkFg: '#56BDF0',
-  },
-  fedora: {
-    lightFg: '#3C6EB4',
-    darkFg: '#6BA8FA',
-  },
-  linux: {
-    lightFg: '#B47A00',
-    darkFg: '#E5B85B',
-  },
-  windows: {
-    lightFg: '#0078D4',
-    darkFg: '#58B8F6',
-  },
-  docker: {
-    lightFg: '#1D63ED',
-    darkFg: '#56B4F5',
-  },
+  ubuntu: { tileBg: '#E95420', brandColor: '#E95420' },
+  debian: { tileBg: '#C7174F', brandColor: '#D70A53' },
+  centos: { tileBg: '#8E3B9E', brandColor: '#932279' },
+  rocky: { tileBg: '#10A37F', brandColor: '#10A37F' },
+  alpine: { tileBg: '#0D77A8', brandColor: '#0D77A8' },
+  arch: { tileBg: '#1793D1', brandColor: '#1793D1' },
+  fedora: { tileBg: '#3B6EB8', brandColor: '#3B6EB8' },
+  linux: { tileBg: '#2F6FED', brandColor: '#2F6FED' },
+  windows: { tileBg: '#0078D4', brandColor: '#0078D4' },
+  docker: { tileBg: '#1D63ED', brandColor: '#1D63ED' },
 };
 
 export const HOST_ICONS: { id: HostIconId; label: string; brandColor: string; darkColor: string }[] = [
   { id: '', label: '自动', brandColor: '#6e6e73', darkColor: '#a1a1a6' },
-  { id: 'ubuntu', label: 'Ubuntu', brandColor: BRAND_THEMES.ubuntu.lightFg, darkColor: BRAND_THEMES.ubuntu.darkFg },
-  { id: 'debian', label: 'Debian', brandColor: BRAND_THEMES.debian.lightFg, darkColor: BRAND_THEMES.debian.darkFg },
-  { id: 'centos', label: 'CentOS', brandColor: BRAND_THEMES.centos.lightFg, darkColor: BRAND_THEMES.centos.darkFg },
-  { id: 'rocky', label: 'Rocky', brandColor: BRAND_THEMES.rocky.lightFg, darkColor: BRAND_THEMES.rocky.darkFg },
-  { id: 'alpine', label: 'Alpine', brandColor: BRAND_THEMES.alpine.lightFg, darkColor: BRAND_THEMES.alpine.darkFg },
-  { id: 'arch', label: 'Arch', brandColor: BRAND_THEMES.arch.lightFg, darkColor: BRAND_THEMES.arch.darkFg },
-  { id: 'fedora', label: 'Fedora', brandColor: BRAND_THEMES.fedora.lightFg, darkColor: BRAND_THEMES.fedora.darkFg },
-  { id: 'linux', label: 'Linux', brandColor: BRAND_THEMES.linux.lightFg, darkColor: BRAND_THEMES.linux.darkFg },
-  { id: 'windows', label: 'Windows', brandColor: BRAND_THEMES.windows.lightFg, darkColor: BRAND_THEMES.windows.darkFg },
-  { id: 'docker', label: 'Docker', brandColor: BRAND_THEMES.docker.lightFg, darkColor: BRAND_THEMES.docker.darkFg },
+  { id: 'ubuntu', label: 'Ubuntu', brandColor: BRAND_THEMES.ubuntu.brandColor, darkColor: BRAND_THEMES.ubuntu.brandColor },
+  { id: 'debian', label: 'Debian', brandColor: BRAND_THEMES.debian.brandColor, darkColor: BRAND_THEMES.debian.brandColor },
+  { id: 'centos', label: 'CentOS', brandColor: BRAND_THEMES.centos.brandColor, darkColor: BRAND_THEMES.centos.brandColor },
+  { id: 'rocky', label: 'Rocky', brandColor: BRAND_THEMES.rocky.brandColor, darkColor: BRAND_THEMES.rocky.brandColor },
+  { id: 'alpine', label: 'Alpine', brandColor: BRAND_THEMES.alpine.brandColor, darkColor: BRAND_THEMES.alpine.brandColor },
+  { id: 'arch', label: 'Arch', brandColor: BRAND_THEMES.arch.brandColor, darkColor: BRAND_THEMES.arch.brandColor },
+  { id: 'fedora', label: 'Fedora', brandColor: BRAND_THEMES.fedora.brandColor, darkColor: BRAND_THEMES.fedora.brandColor },
+  { id: 'linux', label: 'Linux', brandColor: BRAND_THEMES.linux.brandColor, darkColor: BRAND_THEMES.linux.brandColor },
+  { id: 'windows', label: 'Windows', brandColor: BRAND_THEMES.windows.brandColor, darkColor: BRAND_THEMES.windows.brandColor },
+  { id: 'docker', label: 'Docker', brandColor: BRAND_THEMES.docker.brandColor, darkColor: BRAND_THEMES.docker.brandColor },
 ];
 
 // Inlined 24x24 brand SVG paths (eliminates the ~15 MB simple-icons dependency).
@@ -140,18 +110,12 @@ export const HostIcon: React.FC<HostIconProps> = ({
   const resolvedIcon = iconOverride !== undefined ? (iconOverride || inferHostIcon(profile)) : inferHostIcon(profile);
   const customColor = colorOverride ?? profile?.color;
   const theme = BRAND_THEMES[resolvedIcon];
-  const glyphSize = size === 'xs' ? 13 : size === 'sm' ? 13 : size === 'lg' ? 17 : 15;
+  const glyphSize = size === 'xs' ? 10.5 : size === 'sm' ? 13 : size === 'lg' ? 18 : 16;
 
-  const customHex = customColor ? profileColorHex(customColor) : '';
-  const styleVars = (customHex
-    ? {
-        '--host-fg-light': customHex,
-        '--host-fg-dark': customHex,
-      }
-    : {
-        '--host-fg-light': theme.lightFg,
-        '--host-fg-dark': theme.darkFg,
-      }) as React.CSSProperties;
+  const tileColor = customColor ? profileColorHex(customColor) : theme.tileBg;
+  const styleVars = {
+    '--host-tile-bg': tileColor,
+  } as React.CSSProperties;
 
   return (
     <span className={`host-icon-badge size-${size}`} style={styleVars}>

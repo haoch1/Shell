@@ -340,7 +340,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   };
 
   return (
-    <aside className={`sidebar ${open ? '' : 'collapsed'}`} aria-label="主机侧栏">
+    <aside className={`sidebar ${open ? '' : 'collapsed'} ${selectMode ? 'is-select-mode' : ''}`.trim()} aria-label="主机侧栏">
       <div className="sidebar-top">
         <div className="search-box">
           <Search size={13} strokeWidth={1.8} />
@@ -603,16 +603,17 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                           : `${p.user}@${p.host}:${p.port}${p.notes ? '\n' + p.notes : ''}`
                       }
                     >
-                      {selectMode && (
+                      <span className="host-check-slot" aria-hidden={!selectMode}>
                         <Checkbox
                           checked={checked}
+                          tabIndex={selectMode ? 0 : -1}
                           aria-label={`选择 ${displayName}`}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) =>
                             setSelectedIds((prev) => ({ ...prev, [p.id]: e.target.checked }))
                           }
                         />
-                      )}
+                      </span>
                       <HostIcon profile={p} size="md" />
                       <div className="host-meta">
                         <div className="host-name-line">

@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+func TestTerminalOriginIsAnExactLocalOrigin(t *testing.T) {
+	for _, origin := range []string{"http://wails.localhost", "http://localhost:5173", "http://[::1]:5173", "wails://wails", ""} {
+		if !isAllowedWSOrigin(origin) {
+			t.Errorf("rejected local origin: %s", origin)
+		}
+	}
+	for _, origin := range []string{"https://wails.localhost.example", "http://localhost.example", "https://localhost/a", "wails://example.test"} {
+		if isAllowedWSOrigin(origin) {
+			t.Errorf("accepted nonlocal or malformed origin: %s", origin)
+		}
+	}
+}
+
 func TestTermWSServerAuthOriginAndBinaryFraming(t *testing.T) {
 	app := newApp()
 	srv, err := startTermWSServer(app)

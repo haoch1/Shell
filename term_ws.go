@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -60,7 +61,7 @@ func startTermWSServer(app *App) (*termWSServer, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/term", s.handleUpgrade)
-	s.server = &http.Server{Handler: mux}
+	s.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		_ = s.server.Serve(ln)
 	}()
@@ -84,7 +85,7 @@ func (s *termWSServer) URLForSession(sessionID string) string {
 	if s == nil || s.port == 0 {
 		return ""
 	}
-	return "ws://127.0.0.1:" + itoa(s.port) + "/ws/term?id=" + sessionID + "&token=" + s.token
+	return "ws://127.0.0.1:" + itoa(s.port) + "/ws/term?id=" + url.QueryEscape(sessionID) + "&token=" + s.token
 }
 
 func itoa(n int) string {
@@ -133,12 +134,19 @@ func isAllowedWSOrigin(origin string) bool {
 	if origin == "" {
 		return true
 	}
-	lower := strings.ToLower(strings.TrimSpace(origin))
-	return strings.HasPrefix(lower, "http://wails.localhost") ||
-		strings.HasPrefix(lower, "https://wails.localhost") ||
-		strings.HasPrefix(lower, "http://127.0.0.1") ||
-		strings.HasPrefix(lower, "http://localhost") ||
-		strings.HasPrefix(lower, "wails://")
+	u, err := url.Parse(origin)
+	if err != nil || u.User != nil || u.Opaque != "" || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	switch u.Scheme {
+	case "http", "https":
+		return host == "wails.localhost" || host == "localhost" || host == "127.0.0.1" || host == "::1"
+	case "wails":
+		return host == "wails" || host == "localhost" || host == "wails.localhost"
+	default:
+		return false
+	}
 }
 
 func (s *termWSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {

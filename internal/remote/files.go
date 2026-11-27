@@ -128,6 +128,43 @@ func checkDestination(_ os.FileInfo, err error) error {
 	return err
 }
 
+// replaceRemote publishes a completed sibling file. A server without POSIX
+// rename can only replace a file in steps, so retain the old contents until
+// the final name is in place and report the recovery name on rollback failure.
+func replaceRemote(c *sftp.Client, tmp, target string) error {
+	if _, ok := c.HasExtension("posix-rename@openssh.com"); ok {
+		err := c.PosixRename(tmp, target)
+		var status *sftp.StatusError
+		if !errors.As(err, &status) || status.FxCode() != sftp.ErrSSHFxOpUnsupported {
+			return err
+		}
+	}
+	info, err := c.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return c.Rename(tmp, target)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+		return errors.New("只允许覆盖普通文件或符号链接")
+	}
+	backup := tmp + ".old"
+	if err := c.Rename(target, backup); err != nil {
+		return err
+	}
+	if err := c.Rename(tmp, target); err != nil {
+		if restoreErr := c.Rename(backup, target); restoreErr != nil {
+			return fmt.Errorf("写入失败：%w；恢复失败：%v。原文件备份路径：%s", err, restoreErr, backup)
+		}
+		return err
+	}
+	if err := c.Remove(backup); err != nil {
+		return fmt.Errorf("新文件已保存，未能清理原文件备份 %s：%w", backup, err)
+	}
+	return nil
+}
+
 type progressReader struct {
 	ctx       context.Context
 	r         io.Reader
@@ -212,11 +249,11 @@ func (s *Session) UploadFile(ctx context.Context, localPath, remotePath string, 
 	if n != info.Size() {
 		return errors.New("上传期间本地文件的大小发生变化")
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if overwrite {
-		if err = c.PosixRename(tmp, remotePath); err != nil {
-			_ = c.Remove(remotePath)
-			err = c.Rename(tmp, remotePath)
-		}
+		err = replaceRemote(c, tmp, remotePath)
 	} else {
 		err = c.Rename(tmp, remotePath)
 	}
@@ -276,6 +313,9 @@ func (s *Session) DownloadFile(ctx context.Context, remotePath, localPath string
 	}
 	if closeErr != nil {
 		return closeErr
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
 	}
 	if err := publishDownloadMode(temp.Name(), localPath, overwrite); err != nil {
 		return err
@@ -418,7 +458,7 @@ func (s *Session) ReadText(remotePath string) (string, error) {
 	return string(data), nil
 }
 
-// WriteText saves text back to a remote file atomically while preserving its existing permissions where possible.
+// WriteText stages the new contents before replacing the remote file.
 func (s *Session) WriteText(remotePath, content string) (err error) {
 	if len(content) > maxEditableFileSize {
 		return errors.New("文本内容超过 2 MiB 限制")
@@ -445,6 +485,10 @@ func (s *Session) WriteText(remotePath, content string) (err error) {
 			_ = c.Remove(tmp)
 		}
 	}()
+	if err = c.Chmod(tmp, perm); err != nil {
+		f.Close()
+		return fmt.Errorf("无法保留文件权限：%w", err)
+	}
 	if _, err = io.WriteString(f, content); err != nil {
 		f.Close()
 		return err
@@ -452,20 +496,5 @@ func (s *Session) WriteText(remotePath, content string) (err error) {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	_ = c.Chmod(tmp, perm)
-	if err = c.PosixRename(tmp, remotePath); err != nil {
-		// Fallback when POSIX rename extension is unavailable: write directly in place.
-		_ = c.Remove(tmp)
-		direct, openErr := c.OpenFile(remotePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY)
-		if openErr != nil {
-			return openErr
-		}
-		_, writeErr := io.WriteString(direct, content)
-		closeErr := direct.Close()
-		if writeErr != nil {
-			return writeErr
-		}
-		return closeErr
-	}
-	return nil
+	return replaceRemote(c, tmp, remotePath)
 }

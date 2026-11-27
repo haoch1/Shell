@@ -21,6 +21,7 @@ import type {
   RedactionConfig,
   RedactResult,
   RemoteEntry,
+  RemoteEntryDetail,
   ServerStats,
   Snippet,
   SystemProxyInfo,
@@ -69,15 +70,23 @@ interface GoAppBindings {
   ResolveFileLink(id: string, path: string): Promise<RemoteEntry>;
   ListFiles(id: string, dir: string): Promise<RemoteEntry[]>;
   PickUploadFiles(): Promise<string[]>;
+  PickUploadFolder(): Promise<string>;
   UploadLocalPaths(id: string, dir: string, paths: string[], overwrite: boolean): Promise<string[]>;
   UploadFile(id: string, dir: string): Promise<string>;
   DownloadFile(id: string, remotePath: string, overwrite: boolean): Promise<string>;
+  DownloadDirectory(id: string, remoteDir: string): Promise<string>;
+  BatchDownloadRemote(id: string, remotePaths: string[]): Promise<string>;
   CancelTransfer(transferId: string): Promise<void>;
   MakeDir(id: string, remoteDir: string): Promise<void>;
   CreateRemoteFile(id: string, remotePath: string): Promise<void>;
   RenameRemote(id: string, oldPath: string, newPath: string): Promise<void>;
   DeleteRemote(id: string, targetPath: string): Promise<void>;
+  DeleteRemoteBatch(id: string, paths: string[]): Promise<number>;
   ChmodRemote(id: string, remotePath: string, mode: number): Promise<void>;
+  ChmodRemoteRecursive(id: string, remotePath: string, mode: number, recursive: boolean): Promise<void>;
+  CopyRemote(id: string, srcPath: string, dstPath: string): Promise<void>;
+  StatRemote(id: string, remotePath: string): Promise<RemoteEntryDetail>;
+  RevealLocalPath(localPath: string): Promise<void>;
   ReadRemoteText(id: string, remotePath: string): Promise<string>;
   WriteRemoteText(id: string, remotePath: string, content: string): Promise<void>;
 

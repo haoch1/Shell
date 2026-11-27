@@ -120,6 +120,15 @@ export interface RemoteEntry {
   modTime: number;
 }
 
+export interface RemoteEntryDetail extends RemoteEntry {
+  linkTarget?: string;
+  octal: string;
+  uid: number;
+  gid: number;
+  accessTime?: number;
+  itemCount?: number;
+}
+
 export interface TransferProgress {
   transferId: string;
   sessionId: string;
@@ -129,6 +138,10 @@ export interface TransferProgress {
   total: number;
   status: 'running' | 'done' | 'error' | 'canceled';
   error?: string;
+  speedBps?: number;
+  localPath?: string;
+  remotePath?: string;
+  currentItem?: string;
 }
 
 export interface ServerStats {
@@ -390,6 +403,14 @@ export interface ChallengeRequest {
 
 export type SessionState = 'connecting' | 'connected' | 'closed';
 
+export type ConnectStage = 'jump' | 'dial' | 'auth' | 'shell' | 'error';
+
+export interface ConnectStep {
+  stage: ConnectStage;
+  text: string;
+  status: 'active' | 'done' | 'error';
+}
+
 export interface SessionRecord {
   id: string;
   profile: Profile;
@@ -400,6 +421,8 @@ export interface SessionRecord {
   cols: number;
   rows: number;
   endMessage?: string;
+  hasConnected?: boolean;
+  connectSteps?: ConnectStep[];
   secret?: string;
   remember?: boolean;
 }

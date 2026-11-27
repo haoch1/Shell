@@ -1,12 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { movePane, nearestEdge, paneGeometry } from '../src/lib/paneLayout.ts';
+import { connectedProfilePanes, movePane, nearestEdge, paneGeometry } from '../src/lib/paneLayout.ts';
 
 const leaf = paneId => ({type: 'leaf', paneId, sessionId: 'session-' + paneId});
 const branch = (first, second) => ({type: 'split', id: 'divider-' + first.paneId, direction: 'horizontal', ratio: 0.5, first, second});
 const tab = (id, root, activePaneId) => ({id, root, title: id, activePaneId, broadcast: false});
 const a = {tabId: 'A', paneId: 'a'};
 const b = {tabId: 'B', paneId: 'b'};
+
+test('sidebar picks a connected pane for exactly the saved target and prioritizes a second open instance', () => {
+  const profile = {id: 'saved', host: 'server.example', user: 'admin', port: 22, auth: 'key'};
+  const tabs = [tab('A', leaf('a'), 'a'), tab('B', branch(leaf('b'), leaf('c')), 'b'), tab('C', leaf('d'), 'd')];
+  const sessions = Object.fromEntries(['a', 'b', 'c', 'd'].map((p, i) => ['session-' + p, {
+    state: 'connected', startedAt: i + 1, profile,
+  }]));
+  const choose = () => connectedProfilePanes([profile], tabs, sessions, 'A').get(profile.id)?.source;
+  assert.deepEqual(choose(), {tabId: 'C', paneId: 'd'});
+  sessions['session-d'].profile = {...profile, user: 'other'};
+  assert.deepEqual(choose(), b);
+  sessions['session-b'].profile = {...profile, id: 'other-record'};
+  assert.deepEqual(choose(), {tabId: 'B', paneId: 'c'});
+  sessions['session-c'].state = 'connecting';
+  assert.deepEqual(choose(), a);
+  sessions['session-a'].state = 'closed';
+  assert.equal(choose(), undefined);
+});
 
 test('four edges place the original session on the chosen side and keep tab order', () => {
   const tabs = [tab('A', leaf('a'), 'a'), tab('B', leaf('b'), 'b'), tab('C', leaf('c'), 'c')];

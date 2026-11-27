@@ -237,7 +237,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 onDragStart={(e) => paneDrag.start(e, {tabId: tab.id, paneId: tab.activePaneId})}
                 onDragEnd={paneDrag.end}
                 onDragOver={(e) => paneDrag.overTab(e, tab.id)}
-                onDragLeave={paneDrag.leaveTab}
+                onDragLeave={e => paneDrag.leaveTab(e, tab.id)}
                 role="tab"
                 aria-selected={active}
                 className={`tab-item ${active ? 'active' : ''}`}

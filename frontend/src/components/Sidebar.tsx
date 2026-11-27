@@ -19,7 +19,8 @@ import {
   Terminal,
   Trash2,
 } from 'lucide-react';
-import type { Profile, SessionRecord } from '../types/shell';
+import type { Profile, SessionRecord, WorkspaceTab } from '../types/shell';
+import { connectedProfilePanes, type PaneSource } from '../lib/paneLayout';
 import { copyToClipboard } from '../lib/bridge';
 import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
@@ -48,6 +49,9 @@ interface SidebarProps {
   open: boolean;
   profiles: Profile[];
   sessions: Record<string, SessionRecord>;
+  tabs: WorkspaceTab[];
+  activeTabId: string | null;
+  onDragPane: (event: React.DragEvent, source: PaneSource) => void;
   activeProfileId?: string;
   isDark?: boolean;
   hasUpdate?: boolean;
@@ -70,6 +74,9 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   open,
   profiles,
   sessions,
+  tabs,
+  activeTabId,
+  onDragPane,
   activeProfileId,
   isDark = false,
   hasUpdate = false,
@@ -115,13 +122,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
     }
   };
 
-  const liveProfileIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of Object.values(sessions)) {
-      if (s.state === 'connected' && s.profile.id) set.add(s.profile.id);
-    }
-    return set;
-  }, [sessions]);
+  const livePanes = useMemo(() => connectedProfilePanes(profiles, tabs, sessions, activeTabId), [profiles, tabs, sessions, activeTabId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -334,11 +335,18 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               {!collapsed &&
                 sec.items.map((p) => {
                   const isActive = activeProfileId === p.id;
-                  const isLive = liveProfileIds.has(p.id);
+                  const source = livePanes.get(p.id)?.source;
+                  const isLive = !!source;
                   const checked = Boolean(selectedIds[p.id]);
                   return (
                     <div
                       key={p.id}
+                      data-profile-id={p.id}
+                      draggable={!selectMode && isLive}
+                      onDragStart={e => {
+                        if (!selectMode && source) onDragPane(e, source);
+                        else e.preventDefault();
+                      }}
                       className={`host-row ${isActive ? 'active' : ''}`}
                       onClick={() => {
                         if (selectMode) {

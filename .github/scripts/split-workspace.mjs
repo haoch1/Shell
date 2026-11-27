@@ -156,4 +156,22 @@ export async function verifySplitWorkspace({ call, evaluate, until, click }) {
     return document.querySelector('[data-session-id="' + f.moved + '"] .xterm') === f.originalTerminal;
   }), 'Dragging must preserve the xterm DOM instance');
   await checkHistory();
+
+  const beforeSidebar = await state();
+  await page(() => {
+    const source = document.querySelector('.host-row[data-profile-id="drag"][draggable=true]');
+    const f = window.splitFixture;
+    const target = document.querySelector('[data-session-id="' + f.dials[0].id + '"]');
+    const transfer = new DataTransfer();
+    const event = (type, coords = {}) => new DragEvent(type, { ...coords, bubbles: true, cancelable: true, dataTransfer: transfer });
+    const rect = target.getBoundingClientRect();
+    const coords = { clientX: rect.right - 2, clientY: rect.top + rect.height / 2 };
+    source.dispatchEvent(event('dragstart'));
+    target.dispatchEvent(event('dragover', coords));
+    f.finishSidebar = () => { target.dispatchEvent(event('drop', coords)); source.dispatchEvent(event('dragend')); };
+  });
+  await wait('sidebar session drop preview', () => !!document.querySelector('[data-drop-edge=right]'));
+  await page(() => window.splitFixture.finishSidebar());
+  await until(() => aligned('x', 0, 4), 'sidebar moved the original session to the right');
+  assert.deepEqual(await state(), beforeSidebar, 'Rearranging an existing session must not dial or disconnect');
 }

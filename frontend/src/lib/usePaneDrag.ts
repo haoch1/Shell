@@ -15,17 +15,23 @@ export function usePaneDrag(tabs: WorkspaceTab[], onMove: (from: PaneSource, to:
     hover.current = null;
   };
   const end = () => {
+    if (!source.current) return;
     stopHover();
     source.current = null;
     setPreview(null);
     setHoverTab(null);
   };
   useEffect(() => {
-    window.addEventListener('dragend', end);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') end(); };
+    window.addEventListener('dragend', end, true);
+    window.addEventListener('drop', end);
+    window.addEventListener('keydown', onKey, true);
     window.addEventListener('blur', end);
     return () => {
       stopHover();
-      window.removeEventListener('dragend', end);
+      window.removeEventListener('dragend', end, true);
+      window.removeEventListener('drop', end);
+      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('blur', end);
     };
   }, []);
@@ -80,8 +86,8 @@ export function usePaneDrag(tabs: WorkspaceTab[], onMove: (from: PaneSource, to:
   const leave = (e: DragEvent) => {
     if (internal(e) && !e.currentTarget.contains(e.relatedTarget as Node | null)) setPreview(null);
   };
-  const leaveTab = (e: DragEvent) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) stopHover();
+  const leaveTab = (e: DragEvent, tabId: string) => {
+    if (hover.current?.id === tabId && !e.currentTarget.contains(e.relatedTarget as Node | null)) stopHover();
   };
   return {start, end, overTab, leaveTab, over, leave, drop, hoverTab, preview};
 }

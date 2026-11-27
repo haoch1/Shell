@@ -1095,6 +1095,9 @@ export const App: React.FC = () => {
       <div className="app-body">
         <Sidebar
           open={sidebarOpen}
+          tabs={tabs}
+          activeTabId={activeTabId}
+          onDragPane={paneDrag.start}
           profiles={profiles}
           sessions={sessions}
           activeProfileId={activeSession?.profile.id}

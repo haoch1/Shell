@@ -240,7 +240,8 @@ func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(str
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	if strings.Contains(ct, "text/event-stream") {
 		var full strings.Builder
-		scanner := bufio.NewScanner(io.LimitReader(resp.Body, limit))
+		body := &io.LimitedReader{R: resp.Body, N: limit + 1}
+		scanner := bufio.NewScanner(body)
 		scanner.Buffer(make([]byte, 0, 16<<10), 128<<10)
 		for scanner.Scan() {
 			if err := ctx.Err(); err != nil {
@@ -280,6 +281,9 @@ func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(str
 		}
 		if err := scanner.Err(); err != nil {
 			return "", networkError(ctx, err)
+		}
+		if body.N == 0 {
+			return "", errors.New("AI 回复超过 256 KiB，请缩短问题后重试")
 		}
 		return full.String(), nil
 	}

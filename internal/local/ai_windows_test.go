@@ -127,6 +127,26 @@ func TestCancelInFlightAndBoundResponse(t *testing.T) {
 	}
 }
 
+func TestAIStreamSizeLimit(t *testing.T) {
+	const limit = 256 << 10
+	const chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"
+	for _, size := range []int{limit, limit + 1} {
+		padding := strings.Repeat(":\n", size/2)
+		raw := chunk + padding[:size-len(chunk)]
+		resp := &http.Response{
+			Header: http.Header{"Content-Type": {"text/event-stream"}},
+			Body:   io.NopCloser(strings.NewReader(raw)),
+		}
+		got, err := readStreamOrJSON(t.Context(), resp, nil)
+		if size == limit && (got != "ok" || err != nil) {
+			t.Fatalf("valid stream at limit: %q, %v", got, err)
+		}
+		if size > limit && (got != "" || err == nil || !strings.Contains(err.Error(), "256 KiB")) {
+			t.Fatalf("oversized stream returned as complete: %q, %v", got, err)
+		}
+	}
+}
+
 func TestLocalAICLIExecutionAndPersistence(t *testing.T) {
 	isolated(t)
 

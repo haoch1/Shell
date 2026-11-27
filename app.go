@@ -1060,10 +1060,6 @@ func (a *App) CancelTransfer(transferID string) {
 	}
 }
 
-func (a *App) emitTransfer(tid, sessionID, name, direction string, transferred, total int64, status, errMsg string) {
-	a.emitTransferRich(tid, sessionID, name, direction, transferred, total, 0, status, errMsg, "", "", "")
-}
-
 func (a *App) PickUploadFiles() ([]string, error) {
 	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择要上传的文件"})
 }

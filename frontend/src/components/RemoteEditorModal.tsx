@@ -40,7 +40,6 @@ interface CodeMirrorRuntime {
   historyKeymap: typeof import('@codemirror/commands').historyKeymap;
   indentWithTab: typeof import('@codemirror/commands').indentWithTab;
   foldKeymap: typeof import('@codemirror/language').foldKeymap;
-  closeBracketsKeymap: typeof import('@codemirror/autocomplete').closeBracketsKeymap;
   searchKeymap: typeof import('@codemirror/search').searchKeymap;
   keymap: typeof import('@codemirror/view').keymap;
   openSearchPanel: typeof import('@codemirror/search').openSearchPanel;
@@ -56,6 +55,17 @@ interface CodeMirrorRuntime {
   applyLineEnding: (text: string, eol: LineEnding) => string;
 }
 
+const AUTO_CLOSE_PAIRS: Readonly<Record<string, string>> = {
+  '(': ')',
+  '[': ']',
+  '{': '}',
+  '"': '"',
+  "'": "'",
+  '`': '`',
+};
+
+const AUTO_CLOSE_CLOSERS = new Set(Object.values(AUTO_CLOSE_PAIRS));
+
 let cmRuntimePromise: Promise<CodeMirrorRuntime> | null = null;
 
 function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
@@ -65,11 +75,10 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
       import('@codemirror/view'),
       import('@codemirror/commands'),
       import('@codemirror/language'),
-      import('@codemirror/autocomplete'),
       import('@codemirror/search'),
       import('@lezer/highlight'),
       import('../lib/editorLang'),
-    ]).then(([stateMod, viewMod, cmdMod, langMod, acMod, searchMod, hlMod, editorLang]) => {
+    ]).then(([stateMod, viewMod, cmdMod, langMod, searchMod, hlMod, editorLang]) => {
       const { EditorState } = stateMod;
       const {
         EditorView,
@@ -92,7 +101,6 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
         indentOnInput,
         syntaxHighlighting,
       } = langMod;
-      const { closeBrackets, closeBracketsKeymap } = acMod;
       const {
         closeSearchPanel,
         highlightSelectionMatches,
@@ -102,6 +110,42 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
         searchPanelOpen,
       } = searchMod;
       const { tags } = hlMod;
+
+      // Lightweight bracket/quote auto-close replacing @codemirror/autocomplete (~37 KB min).
+      const lightweightCloseBrackets: Extension = [
+        EditorView.inputHandler.of((view, from, to, text) => {
+          if (from !== to || text.length !== 1 || view.state.selection.ranges.length !== 1) return false;
+          const next = view.state.doc.sliceString(to, to + 1);
+          if (AUTO_CLOSE_CLOSERS.has(text) && next === text && (text !== AUTO_CLOSE_PAIRS[text] || from > 0)) {
+            view.dispatch({ selection: { anchor: to + 1 }, scrollIntoView: true });
+            return true;
+          }
+          const closer = AUTO_CLOSE_PAIRS[text];
+          if (!closer || (next && !/[\s)\]},;:]/.test(next))) return false;
+          view.dispatch({
+            changes: { from, to, insert: text + closer },
+            selection: { anchor: from + 1 },
+            scrollIntoView: true,
+          });
+          return true;
+        }),
+        keymap.of([
+          {
+            key: 'Backspace',
+            run(view) {
+              const sel = view.state.selection.main;
+              if (!sel.empty || sel.from === 0 || view.state.selection.ranges.length !== 1) return false;
+              const prev = view.state.doc.sliceString(sel.from - 1, sel.from);
+              const next = view.state.doc.sliceString(sel.from, sel.from + 1);
+              if (AUTO_CLOSE_PAIRS[prev] === next) {
+                view.dispatch({ changes: { from: sel.from - 1, to: sel.from + 1 } });
+                return true;
+              }
+              return false;
+            },
+          },
+        ]),
+      ];
 
       const zhPhrases = EditorState.phrases.of({
         Find: '查找',
@@ -279,6 +323,7 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
           highlightActiveLineGutter(),
           highlightSpecialChars(),
           history(),
+          editorLang.indentFoldService,
           foldGutter({
             openText: '▾',
             closedText: '▸',
@@ -288,7 +333,7 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
           EditorState.allowMultipleSelections.of(true),
           indentOnInput(),
           bracketMatching(),
-          closeBrackets(),
+          lightweightCloseBrackets,
           rectangularSelection(),
           crosshairCursor(),
           highlightActiveLine(),
@@ -299,7 +344,6 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
         historyKeymap,
         indentWithTab,
         foldKeymap,
-        closeBracketsKeymap,
         searchKeymap,
         keymap,
         openSearchPanel,
@@ -516,7 +560,6 @@ export const RemoteEditorModal: React.FC<RemoteEditorModalProps> = ({
                 return true;
               },
             },
-            ...rt.closeBracketsKeymap,
             ...rt.defaultKeymap,
             ...rt.searchKeymap,
             ...rt.historyKeymap,

@@ -1,20 +1,17 @@
 import type { Extension } from '@codemirror/state';
-import { StreamLanguage } from '@codemirror/language';
-import { json } from '@codemirror/lang-json';
-import { yaml } from '@codemirror/lang-yaml';
-import { javascript } from '@codemirror/lang-javascript';
-import { python } from '@codemirror/lang-python';
-import { html } from '@codemirror/lang-html';
-import { css } from '@codemirror/lang-css';
-import { sql } from '@codemirror/lang-sql';
-import { xml } from '@codemirror/lang-xml';
-import { markdown } from '@codemirror/lang-markdown';
-import { go } from '@codemirror/lang-go';
+import { StreamLanguage, foldService, type StreamParser } from '@codemirror/language';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { nginx } from '@codemirror/legacy-modes/mode/nginx';
 import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile';
+import { yaml } from '@codemirror/legacy-modes/mode/yaml';
 import { toml } from '@codemirror/legacy-modes/mode/toml';
 import { properties } from '@codemirror/legacy-modes/mode/properties';
+import { javascript, json, typescript } from '@codemirror/legacy-modes/mode/javascript';
+import { python } from '@codemirror/legacy-modes/mode/python';
+import { go } from '@codemirror/legacy-modes/mode/go';
+import { standardSQL } from '@codemirror/legacy-modes/mode/sql';
+import { html, xml } from '@codemirror/legacy-modes/mode/xml';
+import { css } from '@codemirror/legacy-modes/mode/css';
 import { diff } from '@codemirror/legacy-modes/mode/diff';
 
 export type EditorLanguageId =
@@ -165,6 +162,100 @@ const EXT_TO_LANG: Readonly<Record<string, EditorLanguageId>> = {
 };
 
 /**
+ * Lightweight Markdown stream parser (replaces heavy @codemirror/lang-markdown + @lezer/markdown).
+ */
+const markdownStreamParser: StreamParser<{ fence: string | null }> = {
+  startState: () => ({ fence: null }),
+  token(stream, state) {
+    if (stream.sol()) {
+      const fenceMatch = stream.match(/^\s*(```+|~~~+)/);
+      if (fenceMatch && Array.isArray(fenceMatch)) {
+        const marker = fenceMatch[1][0];
+        state.fence = state.fence === marker ? null : state.fence ?? marker;
+        stream.skipToEnd();
+        return 'meta';
+      }
+      if (state.fence) {
+        stream.skipToEnd();
+        return 'string';
+      }
+      if (stream.match(/^\s*#{1,6}(?:\s|$).*/)) return 'heading';
+      if (stream.match(/^\s*(?:[-*_]\s*){3,}$/)) return 'meta';
+      if (stream.match(/^\s*>+/)) return 'comment';
+      if (stream.match(/^\s*(?:[-*+]|\d+\.)\s+/)) return 'keyword';
+    }
+    if (state.fence) {
+      stream.skipToEnd();
+      return 'string';
+    }
+    if (stream.match(/`[^`]+`/)) return 'string';
+    if (stream.match(/\*\*[^*]+\*\*|__[^_]+__/)) return 'strong';
+    if (stream.match(/\*[^*\s][^*]*\*|_[^_\s][^_]*_/)) return 'emphasis';
+    if (stream.match(/!?\[[^\]]+\](?=\()/)) return 'link';
+    if (stream.match(/\([^)\s]+\)/)) return 'url';
+    if (stream.match(/https?:\/\/[^\s)>\]]+/)) return 'url';
+    if (!stream.eatWhile(/[^`*_![(h]+/)) stream.next();
+    return null;
+  },
+};
+
+const STREAM_PARSERS: Readonly<Partial<Record<EditorLanguageId, StreamParser<unknown>>>> = {
+  shell,
+  nginx,
+  dockerfile: dockerFile,
+  yaml,
+  toml,
+  ini: properties,
+  json,
+  javascript,
+  typescript,
+  python,
+  go,
+  sql: standardSQL,
+  html,
+  css,
+  xml,
+  markdown: markdownStreamParser,
+  diff,
+};
+
+const extensionCache = new Map<EditorLanguageId, Extension>();
+
+function lineIndent(text: string, tabSize: number): number {
+  let cols = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 32) cols += 1;
+    else if (ch === 9) cols += tabSize - (cols % tabSize);
+    else break;
+  }
+  return cols;
+}
+
+/**
+ * Indent-based fold service so StreamLanguage modes (YAML, Nginx, Python, JSON,
+ * Shell, Go, JS/TS, CSS, etc.) provide clean gutter fold ranges without heavy LR trees.
+ */
+export const indentFoldService: Extension = foldService.of((state, lineStart, lineEnd) => {
+  const { doc, tabSize } = state;
+  const startLine = doc.lineAt(lineStart);
+  if (!startLine.text.trim()) return null;
+
+  const baseIndent = lineIndent(startLine.text, tabSize);
+  let lastFoldLine = startLine;
+
+  for (let n = startLine.number + 1; n <= doc.lines; n++) {
+    const line = doc.line(n);
+    if (!line.text.trim()) continue;
+    const indent = lineIndent(line.text, tabSize);
+    if (indent <= baseIndent) break;
+    lastFoldLine = line;
+  }
+
+  return lastFoldLine.number > startLine.number ? { from: lineEnd, to: lastFoldLine.to } : null;
+});
+
+/**
  * Detects the best CodeMirror 6 language ID from a remote file path
  * (checking special Unix/DevOps basenames first, then file extensions).
  */
@@ -232,45 +323,14 @@ export function detectLanguageId(remotePath: string): EditorLanguageId {
  * Returns the CodeMirror 6 language extension for the given EditorLanguageId.
  */
 export function loadLanguageExtension(langId: EditorLanguageId): Extension {
-  switch (langId) {
-    case 'shell':
-      return StreamLanguage.define(shell);
-    case 'nginx':
-      return StreamLanguage.define(nginx);
-    case 'dockerfile':
-      return StreamLanguage.define(dockerFile);
-    case 'toml':
-      return StreamLanguage.define(toml);
-    case 'ini':
-      return StreamLanguage.define(properties);
-    case 'diff':
-      return StreamLanguage.define(diff);
-    case 'yaml':
-      return yaml();
-    case 'json':
-      return json();
-    case 'javascript':
-      return javascript({ jsx: true });
-    case 'typescript':
-      return javascript({ typescript: true, jsx: true });
-    case 'python':
-      return python();
-    case 'go':
-      return go();
-    case 'sql':
-      return sql();
-    case 'html':
-      return html();
-    case 'css':
-      return css();
-    case 'xml':
-      return xml();
-    case 'markdown':
-      return markdown();
-    case 'plain':
-    default:
-      return [];
+  if (langId === 'plain') return [];
+  let cached = extensionCache.get(langId);
+  if (!cached) {
+    const parser = STREAM_PARSERS[langId];
+    cached = parser ? StreamLanguage.define(parser) : [];
+    extensionCache.set(langId, cached);
   }
+  return cached;
 }
 
 export type LineEnding = 'LF' | 'CRLF';

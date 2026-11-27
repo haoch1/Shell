@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EditorState } from '@codemirror/state';
+import { foldable, ensureSyntaxTree } from '@codemirror/language';
 import {
   EDITOR_LANGUAGES,
   applyLineEnding,
   detectLanguageId,
   detectLineEnding,
+  indentFoldService,
   loadLanguageExtension,
   normalizeToLF,
 } from '../src/lib/editorLang.ts';
@@ -141,6 +143,46 @@ test('loadLanguageExtension returns a valid CodeMirror 6 Extension for every sup
     });
     assert.equal(state.doc.lines, 3, `state creation failed for ${id}`);
   }
+});
+
+test('StreamLanguage modes produce syntax trees and indentFoldService folds YAML/Nginx blocks', () => {
+  const yamlDoc = [
+    '# Stack',
+    'services:',
+    '  api:',
+    '    image: nginx:alpine',
+    '    ports:',
+    '      - "443:443"',
+    'volumes:',
+    '  data: {}',
+  ].join('\n');
+  const yamlState = EditorState.create({
+    doc: yamlDoc,
+    extensions: [loadLanguageExtension('yaml'), indentFoldService],
+  });
+  const yamlTree = ensureSyntaxTree(yamlState, yamlDoc.length, 500);
+  assert.ok(yamlTree && yamlTree.length === yamlDoc.length, 'expected parsed YAML syntax tree');
+
+  const servicesLine = yamlState.doc.line(2);
+  const fold = foldable(yamlState, servicesLine.from, servicesLine.to);
+  assert.deepEqual(fold, { from: servicesLine.to, to: yamlState.doc.line(6).to });
+
+  const nginxDoc = 'server {\n    listen 443 ssl;\n    location / {\n        proxy_pass http://app;\n    }\n}\n';
+  const nginxState = EditorState.create({
+    doc: nginxDoc,
+    extensions: [loadLanguageExtension('nginx'), indentFoldService],
+  });
+  const serverLine = nginxState.doc.line(1);
+  const nginxFold = foldable(nginxState, serverLine.from, serverLine.to);
+  assert.deepEqual(nginxFold, { from: serverLine.to, to: nginxState.doc.line(5).to });
+
+  const mdDoc = '# Title\n\n- **bold** and *italic* with `code`\n```sh\necho hi\n```\n';
+  const mdState = EditorState.create({
+    doc: mdDoc,
+    extensions: [loadLanguageExtension('markdown'), indentFoldService],
+  });
+  const mdTree = ensureSyntaxTree(mdState, mdDoc.length, 500);
+  assert.ok(mdTree && mdTree.length === mdDoc.length, 'expected parsed Markdown syntax tree');
 });
 
 test('line ending helpers detect, normalize, and convert LF/CRLF cleanly', () => {

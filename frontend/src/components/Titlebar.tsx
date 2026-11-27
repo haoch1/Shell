@@ -23,6 +23,10 @@ import { getRuntime } from '../lib/bridge';
 import { HostIcon } from './HostIcon';
 import type { usePaneDrag } from '../lib/usePaneDrag';
 
+function tabLabel(tab: WorkspaceTab, profile?: Profile) {
+  return tab.root.type === 'leaf' && profile ? profile.name || profile.host : tab.title;
+}
+
 interface TitlebarProps {
   paneDrag: ReturnType<typeof usePaneDrag>;
   sidebarOpen: boolean;
@@ -228,6 +232,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           {tabs.map((tab) => {
             const st = tabState(tab);
             const prof = tabProfile(tab);
+            const title = tabLabel(tab, prof);
             const active = tab.id === (paneDrag.hoverTab ?? activeTabId);
             return (
               <div
@@ -253,17 +258,17 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                     onCloseTab(tab.id);
                   }
                 }}
-                title={(prof ? `${tab.title} (${prof.user}@${prof.host}:${prof.port})` : tab.title) + '\n拖动当前会话到终端边缘分屏'}
+                title={(prof ? `${title} (${prof.user}@${prof.host}:${prof.port})` : title) + '\n拖动当前会话到终端边缘分屏'}
               >
                 <span className="tab-icon-wrap">
                   <HostIcon profile={prof} size="xs" />
                   <span className={`tab-dot-badge ${st}`} />
                 </span>
-                <span className="tab-label">{tab.title}</span>
+                <span className="tab-label">{title}</span>
                 <button
                   type="button"
                   className="tab-close"
-                  aria-label={`关闭 ${tab.title}`}
+                  aria-label={`关闭 ${title}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onCloseTab(tab.id);
@@ -486,6 +491,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             {tabs.map((tab) => {
               const st = tabState(tab);
               const prof = tabProfile(tab);
+              const title = tabLabel(tab, prof);
               const active = tab.id === activeTabId;
               return (
                 <div
@@ -503,14 +509,14 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                       <span className={`tab-dot-badge ${st}`} />
                     </span>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {tab.title}
+                      {title}
                     </span>
                   </div>
                   <button
                     type="button"
                     className="host-action-btn"
                     style={{ width: 18, height: 18, flexShrink: 0 }}
-                    aria-label={`关闭 ${tab.title}`}
+                    aria-label={`关闭 ${title}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       onCloseTab(tab.id);

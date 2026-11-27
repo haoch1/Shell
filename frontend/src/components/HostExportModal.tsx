@@ -19,6 +19,7 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
   const dialog = useRef<HTMLDialogElement>(null);
   const ids = profiles.filter(p => selected.has(p.id)).map(p => p.id);
   const allSelected = profiles.length > 0 && ids.length === profiles.length;
+  const someSelected = ids.length > 0 && !allSelected;
   const savedIds = useMemo(() => new Set(profiles.map(p => p.id)), [profiles]);
   const includesJumpHost = profiles.some(p =>
     selected.has(p.id) && p.jumpHostId && savedIds.has(p.jumpHostId) && !selected.has(p.jumpHostId));
@@ -94,44 +95,47 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
           ) : (
             <>
               <div className="host-export-list-section">
-                <div className="host-export-list-head">
-                  <div className="host-export-list-title">
-                    <span className="field-label">选择主机</span>
-                    <span className="host-export-count tabular">已选 {ids.length} / {profiles.length}</span>
+                <div className="select-list-card">
+                  <div className="select-list-header">
+                    <label className="select-list-master">
+                      <Checkbox
+                        id="toggleExportSelectAll"
+                        checked={allSelected}
+                        indeterminate={someSelected}
+                        autoFocus
+                        disabled={busy}
+                        aria-label={allSelected ? '取消全选主机' : '全选主机'}
+                        onChange={toggleSelectAll}
+                      />
+                      <span className="tabular">
+                        {ids.length > 0 ? `已选 ${ids.length} / ${profiles.length}` : '全选'}
+                      </span>
+                    </label>
+                    <span className="select-list-hint">选择主机</span>
                   </div>
-                  <button
-                    type="button"
-                    id="toggleExportSelectAll"
-                    className="host-export-select-all"
-                    autoFocus
-                    disabled={busy}
-                    onClick={toggleSelectAll}
-                  >
-                    {allSelected ? '取消全选' : '全选'}
-                  </button>
-                </div>
-                <div className="host-export-list" role="group" aria-label="选择要导出的主机">
-                  {profiles.map(p => {
-                    const displayName =
-                      p.name && (!hideHostIp || p.name !== p.host)
-                        ? p.name
-                        : hideHostIp
-                          ? p.user || 'SSH 主机'
-                          : formatHostDisplay(p.host, p.port);
-                    const addr = hideHostIp ? '' : `${p.user}@${formatHostDisplay(p.host, p.port)}`;
-                    return (
-                      <label key={p.id} title={hideHostIp ? displayName : addr}>
-                        <Checkbox value={p.id} checked={selected.has(p.id)} disabled={busy} onChange={() => toggle(p.id)} />
-                        <span>{displayName}</span>
-                        <small
-                          className={`mono host-export-addr ${hideHostIp ? 'is-hidden' : ''}`}
-                          data-ip-hidden={hideHostIp ? 'true' : undefined}
-                        >
-                          {addr}
-                        </small>
-                      </label>
-                    );
-                  })}
+                  <div className="host-export-list" role="group" aria-label="选择要导出的主机">
+                    {profiles.map(p => {
+                      const displayName =
+                        p.name && (!hideHostIp || p.name !== p.host)
+                          ? p.name
+                          : hideHostIp
+                            ? p.user || 'SSH 主机'
+                            : formatHostDisplay(p.host, p.port);
+                      const addr = hideHostIp ? '' : `${p.user}@${formatHostDisplay(p.host, p.port)}`;
+                      return (
+                        <label key={p.id} className={selected.has(p.id) ? 'is-selected' : ''} title={hideHostIp ? displayName : addr}>
+                          <Checkbox value={p.id} checked={selected.has(p.id)} disabled={busy} onChange={() => toggle(p.id)} />
+                          <span>{displayName}</span>
+                          <small
+                            className={`mono host-export-addr ${hideHostIp ? 'is-hidden' : ''}`}
+                            data-ip-hidden={hideHostIp ? 'true' : undefined}
+                          >
+                            {addr}
+                          </small>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
               <div className="host-export-meta">

@@ -4,7 +4,6 @@ import {
   Check,
   CheckSquare,
   ChevronDown,
-  ChevronRight,
   Copy,
   CopyPlus,
   Download,
@@ -31,6 +30,7 @@ import { copyToClipboard } from '../lib/bridge';
 import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 import { Checkbox } from './ui/Checkbox';
+import { Tooltip } from './ui/Tooltip';
 
 type HostSortMode = 'default' | 'name-asc' | 'name-desc' | 'recent' | 'host';
 
@@ -401,35 +401,52 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             <button
               id="addHost"
               type="button"
-              className="btn btn-primary"
+              className="btn sidebar-new-btn"
               style={{ flex: 1 }}
               onClick={onAddHost}
             >
-              <Plus size={13.5} strokeWidth={2} />
+              <Plus size={14} strokeWidth={2.2} className="sidebar-new-plus" />
               <span>新建主机</span>
             </button>
-            <button
-              id="sortHostsBtn"
-              type="button"
-              className={`btn sidebar-sort-btn ${sortMode !== 'default' || sortMenuPos ? 'active' : ''}`}
-              title={`排序：${SORT_OPTIONS.find((o) => o.id === sortMode)?.label}`}
-              aria-label="主机排序"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (sortMenuPos) {
-                  setSortMenuPos(null);
-                  return;
-                }
-                const rect = e.currentTarget.getBoundingClientRect();
-                const menuW = 152;
-                setSortMenuPos({
-                  left: Math.max(8, Math.min(rect.right - menuW, window.innerWidth - menuW - 8)),
-                  top: rect.bottom + 6,
-                });
-              }}
-            >
-              <ArrowUpDown size={13.5} strokeWidth={1.8} />
-            </button>
+            <Tooltip label={`排序：${SORT_OPTIONS.find((o) => o.id === sortMode)?.label}`} side="bottom">
+              <button
+                id="sortHostsBtn"
+                type="button"
+                className={`btn sidebar-sort-btn ${sortMode !== 'default' || sortMenuPos ? 'active' : ''}`}
+                aria-label="主机排序"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (sortMenuPos) {
+                    setSortMenuPos(null);
+                    return;
+                  }
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const menuW = 152;
+                  setSortMenuPos({
+                    left: Math.max(8, Math.min(rect.right - menuW, window.innerWidth - menuW - 8)),
+                    top: rect.bottom + 6,
+                  });
+                }}
+              >
+                <ArrowUpDown size={13.5} strokeWidth={1.8} />
+              </button>
+            </Tooltip>
+            {profiles.length > 0 && (
+              <Tooltip label="批量管理主机" side="bottom">
+                <button
+                  id="batchManageBtn"
+                  type="button"
+                  className="btn sidebar-sort-btn"
+                  aria-label="批量管理"
+                  onClick={() => {
+                    setSortMenuPos(null);
+                    setSelectMode(true);
+                  }}
+                >
+                  <CheckSquare size={13.5} strokeWidth={1.8} />
+                </button>
+              </Tooltip>
+            )}
           </div>
         )}
       </div>
@@ -541,7 +558,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                 }}
                 onClick={() => toggleGroup(sec.key)}
               >
-                {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                <ChevronDown size={12} className={`group-chevron ${collapsed ? 'collapsed' : ''}`} />
                 <span>{sec.label}</span>
                 {canDragGroup && <GripVertical size={11} className="group-drag-grip" aria-hidden="true" />}
                 <span className="group-count">{sec.items.length}</span>
@@ -568,7 +585,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                         if (!selectMode && source) onDragPane(e, source);
                         else e.preventDefault();
                       }}
-                      className={`host-row ${!selectMode && isActive ? 'active' : ''} ${selectMode && checked ? 'selected' : ''} ${isLive ? 'live' : ''}`.trim()}
+                      className={`host-row ${hideHostIp ? 'compact' : ''} ${!selectMode && isActive ? 'active' : ''} ${selectMode && checked ? 'selected' : ''} ${isLive ? 'live' : ''}`.trim()}
                       onClick={() => {
                         if (selectMode) {
                           setSelectedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }));
@@ -683,83 +700,78 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
       ) : (
         <div className="sidebar-footer">
           <div className="sidebar-footer-group sidebar-file-actions">
-            <button
-              id="importSshBtn"
-              type="button"
-              className="icon-btn"
-              title="导入主机配置"
-              aria-label="导入主机配置"
-              onClick={onOpenImportSSH}
-            >
-              <Download size={14} strokeWidth={1.7} />
-            </button>
-            <button
-              id="exportHostsBtn"
-              type="button"
-              className="icon-btn"
-              title="导出主机配置"
-              aria-label="导出主机配置"
-              onClick={() => onOpenExportHosts([])}
-            >
-              <Upload size={14} strokeWidth={1.7} />
-            </button>
-            {profiles.length > 0 && (
+            <Tooltip label="导入主机配置" side="top">
               <button
+                id="importSshBtn"
                 type="button"
                 className="icon-btn"
-                title="批量管理主机"
-                aria-label="批量管理"
-                onClick={() => setSelectMode(true)}
+                aria-label="导入主机配置"
+                onClick={onOpenImportSSH}
               >
-                <CheckSquare size={14} strokeWidth={1.7} />
+                <Download size={14} strokeWidth={1.7} />
               </button>
-            )}
+            </Tooltip>
+            <Tooltip label="导出主机配置" side="top">
+              <button
+                id="exportHostsBtn"
+                type="button"
+                className="icon-btn"
+                aria-label="导出主机配置"
+                onClick={() => onOpenExportHosts([])}
+              >
+                <Upload size={14} strokeWidth={1.7} />
+              </button>
+            </Tooltip>
           </div>
           <div className="sidebar-footer-group">
-            <button
-              id="toggleHideIpBtn"
-              type="button"
-              className={`icon-btn ${hideHostIp ? 'active' : ''}`}
-              title={hideHostIp ? '显示主机 IP' : '隐藏主机 IP（隐私模式）'}
-              aria-label="切换隐藏主机 IP"
-              aria-pressed={hideHostIp}
-              onClick={() => onToggleHideIp?.()}
-            >
-              {hideHostIp ? <EyeOff size={14} strokeWidth={1.7} /> : <Eye size={14} strokeWidth={1.7} />}
-            </button>
-            {onToggleTheme && (
+            <Tooltip label={hideHostIp ? '显示主机 IP' : '隐藏主机 IP（隐私模式）'} side="top">
               <button
+                id="toggleHideIpBtn"
+                type="button"
+                className={`icon-btn ${hideHostIp ? 'active' : ''}`}
+                aria-label="切换隐藏主机 IP"
+                aria-pressed={hideHostIp}
+                onClick={() => onToggleHideIp?.()}
+              >
+                {hideHostIp ? <EyeOff size={14} strokeWidth={1.7} /> : <Eye size={14} strokeWidth={1.7} />}
+              </button>
+            </Tooltip>
+            {onToggleTheme && (
+              <Tooltip label={isDark ? '切换浅色外观' : '切换深色外观'} side="top">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="切换深浅色外观"
+                  onClick={onToggleTheme}
+                >
+                  {isDark ? <Sun size={14} strokeWidth={1.7} /> : <Moon size={14} strokeWidth={1.7} />}
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip label="SSH 密钥管理" side="top">
+              <button
+                id="keysBtn"
                 type="button"
                 className="icon-btn"
-                title={isDark ? '切换浅色外观' : '切换深色外观'}
-                aria-label="切换深浅色外观"
-                onClick={onToggleTheme}
+                aria-label="SSH 密钥管理"
+                onClick={() => onOpenSettings('keys')}
               >
-                {isDark ? <Sun size={14} strokeWidth={1.7} /> : <Moon size={14} strokeWidth={1.7} />}
+                <KeyRound size={14} strokeWidth={1.7} />
               </button>
-            )}
-            <button
-              id="keysBtn"
-              type="button"
-              className="icon-btn"
-              title="SSH 密钥管理"
-              aria-label="SSH 密钥管理"
-              onClick={() => onOpenSettings('keys')}
-            >
-              <KeyRound size={14} strokeWidth={1.7} />
-            </button>
-            <button
-              id="settingsBtn"
-              type="button"
-              className="icon-btn"
-              style={{ position: 'relative' }}
-              title={hasUpdate ? '发现新版本 · 点击查看更新' : '偏好设置 (Ctrl+,)'}
-              aria-label="偏好设置"
-              onClick={() => onOpenSettings(hasUpdate ? 'about' : 'appearance')}
-            >
-              <Settings size={14} strokeWidth={1.7} />
-              {hasUpdate && <span className="update-dot" />}
-            </button>
+            </Tooltip>
+            <Tooltip label={hasUpdate ? '发现新版本 · 查看更新' : '偏好设置'} shortcut={hasUpdate ? undefined : 'Ctrl+,'} side="top">
+              <button
+                id="settingsBtn"
+                type="button"
+                className="icon-btn"
+                style={{ position: 'relative' }}
+                aria-label="偏好设置"
+                onClick={() => onOpenSettings(hasUpdate ? 'about' : 'appearance')}
+              >
+                <Settings size={14} strokeWidth={1.7} />
+                {hasUpdate && <span className="update-dot" />}
+              </button>
+            </Tooltip>
           </div>
         </div>
       )}

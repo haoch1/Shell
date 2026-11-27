@@ -106,6 +106,8 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
   }, [onClose]);
 
   const chosen = hosts.filter((_, idx) => selected[idx]);
+  const allSelected = hosts.length > 0 && chosen.length === hosts.length;
+  const someSelected = chosen.length > 0 && !allSelected;
 
   const toggleAll = (checked: boolean) => {
     const next: Record<number, boolean> = {};
@@ -196,61 +198,56 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
 
           {hosts.length > 0 && (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span className="pill-badge accent">{detectedFormat}</span>
-                  <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>共 {hosts.length} 台</span>
-                </div>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => toggleAll(true)}>
-                    全选
-                  </button>
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => toggleAll(false)}>
-                    全不选
-                  </button>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
-                {hosts.map((h, idx) => (
-                  <label
-                    key={`${h.host}-${h.port}-${idx}`}
-                    className="soft-card"
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 10,
-                      cursor: 'pointer',
-                      padding: '8px 12px',
-                    }}
-                  >
+              <div className="select-list-card">
+                <div className="select-list-header">
+                  <label className="select-list-master">
                     <Checkbox
-                      checked={Boolean(selected[idx])}
-                      onChange={(ev) => setSelected({ ...selected, [idx]: ev.target.checked })}
+                      checked={allSelected}
+                      indeterminate={someSelected}
+                      aria-label={allSelected ? '取消全选导入主机' : '全选导入主机'}
+                      onChange={() => toggleAll(!allSelected)}
                     />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                        <span style={{ fontWeight: 600 }}>{h.name}</span>
-                        {h.group && (
-                          <span className="pill-badge neutral" style={{ fontSize: 10.5 }}>
-                            {h.group}
-                          </span>
-                        )}
-                        {h.proxyJump && <span className="pill-badge accent">跳板 {h.proxyJump}</span>}
-                        {h.proxyType && (
-                          <span className="pill-badge neutral">
-                            代理 {h.proxyType === 'system' ? '系统' : h.proxyType === 'direct' ? '直连' : `${h.proxyType} ${h.proxyHost || ''}`}
-                          </span>
-                        )}
-                        {h.alreadySaved && <span className="pill-badge caution">已存在</span>}
-                      </div>
-                      <div className="mono" style={{ fontSize: 11.5, color: 'var(--ink-secondary)' }}>
-                        {h.user}@{h.host}:{h.port}
-                        {h.keyPath ? ` · ${h.keyPath.split(/[\\/]/).pop()}` : ''}
-                      </div>
-                    </div>
+                    <span className="tabular">
+                      {chosen.length > 0 ? `已选 ${chosen.length} / ${hosts.length}` : '全选'}
+                    </span>
                   </label>
-                ))}
+                  <span className="pill-badge accent">{detectedFormat}</span>
+                </div>
+
+                <div className="import-host-list">
+                  {hosts.map((h, idx) => (
+                    <label
+                      key={`${h.host}-${h.port}-${idx}`}
+                      className={`import-host-row ${selected[idx] ? 'is-selected' : ''}`}
+                    >
+                      <Checkbox
+                        checked={Boolean(selected[idx])}
+                        onChange={(ev) => setSelected({ ...selected, [idx]: ev.target.checked })}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 600, fontSize: 12.5 }}>{h.name}</span>
+                          {h.group && (
+                            <span className="pill-badge neutral" style={{ fontSize: 10.5 }}>
+                              {h.group}
+                            </span>
+                          )}
+                          {h.proxyJump && <span className="pill-badge accent">跳板 {h.proxyJump}</span>}
+                          {h.proxyType && (
+                            <span className="pill-badge neutral">
+                              代理 {h.proxyType === 'system' ? '系统' : h.proxyType === 'direct' ? '直连' : `${h.proxyType} ${h.proxyHost || ''}`}
+                            </span>
+                          )}
+                          {h.alreadySaved && <span className="pill-badge caution">已存在</span>}
+                        </div>
+                        <div className="mono" style={{ fontSize: 11.5, color: 'var(--ink-secondary)' }}>
+                          {h.user}@{h.host}:{h.port}
+                          {h.keyPath ? ` · ${h.keyPath.split(/[\\/]/).pop()}` : ''}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

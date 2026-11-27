@@ -52,6 +52,10 @@ func readProtected(path string, value any) error {
 	if err != nil {
 		return err
 	}
+	return decodeProtected(sealed, value)
+}
+
+func decodeProtected(sealed []byte, value any) error {
 	plain, err := dpapi(sealed, false)
 	if err != nil {
 		return err

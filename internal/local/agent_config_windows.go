@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/haoch1/Shell/internal/security"
+	"golang.org/x/sys/windows"
 )
 
 // AgentConfig controls external Agent MCP/HTTP bridge, execution mode, command permissions, and text redaction.
@@ -149,14 +151,49 @@ func ClearBridgeRuntime() {
 	})
 }
 
-func ReadBridgeRuntime() (BridgeRuntimeInfo, error) {
+// ReadBridgeCredentials discovers the running GUI without taking the settings writer lock.
+// Both files are published by atomic replacement; the HTTP bridge authenticates the pair.
+func ReadBridgeCredentials() (int, string, error) {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		return 0, "", err
+	}
+	dir := filepath.Join(root, "Shell")
+	data, err := readBridgeFile(filepath.Join(dir, "bridge-runtime.json"), 4096)
+	if err != nil {
+		return 0, "", fmt.Errorf("未检测到运行中的 Shell MCP 桥接服务：%w", err)
+	}
 	var info BridgeRuntimeInfo
-	err := withStore(func(dir string) error {
-		data, err := readLimited(filepath.Join(dir, "bridge-runtime.json"), 4096)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(data, &info)
-	})
-	return info, err
+	if json.Unmarshal(data, &info) != nil || info.Port < 1024 || info.Port > 65535 {
+		return 0, "", errors.New("Shell MCP 桥接端口无效")
+	}
+	sealed, err := readBridgeFile(filepath.Join(dir, "agent-token.dpapi"), 128<<10)
+	if err != nil {
+		return 0, "", fmt.Errorf("无法读取 Shell MCP 桥接令牌：%w", err)
+	}
+	var blob agentTokenBlob
+	if err := decodeProtected(sealed, &blob); err != nil {
+		return 0, "", err
+	}
+	if len(blob.Token) < 32 {
+		return 0, "", errors.New("Shell MCP 桥接令牌无效")
+	}
+	return info.Port, blob.Token, nil
+}
+
+// FILE_SHARE_DELETE lets the GUI replace or clear a file while discovery reads its snapshot.
+func readBridgeFile(path string, limit int64) ([]byte, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(handle), path)
+	defer f.Close()
+	return readBounded(f, limit)
 }

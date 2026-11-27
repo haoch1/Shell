@@ -30,15 +30,11 @@ func hasFlag(flag string) bool {
 
 func runStdioMCPProxy() {
 	err := agentbridge.ProxyStdioToHTTP(os.Stdin, os.Stdout, func() (string, string, error) {
-		info, err := local.ReadBridgeRuntime()
-		if err != nil || info.Port < 1024 {
-			return "", "", fmt.Errorf("未检测到运行中的 Shell MCP 桥接服务")
-		}
-		token, err := local.EnsureAgentToken()
+		port, token, err := local.ReadBridgeCredentials()
 		if err != nil {
 			return "", "", err
 		}
-		return fmt.Sprintf("http://127.0.0.1:%d/mcp", info.Port), token, nil
+		return fmt.Sprintf("http://127.0.0.1:%d/mcp", port), token, nil
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

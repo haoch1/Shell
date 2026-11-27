@@ -551,9 +551,9 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               }}
             >
               <Terminal size={13} />
-              {liveProfileIds.has(ctxMenu.profile.id) ? '切换到当前会话' : '立即连接'}
+              {livePanes.has(ctxMenu.profile.id) ? '切换到当前会话' : '立即连接'}
             </button>
-            {liveProfileIds.has(ctxMenu.profile.id) && onConnectNewSession && (
+            {livePanes.has(ctxMenu.profile.id) && onConnectNewSession && (
               <button
                 type="button"
                 className="context-menu-item"

@@ -26,6 +26,9 @@ type AppSettings struct {
 	DefaultKeepAlive int     `json:"defaultKeepAlive"`
 	ConfirmOnClose   bool    `json:"confirmOnClose"`
 	CloseToTray      bool    `json:"closeToTray"`
+	WindowWidth      int     `json:"windowWidth,omitempty"`
+	WindowHeight     int     `json:"windowHeight,omitempty"`
+	WindowMaximised  bool    `json:"windowMaximised,omitempty"`
 }
 
 func DefaultSettings() AppSettings {
@@ -41,10 +44,13 @@ func DefaultSettings() AppSettings {
 		CopyOnSelect:     false,
 		RightClickPaste:  false,
 		ShowTelemetry:    true,
-		WebGLEnabled:     true,
+		WebGLEnabled:     false,
 		DefaultKeepAlive: 30,
 		ConfirmOnClose:   true,
 		CloseToTray:      true,
+		WindowWidth:      1280,
+		WindowHeight:     820,
+		WindowMaximised:  false,
 	}
 }
 
@@ -78,6 +84,12 @@ func normalizeSettings(s AppSettings) AppSettings {
 	}
 	if s.DefaultKeepAlive < 0 || s.DefaultKeepAlive > 3600 {
 		s.DefaultKeepAlive = d.DefaultKeepAlive
+	}
+	if s.WindowWidth < 880 || s.WindowWidth > 3840 {
+		s.WindowWidth = d.WindowWidth
+	}
+	if s.WindowHeight < 560 || s.WindowHeight > 2160 {
+		s.WindowHeight = d.WindowHeight
 	}
 	return s
 }

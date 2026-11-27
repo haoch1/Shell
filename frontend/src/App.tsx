@@ -42,6 +42,7 @@ import { RemoteEditorModal } from './components/RemoteEditorModal';
 import { TerminalSearchBar } from './components/TerminalSearchBar';
 import { ChallengeDialog, VerifyHostDialog } from './components/SecurityDialogs';
 import { AgentApprovalDialog } from './components/AgentApprovalDialog';
+import { detectOSIconFromText } from './components/HostIcon';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
@@ -55,7 +56,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   copyOnSelect: false,
   rightClickPaste: false,
   showTelemetry: true,
-  webglEnabled: true,
+  webglEnabled: false,
   defaultKeepAlive: 30,
   confirmOnClose: true,
   closeToTray: true,
@@ -84,6 +85,7 @@ export const App: React.FC = () => {
     open: false,
     tab: 'appearance',
   });
+  const [aiConfigVersion, setAiConfigVersion] = useState(0);
   const [editorTarget, setEditorTarget] = useState<{ sessionId: string; remotePath: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Profile | null>(null);
 
@@ -101,6 +103,9 @@ export const App: React.FC = () => {
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
 
   const writeChainsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const wsMapRef = useRef<Map<string, WebSocket>>(new Map());
+  const lastSizeRef = useRef<Map<string, string>>(new Map());
+  const textEncoderRef = useRef(new TextEncoder());
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const tabsRef = useRef(tabs);
@@ -151,6 +156,54 @@ export const App: React.FC = () => {
     void reloadData();
   }, [reloadData]);
 
+  // Attach a low-latency binary WebSocket stream for a session (falls back cleanly to Wails IPC in mock mode).
+  const attachSessionWS = useCallback(async (sessionId: string) => {
+    try {
+      const api = getApi();
+      if (typeof api.TermWSURL !== 'function') return;
+      const url = await api.TermWSURL(sessionId);
+      if (!url) return;
+      const existing = wsMapRef.current.get(sessionId);
+      if (existing) {
+        existing.close();
+        wsMapRef.current.delete(sessionId);
+      }
+      await new Promise<void>((resolve) => {
+        const ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+        let settled = false;
+        const done = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        const timer = window.setTimeout(done, 120);
+        ws.onopen = () => {
+          window.clearTimeout(timer);
+          wsMapRef.current.set(sessionId, ws);
+          done();
+        };
+        ws.onmessage = (ev) => {
+          if (ev.data instanceof ArrayBuffer) {
+            terminalBus.writeBytes(sessionId, new Uint8Array(ev.data));
+          }
+        };
+        ws.onerror = () => {
+          window.clearTimeout(timer);
+          done();
+        };
+        ws.onclose = () => {
+          if (wsMapRef.current.get(sessionId) === ws) {
+            wsMapRef.current.delete(sessionId);
+          }
+        };
+      });
+    } catch {
+      // Fall back to Wails EventsEmit/Input seamlessly
+    }
+  }, []);
+
   // Start an SSH connection for a newly allocated session ID
   const startSSHConnection = useCallback(
     (sessionId: string, profile: Profile, secret: string, remember: boolean) => {
@@ -159,41 +212,53 @@ export const App: React.FC = () => {
       const cols = ctrl?.term.cols || 100;
       const rows = ctrl?.term.rows || 32;
 
-      void api
-        .Connect(sessionId, profile, secret, remember, cols, rows)
-        .then(() => {
-          setSessions((prev) => {
-            const cur = prev[sessionId];
-            if (!cur || cur.state !== 'connecting') return prev;
-            return { ...prev, [sessionId]: { ...cur, state: 'connected', startedAt: Date.now() } };
-          });
-          const latestCtrl = terminalBus.get(sessionId);
-          if (latestCtrl) {
-            latestCtrl.fit();
-            void api.Resize(sessionId, latestCtrl.term.cols, latestCtrl.term.rows).catch(() => {});
-          }
-          void api
-            .ListTunnels(sessionId)
-            .then((ts) =>
-              setTunnelsCountBySession((prev) => ({
-                ...prev,
-                [sessionId]: (ts || []).filter((t) => t.active).length,
-              })),
-            )
-            .catch(() => {});
-          void api.Profiles().then(setProfiles).catch(() => {});
-        })
-        .catch((err) => {
-          const msg = errorMessage(err);
-          setSessions((prev) => {
-            const cur = prev[sessionId];
-            if (!cur) return prev;
-            return { ...prev, [sessionId]: { ...cur, state: 'closed', endMessage: msg } };
-          });
-          terminalBus.writeln(sessionId, `\r\n\x1b[31m连接失败：${msg}\x1b[0m`);
-        });
+      void attachSessionWS(sessionId).then(() =>
+        api
+          .Connect(sessionId, profile, secret, remember, cols, rows)
+          .then(() => {
+            setSessions((prev) => {
+              const cur = prev[sessionId];
+              if (!cur || cur.state !== 'connecting') return prev;
+              return { ...prev, [sessionId]: { ...cur, state: 'connected', startedAt: Date.now() } };
+            });
+            const latestCtrl = terminalBus.get(sessionId);
+            if (latestCtrl) {
+              latestCtrl.fit();
+              latestCtrl.focus();
+              const nextSizeKey = `${latestCtrl.term.cols}x${latestCtrl.term.rows}`;
+              lastSizeRef.current.set(sessionId, nextSizeKey);
+              if (latestCtrl.term.cols !== cols || latestCtrl.term.rows !== rows) {
+                void api.Resize(sessionId, latestCtrl.term.cols, latestCtrl.term.rows).catch(() => {});
+              }
+            }
+            void api
+              .ListTunnels(sessionId)
+              .then((ts) =>
+                setTunnelsCountBySession((prev) => ({
+                  ...prev,
+                  [sessionId]: (ts || []).filter((t) => t.active).length,
+                })),
+              )
+              .catch(() => {});
+            void api.Profiles().then(setProfiles).catch(() => {});
+          })
+          .catch((err) => {
+            const msg = errorMessage(err);
+            const ws = wsMapRef.current.get(sessionId);
+            if (ws) {
+              ws.close();
+              wsMapRef.current.delete(sessionId);
+            }
+            setSessions((prev) => {
+              const cur = prev[sessionId];
+              if (!cur) return prev;
+              return { ...prev, [sessionId]: { ...cur, state: 'closed', endMessage: msg } };
+            });
+            terminalBus.writeln(sessionId, `\r\n\x1b[31m连接失败：${msg}\x1b[0m`);
+          }),
+      );
     },
-    [],
+    [attachSessionWS],
   );
 
   const openSessionInNewTab = useCallback(
@@ -249,6 +314,11 @@ export const App: React.FC = () => {
         terminalBus.writeBytes(id, decodeBase64(b64));
       }),
       onDesktopEvent<[string, string]>('ssh:end', (id, message) => {
+        const ws = wsMapRef.current.get(id);
+        if (ws) {
+          ws.close();
+          wsMapRef.current.delete(id);
+        }
         setVerifyQueue((q) => q.filter((r) => r.id !== id));
         setChallengeQueue((q) => q.filter((r) => r.id !== id));
         setSessions((prev) => {
@@ -332,16 +402,29 @@ export const App: React.FC = () => {
     return profiles.find((p) => p.id === jid)?.name;
   }, [profiles, activeSession?.profile.jumpHostId]);
 
-  // Lightweight live server telemetry polling
+  // Non-overlapping, zero-sleep live server telemetry polling + automatic OS distro icon detection
   useEffect(() => {
     if (!hasDesktopBridge() || !settings.showTelemetry || !activeSession || activeSession.state !== 'connected') {
       return;
     }
     const sid = activeSession.id;
+    const profId = activeSession.profile.id;
     let canceled = false;
+    let timerId: number | null = null;
     let prevNet: { rx: number; tx: number; ts: number } | null = null;
+    let osSynced = false;
+
+    const scheduleNext = (delayMs: number) => {
+      if (canceled) return;
+      timerId = window.setTimeout(() => void poll(), delayMs);
+    };
 
     const poll = async () => {
+      if (canceled) return;
+      if (document.hidden) {
+        scheduleNext(6000);
+        return;
+      }
       try {
         const st = await getApi().FetchStats(sid);
         if (canceled) return;
@@ -358,17 +441,28 @@ export const App: React.FC = () => {
         }
         prevNet = { rx: st.netRxBytes, tx: st.netTxBytes, ts: now };
         setStatsBySession((prev) => ({ ...prev, [sid]: st }));
+
+        // Auto-detect authentic OS icon (Ubuntu/Debian/CentOS/Rocky/Alpine/Arch/Fedora...) when profile icon is Auto
+        if (!osSynced && st.os && profId) {
+          osSynced = true;
+          const detected = detectOSIconFromText(st.os);
+          const curProf = profilesRef.current.find((p) => p.id === profId);
+          if (detected && curProf && !curProf.icon) {
+            const updated = { ...curProf, icon: detected };
+            setProfiles((prev) => prev.map((p) => (p.id === profId ? updated : p)));
+            void getApi().SaveProfile(updated).catch(() => {});
+          }
+        }
       } catch {
         // Ignore if host doesn't support /proc or busy
       }
+      scheduleNext(6000);
     };
 
-    const initialTimer = window.setTimeout(() => void poll(), 700);
-    const interval = window.setInterval(() => void poll(), 3500);
+    scheduleNext(2200);
     return () => {
       canceled = true;
-      window.clearTimeout(initialTimer);
-      window.clearInterval(interval);
+      if (timerId !== null) window.clearTimeout(timerId);
     };
   }, [activeSession?.id, activeSession?.state, settings.showTelemetry]);
 
@@ -393,8 +487,18 @@ export const App: React.FC = () => {
 
   const writeSessionInput = useCallback((sessionId: string, data: string | Uint8Array) => {
     const s = sessionsRef.current[sessionId];
-    if (!s || s.state !== 'connected') return;
-    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    if (!s || s.state === 'closed') return;
+    const bytes = typeof data === 'string' ? textEncoderRef.current.encode(data) : data;
+    // Fast path: send raw binary frame directly over loopback WebSocket (<0.1ms, zero Base64, zero Promise queue!).
+    const ws = wsMapRef.current.get(sessionId);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      for (let start = 0; start < bytes.length; start += 32768) {
+        ws.send(bytes.subarray(start, start + 32768));
+      }
+      return;
+    }
+    if (s.state !== 'connected') return;
+    // Fallback path (mock / non-WS environments)
     let chain = writeChainsRef.current.get(sessionId) ?? Promise.resolve();
     for (let start = 0; start < bytes.length; start += 32768) {
       const b64 = encodeBase64(bytes.subarray(start, start + 32768));
@@ -422,12 +526,14 @@ export const App: React.FC = () => {
   );
 
   const handlePaneResize = useCallback((sessionId: string, cols: number, rows: number) => {
+    const sizeKey = `${cols}x${rows}`;
     setSessions((prev) => {
       const cur = prev[sessionId];
       if (!cur || (cur.cols === cols && cur.rows === rows)) return prev;
       return { ...prev, [sessionId]: { ...cur, cols, rows } };
     });
-    if (sessionsRef.current[sessionId]?.state === 'connected') {
+    if (sessionsRef.current[sessionId]?.state === 'connected' && lastSizeRef.current.get(sessionId) !== sizeKey) {
+      lastSizeRef.current.set(sessionId, sizeKey);
       void getApi().Resize(sessionId, cols, rows).catch(() => {});
     }
   }, []);
@@ -441,8 +547,14 @@ export const App: React.FC = () => {
   }, []);
 
   const closeSessionBackend = useCallback((sessionId: string) => {
+    const ws = wsMapRef.current.get(sessionId);
+    if (ws) {
+      ws.close();
+      wsMapRef.current.delete(sessionId);
+    }
     void getApi().Disconnect(sessionId).catch(() => {});
     writeChainsRef.current.delete(sessionId);
+    lastSizeRef.current.delete(sessionId);
     setVerifyQueue((q) => q.filter((r) => r.id !== sessionId));
     setChallengeQueue((q) => q.filter((r) => r.id !== sessionId));
     setSessions((prev) => {
@@ -718,6 +830,13 @@ export const App: React.FC = () => {
     toast(`已删除主机「${p.name}」`);
   };
 
+  const handleBatchDeleteHosts = async (ids: string[]) => {
+    if (!ids.length) return;
+    await getApi().DeleteProfiles(ids);
+    await reloadData();
+    toast(`已批量删除 ${ids.length} 台主机`);
+  };
+
   const handleSaveProfileTunnels = async (p: Profile, tunnels: TunnelRule[]) => {
     await getApi().SaveProfile({ ...p, tunnels });
     await reloadData();
@@ -774,6 +893,7 @@ export const App: React.FC = () => {
             toast(`已复制「${p.name}」`);
           }}
           onDeleteHost={(p) => setConfirmDelete(p)}
+          onBatchDeleteHosts={handleBatchDeleteHosts}
           onTogglePin={async (p) => {
             await getApi().SaveProfile({ ...p, pinned: !p.pinned });
             await reloadData();
@@ -924,6 +1044,7 @@ export const App: React.FC = () => {
 
             {drawer === 'ai' && (
               <AIDrawer
+                configVersion={aiConfigVersion}
                 activeSessionId={activeSession?.state === 'connected' ? activeSession.id : undefined}
                 hasActiveSession={activeSession?.state === 'connected'}
                 osHint={activeSession ? statsBySession[activeSession.id]?.os : undefined}
@@ -1012,7 +1133,11 @@ export const App: React.FC = () => {
           activeSessionId={activeSession?.state === 'connected' ? activeSession.id : undefined}
           onUpdateSettings={updateSettings}
           onAgentStatusChanged={setAgentStatus}
-          onClose={() => setSettingsModal({ open: false, tab: 'appearance' })}
+          onOpenImportSSH={() => setImportOpen(true)}
+          onClose={() => {
+            setSettingsModal({ open: false, tab: 'appearance' });
+            setAiConfigVersion((v) => v + 1);
+          }}
           onProfilesImported={reloadData}
           onToast={toast}
         />

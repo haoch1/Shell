@@ -454,3 +454,37 @@ func DeleteProfile(id string) error {
 		return nil
 	})
 }
+
+// DeleteProfiles removes multiple host profiles and their DPAPI secrets in one atomic lock.
+func DeleteProfiles(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	drop := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			drop[id] = true
+		}
+	}
+	if len(drop) == 0 {
+		return nil
+	}
+	return withStore(func(dir string) error {
+		list, err := readProfiles(dir)
+		if err != nil {
+			return err
+		}
+		next := make([]Profile, 0, len(list))
+		for _, item := range list {
+			if drop[item.ID] {
+				_ = removeSecret(dir, item.ID)
+				continue
+			}
+			if drop[item.JumpHostID] {
+				item.JumpHostID = ""
+			}
+			next = append(next, item)
+		}
+		return writeProfiles(dir, next)
+	})
+}

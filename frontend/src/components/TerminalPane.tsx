@@ -45,7 +45,7 @@ interface TerminalPaneProps {
   onToast: (msg: string) => void;
 }
 
-export const TerminalPane: React.FC<TerminalPaneProps> = ({
+export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   paneId,
   session,
   settings,
@@ -73,6 +73,8 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
   const zoomRef = useRef(onFontZoom);
   const toastRef = useRef(onToast);
   const searchOpenRef = useRef(onOpenSearch);
+  const reconnectRef = useRef(onReconnect);
+  const stateRef = useRef(session.state);
   inputRef.current = onInput;
   resizeRef.current = onResize;
   cwdRef.current = onCwdChange;
@@ -80,6 +82,8 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
   zoomRef.current = onFontZoom;
   toastRef.current = onToast;
   searchOpenRef.current = onOpenSearch;
+  reconnectRef.current = onReconnect;
+  stateRef.current = session.state;
 
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
 
@@ -129,6 +133,8 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
     }
 
     let resizeTimer: number | null = null;
+    let lastCols = 0;
+    let lastRows = 0;
     const doFit = () => {
       if (container.clientWidth < 40 || container.clientHeight < 30) return;
       try {
@@ -143,7 +149,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
       resizeTimer = window.setTimeout(() => {
         resizeTimer = null;
         doFit();
-      }, 40);
+      }, 80);
     };
 
     const observer = new ResizeObserver(debouncedFit);
@@ -151,7 +157,12 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
 
     const dataDisp = term.onData((d) => inputRef.current(d));
     const binDisp = term.onBinary((d) => inputRef.current(Uint8Array.from(d, (c) => c.charCodeAt(0))));
-    const resizeDisp = term.onResize(({ cols, rows }) => resizeRef.current(cols, rows));
+    const resizeDisp = term.onResize(({ cols, rows }) => {
+      if (cols === lastCols && rows === lastRows) return;
+      lastCols = cols;
+      lastRows = rows;
+      resizeRef.current(cols, rows);
+    });
     // Track OSC 7 working directory updates emitted by modern shells (bash/zsh/fish) so SFTP opens directly in CWD
     const osc7Disp = term.parser.registerOscHandler(7, (data) => {
       try {
@@ -175,6 +186,11 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
 
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
+      if (stateRef.current === 'closed' && e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        reconnectRef.current();
+        return false;
+      }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyC') {
         if (term.hasSelection()) {
           void copyToClipboard(term.getSelection());
@@ -480,4 +496,4 @@ export const TerminalPane: React.FC<TerminalPaneProps> = ({
       )}
     </div>
   );
-};
+});

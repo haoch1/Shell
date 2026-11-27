@@ -134,16 +134,17 @@ jobs:
           面向 Windows 的轻量原生 SSH / SFTP 桌面客户端（Go 1.26 + Wails v2 + xterm.js v6）。
 
           ### 核心特性
-          - **SSH 引擎与网络传输**：支持密码 / 私钥 / Windows OpenSSH Agent / 交互式 2FA、多级跳板机（`ProxyJump`）、`ForwardAgent`、按主机配置的 SOCKS5 / HTTP `CONNECT` 代理、KeepAlive 与 RTT 延迟监控。
-          - **终端工作区与系统托盘**：支持多标签页、递归水平/垂直分屏、广播输入、`Ctrl+K` 全局命令面板、OSC 7 目录追踪；内置纯 Go Windows 原生系统托盘（关闭最小化至托盘、快速连接子菜单、活跃会话管理与 MCP 开关）。
+          - **低延迟 SSH 引擎与网络传输**：采用本机回环二进制 WebSocket 终端数据流、零休眠状态采集、TCP_NODELAY 与快速回退拨号；支持密码 / 私钥 / Windows OpenSSH Agent / 交互式 2FA、多级跳板机（`ProxyJump`）、`ForwardAgent`、按主机配置的 SOCKS5 / HTTP `CONNECT` 代理、KeepAlive 与 RTT 延迟监控。
+          - **终端工作区与系统托盘**：支持多标签页、递归水平/垂直分屏、广播输入、`Ctrl+K` 全局命令面板、OSC 7 目录追踪、Linux 发行版图标自动识别、主机与指纹批量删除、窗口尺寸与最大化状态持久化；内置纯 Go Windows 原生系统托盘（关闭最小化至托盘与精简右键菜单）。
           - **SFTP、端口转发与状态监控**：侧边 SFTP 文件管理（拖放上传、进度队列、`chmod`、在线编辑）、`-L / -R / -D` 端口转发隧道、轻量 Linux 实时监控、Ed25519 / RSA-4096 密钥生成及 `AES-256-GCM` 加密备份。
-          - **通用配置导入**：自动识别 Xshell、MobaXterm、Termius、Tabby、Electerm、SecureCRT、PuTTY/KiTTY、WindTerm、FinalShell、OpenSSH `config` 及 CSV/JSON/纯文本，保留原有分组。
-          - **AI 助手与 MCP 集成**：支持自定义 OpenAI 兼容 API（写命令 / 查报错 / 自动运维）及内置 MCP `2025-03-26` 本地桥接服务（Streamable HTTP + `Shell.exe --mcp` stdio），配套结构化命令权限引擎、自动敏感信息脱敏、交互审批弹窗与 JSONL 审计日志。
+          - **通用配置导入**：自动识别 Netcatty、Xshell、MobaXterm、Termius、Tabby、Electerm、SecureCRT、PuTTY/KiTTY、WindTerm、FinalShell、OpenSSH `config` 及 CSV/JSON/纯文本，保留原有分组并加密保存导入凭据。
+          - **AI 助手与 MCP 集成**：支持自定义 OpenAI 兼容 API 与本地 AI CLI（Claude Code / Codex CLI / Gemini CLI / 自定义命令），提供写命令 / 查报错 / 自动运维；内置 MCP `2025-03-26` 本地桥接服务（Streamable HTTP + `Shell.exe --mcp` stdio）与主流 CLI 一键接入命令，配套结构化命令权限引擎、自动敏感信息脱敏、交互审批弹窗与 JSONL 审计日志。
 
-          ### 发行产物
+          ### 发行产物与升级说明
           - `Shell-Windows-x64.exe`：单文件便携版可执行程序（无需安装）
-          - `Shell-Windows-x64.zip`：便携压缩包（含可执行文件、说明文档与开源许可）
+          - `Shell-Windows-x64.zip`：便携压缩包（仅含可执行文件、说明文档与开源许可）
           - `SHA256SUMS.txt`：SHA-256 校验值文件
+          - **覆盖升级**：所有用户配置、主机列表与加密凭据独立存放在 `%LOCALAPPDATA%\Shell`，升级时先在托盘右键选择「退出 Shell」，再直接替换 `.exe` 或解压覆盖即可保留全部数据。
           '@
           $notes = $notes.Replace('__TAG__', $tag)
           $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'

@@ -68,6 +68,23 @@ func RemoveKnownHost(line int) error {
 	if line < 1 {
 		return errors.New("无效的主机记录行号")
 	}
+	return RemoveKnownHosts([]int{line})
+}
+
+// RemoveKnownHosts removes multiple known_hosts records by 1-based line numbers atomically.
+func RemoveKnownHosts(targetLines []int) error {
+	if len(targetLines) == 0 {
+		return nil
+	}
+	drop := make(map[int]bool, len(targetLines))
+	for _, l := range targetLines {
+		if l >= 1 {
+			drop[l] = true
+		}
+	}
+	if len(drop) == 0 {
+		return nil
+	}
 	return withStore(func(dir string) error {
 		p := filepath.Join(dir, "known_hosts")
 		data, err := readLimited(p, 8<<20)
@@ -80,7 +97,7 @@ func RemoveKnownHost(line int) error {
 		lines := strings.Split(string(data), "\n")
 		var kept []string
 		for idx, l := range lines {
-			if idx+1 == line {
+			if drop[idx+1] {
 				continue
 			}
 			if idx == len(lines)-1 && l == "" {
@@ -93,6 +110,17 @@ func RemoveKnownHost(line int) error {
 			next = []byte(strings.Join(kept, "\n") + "\n")
 		}
 		return writeAtomic(p, next)
+	})
+}
+
+// ClearKnownHosts removes all pinned host key entries atomically.
+func ClearKnownHosts() error {
+	return withStore(func(dir string) error {
+		p := filepath.Join(dir, "known_hosts")
+		if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return writeAtomic(p, nil)
 	})
 }
 

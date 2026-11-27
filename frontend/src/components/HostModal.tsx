@@ -323,24 +323,25 @@ export const HostModal: React.FC<HostModalProps> = ({
               </div>
 
               <div className="field-group">
-                <span className="field-label">服务器图标</span>
+                <span className="field-label">系统图标</span>
                 <div className="icon-picker-row">
                   {HOST_ICONS.map((item) => {
                     const active = icon === item.id;
                     const glyph = item.id || inferHostIcon({ name, host, group });
+                    const tint = item.id ? item.brandColor : profileColorHex(color);
                     return (
                       <button
                         key={item.id || 'auto'}
                         type="button"
                         className={`icon-choice-btn ${active ? 'selected' : ''}`}
-                        style={{ '--host-accent': profileColorHex(color) } as React.CSSProperties}
+                        style={{ '--host-accent': tint } as React.CSSProperties}
                         title={item.label}
                         onClick={() => setIcon(item.id)}
                       >
                         {item.id === '' ? (
                           <span style={{ fontSize: 10.5, fontWeight: 600 }}>自动</span>
                         ) : (
-                          renderHostGlyph(glyph, 14)
+                          renderHostGlyph(glyph, 15)
                         )}
                       </button>
                     );
@@ -348,7 +349,7 @@ export const HostModal: React.FC<HostModalProps> = ({
                 </div>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
                 <div className="field-group">
                   <span className="field-label">标记颜色</span>
                   <div className="color-picker-row">
@@ -364,7 +365,7 @@ export const HostModal: React.FC<HostModalProps> = ({
                     ))}
                   </div>
                 </div>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, cursor: 'pointer', paddingTop: 14 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, cursor: 'pointer', height: 22 }}>
                   <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
                   置顶显示
                 </label>
@@ -521,10 +522,10 @@ export const HostModal: React.FC<HostModalProps> = ({
               删除
             </button>
           )}
-          <button id="saveOnly" type="button" className="btn" disabled={saving} onClick={() => void submit(false)}>
+          <button id="saveOnly" type="button" className="btn" style={{ minWidth: 74 }} disabled={saving} onClick={() => void submit(false)}>
             仅保存
           </button>
-          <button id="connect" type="submit" className="btn btn-primary" disabled={saving}>
+          <button id="connect" type="submit" className="btn btn-primary" style={{ minWidth: 96 }} disabled={saving}>
             {saving ? '处理中…' : '保存并连接'}
           </button>
         </div>

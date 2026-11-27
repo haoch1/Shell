@@ -67,6 +67,13 @@ type Session struct {
 	latencyMs    atomic.Int64
 	ringMu       sync.Mutex
 	ringBuf      []byte
+	statsMu      sync.Mutex
+	prevCPU      [7]float64
+	hasPrevCPU   bool
+	staticHost   string
+	staticOS     string
+	staticKernel string
+	staticCores  int
 }
 
 type outputWriter struct {
@@ -194,12 +201,21 @@ func loginMethods(ctx context.Context, cfg Config, ask ssh.KeyboardInteractiveCh
 		methods, release = append(methods, method), closeAuth
 	}
 	if ask != nil {
+		var autoUsed atomic.Bool
 		methods = append(methods, ssh.KeyboardInteractive(func(name, text string, questions []string, echo []bool) ([]string, error) {
 			if len(questions) != len(echo) || len(questions) > 64 {
 				return nil, errors.New("服务器返回了无效的交互认证问题")
 			}
 			if err := ctx.Err(); err != nil {
 				return nil, err
+			}
+			// Auto-satisfy single non-echo PAM password prompt once when the user already supplied a password.
+			if cfg.Password != "" && len(questions) == 1 && !echo[0] && !autoUsed.Load() {
+				qLower := strings.ToLower(questions[0])
+				if strings.Contains(qLower, "pass") && !strings.Contains(qLower, "code") && !strings.Contains(qLower, "otp") && !strings.Contains(qLower, "token") {
+					autoUsed.Store(true)
+					return []string{cfg.Password}, nil
+				}
 			}
 			type reply struct {
 				answers []string
@@ -332,6 +348,7 @@ func dialSSHClient(ctx, setup context.Context, cfg Config, cb Callbacks, parent 
 		User:            user,
 		Auth:            methods,
 		HostKeyCallback: callback,
+		Timeout:         15 * time.Second,
 	})
 	if err != nil {
 		stop()
@@ -418,8 +435,8 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 
 	if err := pty.RequestPty("xterm-256color", cfg.Rows, cfg.Cols, ssh.TerminalModes{
 		ssh.ECHO:          1,
-		ssh.TTY_OP_ISPEED: 14400,
-		ssh.TTY_OP_OSPEED: 14400,
+		ssh.TTY_OP_ISPEED: 38400,
+		ssh.TTY_OP_OSPEED: 38400,
 	}); err != nil {
 		if agentCleanup != nil {
 			agentCleanup()

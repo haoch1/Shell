@@ -21,9 +21,13 @@ import (
 )
 
 type AISettings struct {
-	Endpoint string `json:"endpoint"`
-	Model    string `json:"model"`
-	APIKey   string `json:"apiKey"`
+	Mode       string `json:"mode,omitempty"` // "" / "api" or "cli"
+	Endpoint   string `json:"endpoint"`
+	Model      string `json:"model"`
+	APIKey     string `json:"apiKey"`
+	CLICommand string `json:"cliCommand,omitempty"`
+	CLIArgs    string `json:"cliArgs,omitempty"`
+	CLIModel   string `json:"cliModel,omitempty"`
 }
 
 // AIResult is a structured command suggestion with safety classification.
@@ -70,9 +74,17 @@ func completionURL(s AISettings) (string, error) {
 }
 
 func SaveAI(s AISettings) error {
+	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
 	s.Endpoint, s.Model, s.APIKey = strings.TrimSpace(s.Endpoint), strings.TrimSpace(s.Model), strings.TrimSpace(s.APIKey)
-	if _, err := completionURL(s); err != nil {
-		return err
+	s.CLICommand, s.CLIArgs, s.CLIModel = strings.TrimSpace(s.CLICommand), strings.TrimSpace(s.CLIArgs), strings.TrimSpace(s.CLIModel)
+	if s.IsCLI() {
+		if err := validateCLISettings(s); err != nil {
+			return err
+		}
+	} else {
+		if _, err := completionURL(s); err != nil {
+			return err
+		}
 	}
 	return withStore(func(dir string) error { return writeProtected(filepath.Join(dir, "ai.dpapi"), s) })
 }
@@ -150,8 +162,20 @@ func Suggest(ctx context.Context, request string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	const sys = "你是 SSH 终端的命令助手。按用户指定的系统建议一条命令，未指定时使用 POSIX shell。仅输出一条单行命令，不附加解释、Markdown 或控制字符。"
+	if s.IsCLI() {
+		raw, err := runLocalAICLI(ctx, s, sys, request, nil)
+		if err != nil {
+			return "", err
+		}
+		res, err := parseStructuredResult(raw)
+		if err != nil {
+			return "", err
+		}
+		return res.Command, nil
+	}
 	resp, err := doChatRequest(ctx, s, []message{
-		{"system", "你是 SSH 终端的命令助手。按用户指定的系统建议一条命令，未指定时使用 POSIX shell。仅输出一条单行命令，不附加解释、Markdown 或控制字符。"},
+		{"system", sys},
 		{"user", request},
 	}, false)
 	if err != nil {
@@ -269,6 +293,13 @@ func SuggestStructured(ctx context.Context, request, osHint string, onDelta func
 	if osHint != "" {
 		sys += " 目标系统参考：" + osHint
 	}
+	if s.IsCLI() {
+		raw, err := runLocalAICLI(ctx, s, sys, request, onDelta)
+		if err != nil {
+			return AIResult{}, err
+		}
+		return parseStructuredResult(raw)
+	}
 	resp, err := doChatRequest(ctx, s, []message{
 		{"system", sys},
 		{"user", request},
@@ -369,8 +400,12 @@ func ExplainStream(ctx context.Context, selectedText, question string, onDelta f
 			prompt = "请分析以下终端输出/错误，给出原因和解决命令：\n" + selectedText
 		}
 	}
+	const sys = "你是资深 Linux/SSH 运维工程师。用简洁清晰的中文解释终端输出或报错原因，并给出具体可执行的排查或修复命令。"
+	if s.IsCLI() {
+		return runLocalAICLI(ctx, s, sys, prompt, onDelta)
+	}
 	resp, err := doChatRequest(ctx, s, []message{
-		{"system", "你是资深 Linux/SSH 运维工程师。用简洁清晰的中文解释终端输出或报错原因，并给出具体可执行的排查或修复命令。"},
+		{"system", sys},
 		{"user", prompt},
 	}, true)
 	if err != nil {
@@ -380,9 +415,17 @@ func ExplainStream(ctx context.Context, selectedText, question string, onDelta f
 	return readStreamOrJSON(ctx, resp, onDelta)
 }
 
-// TestAI verifies connectivity to the configured Chat Completions endpoint.
+// TestAI verifies connectivity to the configured Chat Completions endpoint or local AI CLI.
 func TestAI(ctx context.Context, s AISettings) error {
+	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
 	s.Endpoint, s.Model, s.APIKey = strings.TrimSpace(s.Endpoint), strings.TrimSpace(s.Model), strings.TrimSpace(s.APIKey)
+	s.CLICommand, s.CLIArgs, s.CLIModel = strings.TrimSpace(s.CLICommand), strings.TrimSpace(s.CLIArgs), strings.TrimSpace(s.CLIModel)
+	if s.IsCLI() {
+		testCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		_, err := runLocalAICLI(testCtx, s, "Reply with OK only.", "Reply with OK", nil)
+		return err
+	}
 	testCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	resp, err := doChatRequest(testCtx, s, []message{

@@ -12,7 +12,7 @@ export interface TerminalThemePreset {
 export const TERMINAL_THEMES: TerminalThemePreset[] = [
   {
     id: 'apple-dark',
-    name: 'Apple Obsidian',
+    name: 'Obsidian Dark',
     isDark: true,
     preview: ['#111214', '#F2F2F7', '#0A84FF', '#30D158'],
     theme: {
@@ -41,7 +41,7 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   },
   {
     id: 'apple-light',
-    name: 'Apple Pure Light',
+    name: 'Pure Light',
     isDark: false,
     preview: ['#FFFFFF', '#1D1D1F', '#0071E3', '#248A3D'],
     theme: {

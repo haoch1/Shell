@@ -96,4 +96,27 @@ func TestUniversalSSHImporters(t *testing.T) {
 	if err != nil || len(saved) != 1 || saved[0].Group != "Lab" {
 		t.Fatalf("ImportParsedHosts did not preserve original group: %+v, %v", saved, err)
 	}
+
+	// 9. Netcatty CSV (with Hostname/IP, Groups, Tags, Password, Proxy, ProxyJump + header-only empty file)
+	netcattyHeader := "\xef\xbb\xbfGroups,Label,Tags,Notes,Hostname/IP,Protocol,Port,Username,Password,KeyPath,Passphrase,Proxy,ProxyJump,LocalShell,SshInputCompatibility\r\n"
+	resEmpty, err := ParseImportBytes("hosts_export_2026-11-27.csv", []byte(netcattyHeader))
+	if err != nil || resEmpty.DetectedFormat != "Netcatty (.csv)" || len(resEmpty.Warnings) == 0 {
+		t.Fatalf("Netcatty header-only CSV should report Netcatty format with clear warning: %+v, %v", resEmpty, err)
+	}
+	netcattyFull := netcattyHeader + "Cloud/SG,SG - AWS,\"prod;aws\",Tokyo Edge,56.10.113.238,ssh,58222,root,s3cr3tPass,,,socks5://127.0.0.1:7890,,,\r\n"
+	resNet, err := ParseImportBytes("hosts_export_2026-11-27.csv", []byte(netcattyFull))
+	if err != nil || resNet.DetectedFormat != "Netcatty (.csv)" || len(resNet.Hosts) != 1 {
+		t.Fatalf("Netcatty full CSV failed: %+v, %v", resNet, err)
+	}
+	h := resNet.Hosts[0]
+	if h.Name != "SG - AWS" || h.Host != "56.10.113.238" || h.Port != 58222 || h.Group != "Cloud/SG" || h.Password != "s3cr3tPass" || h.ProxyType != "socks5" || h.ProxyPort != 7890 || len(h.Tags) != 2 {
+		t.Fatalf("Netcatty parsed fields mismatch: %+v", h)
+	}
+	savedNet, err := ImportParsedHosts(resNet.Hosts, "")
+	if err != nil || len(savedNet) != 1 {
+		t.Fatalf("Netcatty commit failed: %v", err)
+	}
+	if sec, err := LoadSecret(savedNet[0]); err != nil || sec != "s3cr3tPass" {
+		t.Fatalf("Expected Netcatty password saved to DPAPI, got %q err=%v", sec, err)
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/haoch1/Shell/internal/agentbridge"
 	"github.com/haoch1/Shell/internal/local"
@@ -59,13 +60,28 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	st, err := local.LoadSettings()
+	if err != nil {
+		st = local.DefaultSettings()
+	}
+	startState := options.Normal
+	if st.WindowMaximised {
+		startState = options.Maximised
+	}
+
+	wvDataDir := ""
+	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+		wvDataDir = filepath.Join(cacheDir, "Shell", "WebView2")
+	}
+
 	app := newApp()
 	err = wails.Run(&options.App{
 		Title:            "Shell",
-		Width:            1280,
-		Height:           820,
+		Width:            st.WindowWidth,
+		Height:           st.WindowHeight,
 		MinWidth:         880,
 		MinHeight:        560,
+		WindowStartState: startState,
 		Frameless:        true,
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 255},
 		AssetServer:      &assetserver.Options{Assets: assets},
@@ -78,7 +94,8 @@ func main() {
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
-			ResizeDebounceMS:     16,
+			ResizeDebounceMS:     4,
+			WebviewUserDataPath:  wvDataDir,
 		},
 		OnStartup:     app.startup,
 		OnBeforeClose: app.beforeClose,

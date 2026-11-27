@@ -20,6 +20,7 @@ import type { AgentStepEvent, AIConfigView, AIResult } from '../types/shell';
 import { copyToClipboard, errorMessage, getApi, onDesktopEvent } from '../lib/bridge';
 
 interface AIDrawerProps {
+  configVersion?: number;
   activeSessionId?: string;
   hasActiveSession: boolean;
   osHint?: string;
@@ -55,6 +56,7 @@ interface HistoryItem {
 }
 
 export const AIDrawer: React.FC<AIDrawerProps> = ({
+  configVersion = 0,
   activeSessionId,
   hasActiveSession,
   osHint,
@@ -82,7 +84,7 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
       .AIConfig()
       .then(setConfig)
       .catch(() => {});
-  }, []);
+  }, [configVersion]);
 
   useEffect(() => {
     if (initialExplainText) {
@@ -105,6 +107,12 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
     };
   }, []);
 
+  const aiReady = Boolean(config?.ready || config?.model || (config?.mode === 'cli' && config?.cliCommand));
+  const aiDisplayLabel =
+    config?.mode === 'cli'
+      ? `CLI · ${config.cliCommand || '未设置'}${config.cliModel ? ` (${config.cliModel})` : ''}`
+      : config?.model || '未配置模型';
+
   const run = async (overridePrompt?: string) => {
     const q = (overridePrompt ?? prompt).trim();
     if (running) {
@@ -113,7 +121,7 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
     }
     if ((mode === 'command' || mode === 'agent') && !q) return;
     if (mode === 'explain' && !q && !explainContext.trim()) return;
-    if (config && !config.model) {
+    if (config && !aiReady) {
       onOpenAISettings();
       return;
     }
@@ -219,12 +227,12 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
           </button>
         </div>
 
-        {config && !config.model && (
+        {config && !aiReady && (
           <div
             className="soft-card"
             style={{ padding: '10px 12px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
           >
-            <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>先配置一个模型即可使用</span>
+            <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>先配置 API 或本地 CLI 即可使用</span>
             <button type="button" className="btn btn-primary btn-sm" onClick={onOpenAISettings}>
               去配置
             </button>
@@ -268,8 +276,8 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
             }}
           />
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 11, color: 'var(--ink-tertiary)' }}>
-              {config?.model || '未配置模型'}
+            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {aiDisplayLabel}
             </span>
             <button
               id="aiSubmitBtn"
@@ -311,7 +319,7 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
                       style={{ textAlign: 'left', cursor: 'pointer', padding: '8px 11px', fontSize: 12 }}
                       onClick={() => {
                         setPrompt(q);
-                        if (config?.model && hasActiveSession) void run(q);
+                        if (aiReady && hasActiveSession) void run(q);
                       }}
                     >
                       {q}
@@ -405,7 +413,7 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
                       style={{ textAlign: 'left', cursor: 'pointer', padding: '8px 11px', fontSize: 12 }}
                       onClick={() => {
                         setPrompt(q);
-                        if (config?.model) void run(q);
+                        if (aiReady) void run(q);
                       }}
                     >
                       {q}

@@ -125,7 +125,7 @@ func (a *App) ClearAuditLogs() error {
 
 func (a *App) PickAndParseImportFiles() (local.ImportPreviewResult, error) {
 	paths, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择要导入的 SSH 配置文件（支持 Xshell / MobaXterm / Termius / Tabby / Electerm / FinalShell / SecureCRT / PuTTY / WindTerm / OpenSSH）",
+		Title: "选择 SSH 配置文件",
 		Filters: []runtime.FileFilter{
 			{
 				DisplayName: "所有支持的 SSH 配置 (*.xsh;*.xts;*.zip;*.mxtsessions;*.json;*.sessions;*.csv;*.xml;*.ini;*.reg;*.yaml;*.yml;config)",

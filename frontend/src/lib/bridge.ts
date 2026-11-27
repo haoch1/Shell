@@ -1,11 +1,13 @@
 import type {
   AgentConfig,
   AgentStatusView,
+  AIConfigInput,
   AIConfigView,
   AIResult,
   AppInfoView,
   AppSettings,
   AuditEntry,
+  DetectedAICLI,
   ImportedHost,
   ImportPreviewResult,
   ImportSummary,
@@ -25,10 +27,13 @@ import type {
 
 interface GoAppBindings {
   AppInfo(): Promise<AppInfoView>;
+  OpenDataDir(): Promise<void>;
+  TermWSURL(sessionId: string): Promise<string>;
   Profiles(): Promise<Profile[]>;
   SaveProfile(p: Profile): Promise<Profile>;
   DuplicateProfile(id: string): Promise<Profile>;
   DeleteProfile(id: string): Promise<void>;
+  DeleteProfiles(ids: string[]): Promise<void>;
   ForgetSecret(id: string): Promise<void>;
   PickKey(): Promise<string>;
 
@@ -75,6 +80,8 @@ interface GoAppBindings {
 
   KnownHosts(): Promise<KnownHostEntry[]>;
   RemoveKnownHost(line: number): Promise<void>;
+  RemoveKnownHosts(lines: number[]): Promise<void>;
+  ClearKnownHosts(): Promise<void>;
 
   LocalKeys(): Promise<LocalKeyInfo[]>;
   GenerateSSHKey(name: string, algo: string, passphrase: string, comment: string): Promise<LocalKeyInfo>;
@@ -83,6 +90,9 @@ interface GoAppBindings {
   ImportBackup(passphrase: string): Promise<ImportSummary>;
 
   AIConfig(): Promise<AIConfigView>;
+  DetectAICLIs(): Promise<DetectedAICLI[]>;
+  SaveAIConfig(cfg: AIConfigInput): Promise<void>;
+  TestAIConfig(cfg: AIConfigInput): Promise<void>;
   ConfigureAI(endpoint: string, model: string, key: string, keep: boolean): Promise<void>;
   TestAI(endpoint: string, model: string, key: string, keep: boolean): Promise<void>;
   CancelAI(): Promise<void>;

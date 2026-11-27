@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  CheckSquare,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -28,12 +29,13 @@ interface SidebarProps {
   onEditHost: (profile: Profile) => void;
   onDuplicateHost: (profile: Profile) => void;
   onDeleteHost: (profile: Profile) => void;
+  onBatchDeleteHosts: (ids: string[]) => Promise<void>;
   onTogglePin: (profile: Profile) => void;
   onOpenImportSSH: () => void;
   onOpenSettings: (tab?: 'appearance' | 'ssh' | 'keys' | 'ai' | 'agent' | 'backup' | 'about') => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({
+export const Sidebar: React.FC<SidebarProps> = React.memo(({
   open,
   profiles,
   sessions,
@@ -44,6 +46,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onEditHost,
   onDuplicateHost,
   onDeleteHost,
+  onBatchDeleteHosts,
   onTogglePin,
   onOpenImportSSH,
   onOpenSettings,
@@ -51,6 +54,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [query, setQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; profile: Profile } | null>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
+  const [deletingBatch, setDeletingBatch] = useState(false);
 
   const liveProfileIds = useMemo(() => {
     const set = new Set<string>();
@@ -102,6 +108,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const toggleGroup = (key: string) =>
     setCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
 
+  const chosenIds = useMemo(
+    () => filtered.filter((p) => selectedIds[p.id]).map((p) => p.id),
+    [filtered, selectedIds],
+  );
+
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds({});
+  };
+
+  const toggleSelectAll = () => {
+    if (chosenIds.length === filtered.length && filtered.length > 0) {
+      setSelectedIds({});
+    } else {
+      const next: Record<string, boolean> = {};
+      for (const p of filtered) next[p.id] = true;
+      setSelectedIds(next);
+    }
+  };
+
+  const commitBatchDelete = async () => {
+    if (!chosenIds.length || deletingBatch) return;
+    setDeletingBatch(true);
+    try {
+      await onBatchDeleteHosts(chosenIds);
+      exitSelectMode();
+    } finally {
+      setDeletingBatch(false);
+    }
+  };
+
   return (
     <aside className={`sidebar ${open ? '' : 'collapsed'}`} aria-label="主机侧栏">
       <div className="sidebar-top">
@@ -121,7 +158,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setQuery('');
                 }
               }
-              if (e.key === 'Escape') setQuery('');
+              if (e.key === 'Escape') {
+                if (selectMode) exitSelectMode();
+                else setQuery('');
+              }
             }}
           />
           <span className="kbd-hint">⌃K</span>
@@ -152,7 +192,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="host-meta">
               <div className="host-name">快速连接</div>
               <div className="host-sub mono">
-                {quickTarget.user}@{quickTarget.host}:{quickTarget.port}
+                {quickTarget.host}
+                {quickTarget.port !== 22 ? `:${quickTarget.port}` : ''}
               </div>
             </div>
           </div>
@@ -165,11 +206,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {profiles.length === 0 ? '暂无保存的主机' : '未找到匹配主机'}
             </div>
             {profiles.length === 0 && (
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={onOpenImportSSH}
-              >
+              <button type="button" className="btn btn-sm" onClick={onOpenImportSSH}>
                 <Download size={13} />
                 导入主机配置
               </button>
@@ -195,40 +232,57 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 sec.items.map((p) => {
                   const isActive = activeProfileId === p.id;
                   const isLive = liveProfileIds.has(p.id);
+                  const checked = Boolean(selectedIds[p.id]);
                   return (
                     <div
                       key={p.id}
                       className={`host-row ${isActive ? 'active' : ''}`}
-                      onClick={() => onConnect(p)}
+                      onClick={() => {
+                        if (selectMode) {
+                          setSelectedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }));
+                        } else {
+                          onConnect(p);
+                        }
+                      }}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         setCtxMenu({ x: e.clientX, y: e.clientY, profile: p });
                       }}
                       title={`${p.user}@${p.host}:${p.port}${p.notes ? '\n' + p.notes : ''}`}
                     >
+                      {selectMode && (
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {}}
+                          style={{ margin: 0, flexShrink: 0, cursor: 'pointer' }}
+                        />
+                      )}
                       <HostIcon profile={p} size="md" isLive={isLive} />
                       <div className="host-meta">
                         <div className="host-name-line">
                           <span className="host-name">{p.name}</span>
                         </div>
                         <div className="host-sub mono">
-                          {p.user}@{p.host}
+                          {p.host}
                           {p.port !== 22 ? `:${p.port}` : ''}
                         </div>
                       </div>
-                      <div className="host-actions">
-                        <button
-                          type="button"
-                          className="host-action-btn"
-                          title="编辑主机"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onEditHost(p);
-                          }}
-                        >
-                          <Pencil size={12} strokeWidth={1.8} />
-                        </button>
-                      </div>
+                      {!selectMode && (
+                        <div className="host-actions">
+                          <button
+                            type="button"
+                            className="host-action-btn"
+                            title="编辑主机"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onEditHost(p);
+                            }}
+                          >
+                            <Pencil size={12} strokeWidth={1.8} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -237,40 +291,73 @@ export const Sidebar: React.FC<SidebarProps> = ({
         })}
       </div>
 
-      <div className="sidebar-footer">
-        <button
-          id="importSshBtn"
-          type="button"
-          className="icon-btn"
-          title="从 Xshell / MobaXterm / Termius / OpenSSH 等导入配置"
-          onClick={onOpenImportSSH}
-        >
-          <Download size={14} strokeWidth={1.7} />
-          <span>导入</span>
-        </button>
-        <div style={{ display: 'flex', gap: 2 }}>
-          <button
-            id="keysBtn"
-            type="button"
-            className="icon-btn"
-            title="SSH 密钥管理"
-            aria-label="密钥管理"
-            onClick={() => onOpenSettings('keys')}
-          >
-            <KeyRound size={14} strokeWidth={1.7} />
+      {selectMode ? (
+        <div className="sidebar-footer batch-bar">
+          <button type="button" className="btn btn-sm btn-ghost" onClick={toggleSelectAll}>
+            {chosenIds.length === filtered.length && filtered.length > 0 ? '取消全选' : '全选'}
           </button>
-          <button
-            id="settingsBtn"
-            type="button"
-            className="icon-btn"
-            title="偏好设置 (Ctrl+,)"
-            aria-label="偏好设置"
-            onClick={() => onOpenSettings('appearance')}
-          >
-            <Settings size={14} strokeWidth={1.7} />
-          </button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              type="button"
+              className="btn btn-sm btn-danger"
+              disabled={!chosenIds.length || deletingBatch}
+              onClick={() => void commitBatchDelete()}
+            >
+              <Trash2 size={12} />
+              删除 ({chosenIds.length})
+            </button>
+            <button type="button" className="btn btn-sm" onClick={exitSelectMode}>
+              完成
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="sidebar-footer">
+          <button
+            id="importSshBtn"
+            type="button"
+            className="icon-btn"
+            title="导入 SSH 配置"
+            onClick={onOpenImportSSH}
+          >
+            <Download size={14} strokeWidth={1.7} />
+            <span>导入</span>
+          </button>
+          <div style={{ display: 'flex', gap: 2 }}>
+            {profiles.length > 0 && (
+              <button
+                type="button"
+                className="icon-btn"
+                title="批量管理主机"
+                aria-label="批量管理"
+                onClick={() => setSelectMode(true)}
+              >
+                <CheckSquare size={14} strokeWidth={1.7} />
+              </button>
+            )}
+            <button
+              id="keysBtn"
+              type="button"
+              className="icon-btn"
+              title="SSH 密钥管理"
+              aria-label="密钥管理"
+              onClick={() => onOpenSettings('keys')}
+            >
+              <KeyRound size={14} strokeWidth={1.7} />
+            </button>
+            <button
+              id="settingsBtn"
+              type="button"
+              className="icon-btn"
+              title="偏好设置 (Ctrl+,)"
+              aria-label="偏好设置"
+              onClick={() => onOpenSettings('appearance')}
+            >
+              <Settings size={14} strokeWidth={1.7} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {ctxMenu && (
         <>
@@ -286,7 +373,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="context-menu"
             style={{
               left: Math.min(ctxMenu.x, window.innerWidth - 190),
-              top: Math.min(ctxMenu.y, window.innerHeight - 210),
+              top: Math.min(ctxMenu.y, window.innerHeight - 240),
             }}
           >
             <button
@@ -333,6 +420,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Copy size={13} />
               复制配置
             </button>
+            <button
+              type="button"
+              className="context-menu-item"
+              onClick={() => {
+                setSelectMode(true);
+                setSelectedIds({ [ctxMenu.profile.id]: true });
+                setCtxMenu(null);
+              }}
+            >
+              <CheckSquare size={13} />
+              批量选择
+            </button>
             <div className="context-menu-sep" />
             <button
               type="button"
@@ -350,4 +449,4 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
     </aside>
   );
-};
+});

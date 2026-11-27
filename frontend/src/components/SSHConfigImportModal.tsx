@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { CheckSquare, Download, FileUp, FolderOpen, ScanSearch, X } from 'lucide-react';
+import { Download, FileUp, FolderOpen, ScanSearch, X } from 'lucide-react';
 import type { ImportedHost } from '../types/shell';
 import { errorMessage, getApi, onDesktopEvent } from '../lib/bridge';
 
@@ -9,16 +9,18 @@ interface SSHConfigImportModalProps {
 }
 
 const SUPPORTED_TOOLS = [
-  'Xshell (.xsh / .xts / .zip)',
-  'MobaXterm (.mxtsessions)',
-  'Termius (.csv / .json)',
-  'Tabby (.yaml)',
-  'Electerm (.json)',
-  'FinalShell (.json)',
-  'SecureCRT (.xml / .ini)',
-  'PuTTY / KiTTY (.reg)',
-  'WindTerm (.sessions)',
+  'Netcatty',
+  'Xshell',
+  'MobaXterm',
+  'Termius',
+  'Tabby',
+  'Electerm',
+  'FinalShell',
+  'SecureCRT',
+  'PuTTY / KiTTY',
+  'WindTerm',
   'OpenSSH config',
+  'CSV / JSON',
 ];
 
 export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onClose, onImported }) => {
@@ -27,7 +29,7 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
   const [selected, setSelected] = useState<Record<number, boolean>>({});
   const [overrideGroup, setOverrideGroup] = useState('');
   const [showGroupOverride, setShowGroupOverride] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
   const [err, setErr] = useState('');
 
@@ -42,7 +44,8 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
   };
 
   const pickFiles = async () => {
-    setLoading(true);
+    if (busy) return;
+    setBusy(true);
     setErr('');
     try {
       const res = await getApi().PickAndParseImportFiles();
@@ -54,31 +57,31 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
     } catch (e) {
       setErr(errorMessage(e));
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
   const scanLocalSSHConfig = async () => {
-    setLoading(true);
+    if (busy) return;
+    setBusy(true);
     setErr('');
     try {
       const res = await getApi().DiscoverLocalSSHConfigImport();
       applyResult(res.detectedFormat, res.hosts || []);
       if (!res.hosts?.length) {
-        setErr('未在 %USERPROFILE%\\.ssh\\config 中发现主机配置，可直接点击上方选择任意工具导出的文件。');
+        setErr('未在 ~/.ssh/config 中发现主机配置');
       }
     } catch (e) {
       setErr(errorMessage(e));
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  // Support dragging config files from Windows Explorer directly onto this modal!
   useEffect(() => {
     return onDesktopEvent<[{ paths: string[] }]>('shell:filedrop', async (payload) => {
       if (!payload?.paths?.length) return;
-      setLoading(true);
+      setBusy(true);
       setErr('');
       try {
         const res = await getApi().ParseImportFilePaths(payload.paths);
@@ -88,7 +91,7 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
       } catch (e) {
         setErr(errorMessage(e));
       } finally {
-        setLoading(false);
+        setBusy(false);
       }
     });
   }, []);
@@ -130,7 +133,7 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
     <div id="importDialog" className="modal-backdrop" onClick={onClose}>
       <div
         className="modal-sheet"
-        style={{ maxWidth: 620, ['--wails-drop-target' as string]: 'drop' }}
+        style={{ width: 'min(600px, calc(100vw - 40px))', maxWidth: 600, ['--wails-drop-target' as string]: 'drop' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
@@ -146,11 +149,12 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
               id="pickImportFilesBtn"
               type="button"
               className="soft-card"
+              disabled={busy}
               style={{
                 cursor: 'pointer',
                 alignItems: 'center',
                 textAlign: 'center',
-                padding: '16px 12px',
+                padding: '18px 12px',
                 borderStyle: 'dashed',
               }}
               onClick={() => void pickFiles()}
@@ -163,11 +167,12 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
               id="scanOpenSSHBtn"
               type="button"
               className="soft-card"
+              disabled={busy}
               style={{
                 cursor: 'pointer',
                 alignItems: 'center',
                 textAlign: 'center',
-                padding: '16px 12px',
+                padding: '18px 12px',
               }}
               onClick={() => void scanLocalSSHConfig()}
             >
@@ -176,8 +181,8 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
             </button>
           </div>
 
-          {hosts.length === 0 && !loading && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+          {hosts.length === 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {SUPPORTED_TOOLS.map((t) => (
                 <span key={t} className="pill-badge neutral" style={{ fontSize: 11 }}>
                   {t}
@@ -187,20 +192,16 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
           )}
 
           {err && <p className="error-text">{err}</p>}
-          {loading && (
-            <div style={{ padding: 20, textAlign: 'center', color: 'var(--ink-tertiary)' }}>正在解析配置文件…</div>
-          )}
 
           {hosts.length > 0 && (
             <>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span className="pill-badge accent">已识别：{detectedFormat}</span>
-                  <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>共发现 {hosts.length} 台主机</span>
+                  <span className="pill-badge accent">{detectedFormat}</span>
+                  <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>共 {hosts.length} 台</span>
                 </div>
                 <div style={{ display: 'flex', gap: 4 }}>
                   <button type="button" className="btn btn-sm btn-ghost" onClick={() => toggleAll(true)}>
-                    <CheckSquare size={12} />
                     全选
                   </button>
                   <button type="button" className="btn btn-sm btn-ghost" onClick={() => toggleAll(false)}>
@@ -209,7 +210,7 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
                 </div>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 270, overflowY: 'auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
                 {hosts.map((h, idx) => (
                   <label
                     key={`${h.host}-${h.port}-${idx}`}
@@ -277,6 +278,7 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
           <button
             type="button"
             className="btn btn-primary"
+            style={{ minWidth: 112 }}
             disabled={!chosen.length || importing}
             onClick={() => void doImport()}
           >

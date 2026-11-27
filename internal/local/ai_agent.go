@@ -69,6 +69,9 @@ func RunAgentLoop(
 	if err != nil {
 		return "", err
 	}
+	if s.IsCLI() {
+		return runCLIAgentLoop(ctx, s, goal, hostLabel, tools, execTool, onStep)
+	}
 	endpoint, err := completionURL(s)
 	if err != nil {
 		return "", err
@@ -230,6 +233,123 @@ func RunAgentLoop(
 				Content:    out,
 			})
 		}
+	}
+	return "已达到单次最大执行步数（8 步），如需继续请补充指令。", nil
+}
+
+func runCLIAgentLoop(
+	ctx context.Context,
+	s AISettings,
+	goal string,
+	hostLabel string,
+	tools []ToolDefinition,
+	execTool ToolExecutor,
+	onStep func(AgentStepEvent),
+) (string, error) {
+	var toolSummary strings.Builder
+	for _, t := range tools {
+		params, _ := json.Marshal(t.Parameters)
+		fmt.Fprintf(&toolSummary, "- %s: %s | params=%s\n", t.Name, t.Description, string(params))
+	}
+	sysPrompt := "你是运行在 Shell SSH 客户端内的资深 Linux/运维 Agent。" +
+		"所有工具输出已自动脱敏（[REDACTED:...]），切勿绕过安全策略。" +
+		"每轮必须且仅输出一个合法 JSON 对象，格式二选一：\n" +
+		"1) 调用工具：{\"thought\":\"简短思路\",\"tool\":\"工具名\",\"arguments\":{...}}\n" +
+		"2) 完成总结：{\"final\":\"简洁清晰的中文总结\"}\n" +
+		"可用工具：\n" + toolSummary.String()
+	if hostLabel != "" {
+		sysPrompt += "\n当前活动会话主机：" + hostLabel
+	}
+
+	var transcript strings.Builder
+	fmt.Fprintf(&transcript, "用户任务：%s\n", goal)
+
+	const maxSteps = 8
+	for step := 1; step <= maxSteps; step++ {
+		if err := ctx.Err(); err != nil {
+			return "", networkError(ctx, err)
+		}
+		raw, err := runLocalAICLI(ctx, s, sysPrompt, transcript.String()+"\n请输出下一步 JSON：", nil)
+		if err != nil {
+			return "", err
+		}
+		var act struct {
+			Thought   string         `json:"thought"`
+			Tool      string         `json:"tool"`
+			Arguments map[string]any `json:"arguments"`
+			Final     string         `json:"final"`
+		}
+		trimmed := strings.TrimSpace(raw)
+		parsedOK := false
+		if start := strings.IndexByte(trimmed, '{'); start >= 0 {
+			if end := strings.LastIndexByte(trimmed, '}'); end > start {
+				if json.Unmarshal([]byte(trimmed[start:end+1]), &act) == nil && (act.Tool != "" || act.Final != "") {
+					parsedOK = true
+				}
+			}
+		}
+		if !parsedOK {
+			if onStep != nil {
+				onStep(AgentStepEvent{Step: step, Kind: "final", Output: trimmed})
+			}
+			return trimmed, nil
+		}
+		if strings.TrimSpace(act.Final) != "" && strings.TrimSpace(act.Tool) == "" {
+			finalText := strings.TrimSpace(act.Final)
+			if onStep != nil {
+				onStep(AgentStepEvent{Step: step, Kind: "final", Output: finalText})
+			}
+			return finalText, nil
+		}
+		if strings.TrimSpace(act.Thought) != "" && onStep != nil {
+			onStep(AgentStepEvent{Step: step, Kind: "thought", Output: strings.TrimSpace(act.Thought)})
+		}
+		if act.Arguments == nil {
+			act.Arguments = map[string]any{}
+		}
+		argBytes, _ := json.Marshal(act.Arguments)
+		if onStep != nil {
+			onStep(AgentStepEvent{
+				Step:      step,
+				Kind:      "tool_call",
+				Tool:      act.Tool,
+				Arguments: string(argBytes),
+			})
+		}
+		out, risk, decision, redacted, toolErr := execTool(ctx, act.Tool, act.Arguments)
+		if toolErr != nil {
+			if onStep != nil {
+				onStep(AgentStepEvent{
+					Step:     step,
+					Kind:     "tool_result",
+					Tool:     act.Tool,
+					Risk:     risk,
+					Decision: decision,
+					Error:    toolErr.Error(),
+				})
+			}
+			fmt.Fprintf(&transcript, "\n[步骤 %d] 调用 %s(%s) 失败：%s\n", step, act.Tool, string(argBytes), toolErr.Error())
+			continue
+		}
+		if onStep != nil {
+			preview := out
+			if len(preview) > 1200 {
+				preview = preview[:1200] + "\n…(已截断预览)"
+			}
+			onStep(AgentStepEvent{
+				Step:          step,
+				Kind:          "tool_result",
+				Tool:          act.Tool,
+				Output:        preview,
+				Risk:          risk,
+				Decision:      decision,
+				RedactedCount: redacted,
+			})
+		}
+		if len(out) > 12000 {
+			out = out[:12000] + "\n...[output truncated]"
+		}
+		fmt.Fprintf(&transcript, "\n[步骤 %d] 调用 %s(%s) 返回：\n%s\n", step, act.Tool, string(argBytes), out)
 	}
 	return "已达到单次最大执行步数（8 步），如需继续请补充指令。", nil
 }

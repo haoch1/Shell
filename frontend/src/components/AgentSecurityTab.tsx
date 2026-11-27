@@ -39,6 +39,7 @@ const DECISION_LABEL: Record<string, string> = {
 
 export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChanged, onToast }) => {
   const [sub, setSub] = useState<'mcp' | 'guard' | 'audit'>('mcp');
+  const [mcpClient, setMcpClient] = useState<'json' | 'claude' | 'codex' | 'gemini'>('json');
   const [status, setStatus] = useState<AgentStatusView | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [portInput, setPortInput] = useState('17822');
@@ -160,6 +161,31 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
     2,
   );
 
+  const exeQuoted = `"${status.exePath || 'Shell.exe'}"`;
+  const claudeCmdReal = `claude mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${status.token}"`;
+  const claudeCmdPreview = `claude mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${showToken ? status.token : maskedToken}"`;
+  const codexCmd = `codex mcp add shell -- ${exeQuoted} --mcp`;
+  const geminiCmdReal = `gemini mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${status.token}"`;
+  const geminiCmdPreview = `gemini mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${showToken ? status.token : maskedToken}"`;
+
+  const activeSnippetCopy =
+    mcpClient === 'claude'
+      ? claudeCmdReal
+      : mcpClient === 'codex'
+        ? codexCmd
+        : mcpClient === 'gemini'
+          ? geminiCmdReal
+          : mcpHttpConfig;
+
+  const activeSnippetPreview =
+    mcpClient === 'claude'
+      ? claudeCmdPreview
+      : mcpClient === 'codex'
+        ? codexCmd
+        : mcpClient === 'gemini'
+          ? geminiCmdPreview
+          : mcpHttpPreview;
+
   const runPolicyTest = async () => {
     const res = await getApi().TestCommandPolicy(
       policyCmd,
@@ -208,12 +234,12 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
 
       {sub === 'mcp' && (
         <>
-          <div className="soft-card">
+          <div className="pref-group-pad">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
               <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 7 }}>
                 <Bot size={15} style={{ color: 'var(--accent)' }} />
                 <span>允许外部 AI 工具连接 Shell</span>
-                {status.running && <span className="pill-badge safe">:{status.port}</span>}
+                {status.running && <span className="pill-badge safe mono">:{status.port}</span>}
               </div>
               <button
                 id="mcpEnableSwitch"
@@ -236,7 +262,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
               />
             </div>
 
-            <div className="field-row" style={{ marginTop: 4 }}>
+            <div className="field-row" style={{ marginTop: 2 }}>
               <div className="field-group" style={{ width: 108 }}>
                 <label className="field-label">端口</label>
                 <input
@@ -300,36 +326,57 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
             </div>
           </div>
 
-          <div className="soft-card">
+          <div className="pref-group-pad">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-              <div style={{ fontWeight: 600, fontSize: 12.5 }}>客户端配置</div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>客户端接入</div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
                   onClick={() => {
-                    void copyToClipboard(mcpHttpConfig);
-                    onToast('已复制 HTTP 配置');
+                    void copyToClipboard(activeSnippetCopy);
+                    onToast(mcpClient === 'json' ? '已复制 HTTP 配置' : '已复制 CLI 接入命令');
                   }}
                 >
                   <Copy size={12} />
-                  复制 HTTP 配置
+                  {mcpClient === 'json' ? '复制 HTTP 配置' : '复制命令'}
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => {
-                    void copyToClipboard(mcpStdioConfig);
-                    onToast('已复制命令行配置');
-                  }}
-                >
-                  <Copy size={12} />
-                  复制命令行配置
-                </button>
+                {mcpClient === 'json' && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => {
+                      void copyToClipboard(mcpStdioConfig);
+                      onToast('已复制 Stdio 配置');
+                    }}
+                  >
+                    <Copy size={12} />
+                    复制 Stdio
+                  </button>
+                )}
               </div>
             </div>
-            <div className="code-block" style={{ fontSize: 11.5, whiteSpace: 'pre', overflowX: 'auto' }}>
-              {mcpHttpPreview}
+            <div className="segmented" style={{ width: '100%' }}>
+              {(
+                [
+                  { id: 'json', label: 'JSON 配置' },
+                  { id: 'claude', label: 'Claude Code' },
+                  { id: 'codex', label: 'Codex' },
+                  { id: 'gemini', label: 'Gemini CLI' },
+                ] as const
+              ).map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={mcpClient === c.id ? 'active' : ''}
+                  onClick={() => setMcpClient(c.id)}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+            <div className="code-block" style={{ fontSize: 11.5, whiteSpace: mcpClient === 'json' ? 'pre' : 'pre-wrap', overflowX: 'auto' }}>
+              {activeSnippetPreview}
             </div>
           </div>
         </>
@@ -337,8 +384,8 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
 
       {sub === 'guard' && (
         <>
-          <div className="soft-card">
-            <div style={{ fontWeight: 600, fontSize: 12.5 }}>命令执行权限</div>
+          <div className="pref-group-pad">
+            <div style={{ fontWeight: 600, fontSize: 13 }}>命令执行权限</div>
             <div className="segmented" style={{ width: '100%' }}>
               {(
                 [
@@ -365,15 +412,15 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
             </div>
           </div>
 
-          <div className="soft-card" style={{ gap: 0, padding: '4px 12px' }}>
+          <div className="pref-group">
             {[
               { key: 'enabled' as const, title: '自动脱敏敏感信息' },
               { key: 'maskSecrets' as const, title: '保护密钥、令牌与密码' },
               { key: 'maskPII' as const, title: '保护邮箱、手机与证件号' },
               { key: 'maskIPs' as const, title: '隐藏 IPv4 地址' },
             ].map((item) => (
-              <div key={item.key} className="setting-row" style={{ padding: '9px 0' }}>
-                <div style={{ fontWeight: 500, fontSize: 12.5 }}>{item.title}</div>
+              <div key={item.key} className="pref-row">
+                <span className="pref-row-label">{item.title}</span>
                 <button
                   type="button"
                   role="switch"

@@ -2,15 +2,16 @@ export type AuthMode = 'password' | 'key' | 'agent';
 export type ProfileColor = '' | 'blue' | 'green' | 'orange' | 'red' | 'purple' | 'teal' | 'gray';
 export type HostIconId =
   | ''
-  | 'server'
+  | 'ubuntu'
+  | 'debian'
+  | 'centos'
+  | 'rocky'
+  | 'alpine'
+  | 'arch'
+  | 'fedora'
   | 'linux'
-  | 'docker'
-  | 'database'
-  | 'cloud'
-  | 'gpu'
-  | 'bastion'
-  | 'globe'
-  | 'harddrive';
+  | 'windows'
+  | 'docker';
 export type TunnelMode = 'local' | 'remote' | 'dynamic';
 export type ProxyType = '' | 'socks5' | 'http';
 export type HostAgentAccess = '' | 'readonly' | 'allow' | 'deny';
@@ -179,10 +180,36 @@ export interface ImportSummary {
   secrets: number;
 }
 
+export type AIProviderMode = 'api' | 'cli';
+
+export interface DetectedAICLI {
+  id: string;
+  name: string;
+  command: string;
+  installed: boolean;
+  path?: string;
+}
+
 export interface AIConfigView {
+  mode: AIProviderMode;
   endpoint: string;
   model: string;
   hasKey: boolean;
+  cliCommand?: string;
+  cliArgs?: string;
+  cliModel?: string;
+  ready: boolean;
+}
+
+export interface AIConfigInput {
+  mode: AIProviderMode;
+  endpoint: string;
+  model: string;
+  apiKey: string;
+  keepKey: boolean;
+  cliCommand: string;
+  cliArgs: string;
+  cliModel: string;
 }
 
 export interface AIResult {

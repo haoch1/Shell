@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -113,6 +114,37 @@ func HasSecret(id string) (bool, error) {
 		return err
 	})
 	return saved, err
+}
+
+// SecretIDs checks which profile IDs currently have saved DPAPI credentials under a single lock.
+func SecretIDs(ids []string) (map[string]bool, error) {
+	result := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	err := withStore(func(dir string) error {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		existing := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasPrefix(e.Name(), "credential-") && strings.HasSuffix(e.Name(), ".dpapi") {
+				existing[e.Name()] = true
+			}
+		}
+		for _, id := range ids {
+			if id == "" {
+				continue
+			}
+			digest := sha256.Sum256([]byte(id))
+			if existing["credential-"+hex.EncodeToString(digest[:])+".dpapi"] {
+				result[id] = true
+			}
+		}
+		return nil
+	})
+	return result, err
 }
 
 type credential struct {

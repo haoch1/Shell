@@ -21,19 +21,26 @@ import (
 
 // ImportedHost represents a normalized SSH host candidate parsed from any supported client config file.
 type ImportedHost struct {
-	Name           string `json:"name"`
-	Host           string `json:"host"`
-	Port           int    `json:"port"`
-	User           string `json:"user"`
-	Auth           string `json:"auth"` // "password", "key", "agent"
-	KeyPath        string `json:"keyPath,omitempty"`
-	Group          string `json:"group,omitempty"`
-	ProxyJump      string `json:"proxyJump,omitempty"`
-	ForwardAgent   bool   `json:"forwardAgent,omitempty"`
-	KeepAliveSec   int    `json:"keepAliveSec,omitempty"`
-	Notes          string `json:"notes,omitempty"`
-	SourceFormat   string `json:"sourceFormat"`
-	AlreadySaved   bool   `json:"alreadySaved"`
+	Name         string   `json:"name"`
+	Host         string   `json:"host"`
+	Port         int      `json:"port"`
+	User         string   `json:"user"`
+	Auth         string   `json:"auth"` // "password", "key", "agent"
+	Password     string   `json:"password,omitempty"`
+	KeyPath      string   `json:"keyPath,omitempty"`
+	Passphrase   string   `json:"passphrase,omitempty"`
+	Group        string   `json:"group,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	ProxyType    string   `json:"proxyType,omitempty"`
+	ProxyHost    string   `json:"proxyHost,omitempty"`
+	ProxyPort    int      `json:"proxyPort,omitempty"`
+	ProxyUser    string   `json:"proxyUser,omitempty"`
+	ProxyJump    string   `json:"proxyJump,omitempty"`
+	ForwardAgent bool     `json:"forwardAgent,omitempty"`
+	KeepAliveSec int      `json:"keepAliveSec,omitempty"`
+	Notes        string   `json:"notes,omitempty"`
+	SourceFormat string   `json:"sourceFormat"`
+	AlreadySaved bool     `json:"alreadySaved"`
 }
 
 // ImportPreviewResult reports the detected source tool format and all discovered hosts.
@@ -167,14 +174,15 @@ func ParseImportBytes(filename string, raw []byte) (ImportPreviewResult, error) 
 		}
 	}
 
-	// 8. Termius / Royal TS / Generic CSV
+	// 8. Netcatty / Termius / Royal TS / Generic CSV
 	if ext == ".csv" || ext == ".tsv" || looksLikeCSV(trimmed) {
-		hosts := parseCSV(trimmed)
-		if len(hosts) > 0 {
-			fmtName := "CSV 主机列表"
-			if strings.Contains(strings.ToLower(strings.SplitN(trimmed, "\n", 2)[0]), "label") &&
-				strings.Contains(strings.ToLower(strings.SplitN(trimmed, "\n", 2)[0]), "hostname") {
-				fmtName = "Termius / CSV (.csv)"
+		fmtName, hosts, headerMatched := parseCSVDetailed(trimmed)
+		if headerMatched {
+			if len(hosts) == 0 {
+				return ImportPreviewResult{
+					DetectedFormat: fmtName,
+					Warnings:       []string{fmt.Sprintf("已识别为 %s，但文件中没有主机记录（仅包含表头）", fmtName)},
+				}, nil
 			}
 			return ImportPreviewResult{DetectedFormat: fmtName, Hosts: hosts}, nil
 		}
@@ -234,11 +242,16 @@ func ImportParsedHosts(entries []ImportedHost, overrideGroup string) ([]Profile,
 		p := Profile{
 			Name:         strings.TrimSpace(e.Name),
 			Group:        grp,
+			Tags:         e.Tags,
 			Host:         strings.TrimSpace(e.Host),
 			Port:         port,
 			User:         user,
 			Auth:         auth,
 			KeyPath:      keyPath,
+			ProxyType:    strings.TrimSpace(e.ProxyType),
+			ProxyHost:    strings.TrimSpace(e.ProxyHost),
+			ProxyPort:    e.ProxyPort,
+			ProxyUser:    strings.TrimSpace(e.ProxyUser),
 			ForwardAgent: e.ForwardAgent,
 			KeepAliveSec: e.KeepAliveSec,
 			Notes:        strings.TrimSpace(e.Notes),
@@ -246,6 +259,12 @@ func ImportParsedHosts(entries []ImportedHost, overrideGroup string) ([]Profile,
 		saved, err := SaveProfile(p)
 		if err != nil {
 			continue
+		}
+		// Immediately encrypt imported password or key passphrase into Windows DPAPI (never written in plaintext).
+		if auth == "password" && e.Password != "" {
+			_ = RememberSecret(saved, e.Password)
+		} else if auth == "key" && e.Passphrase != "" {
+			_ = RememberSecret(saved, e.Passphrase)
 		}
 		if e.Name != "" {
 			aliasToID[strings.ToLower(e.Name)] = saved.ID
@@ -1041,29 +1060,71 @@ func parseTabbyYAML(text string) []ImportedHost {
 	return out
 }
 
-// --- 8. Termius / Royal TS / Generic CSV ---
+// --- 8. Netcatty / Termius / Royal TS / Generic CSV ---
 func looksLikeCSV(text string) bool {
-	first, _, hasNL := strings.Cut(text, "\n")
-	if !hasNL {
-		return false
-	}
+	first, _, _ := strings.Cut(text, "\n")
 	lower := strings.ToLower(first)
-	return strings.Contains(first, ",") &&
-		(strings.Contains(lower, "host") || strings.Contains(lower, "address") || strings.Contains(lower, "ip"))
+	return (strings.Contains(first, ",") || strings.Contains(first, "\t")) &&
+		(strings.Contains(lower, "host") || strings.Contains(lower, "address") || strings.Contains(lower, "ip") || strings.Contains(first, "主机"))
 }
 
-func parseCSV(text string) []ImportedHost {
-	r := csv.NewReader(strings.NewReader(text))
+func parseProxyURL(raw string) (pType, pHost string, pPort int, pUser string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "socks5://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return
+	}
+	scheme := strings.ToLower(u.Scheme)
+	switch {
+	case strings.HasPrefix(scheme, "socks"):
+		pType = "socks5"
+	case scheme == "http" || scheme == "https":
+		pType = "http"
+	default:
+		return
+	}
+	pHost = u.Hostname()
+	if p, err := strconv.Atoi(u.Port()); err == nil && p >= 1 && p <= 65535 {
+		pPort = p
+	} else if pType == "socks5" {
+		pPort = 1080
+	} else {
+		pPort = 8080
+	}
+	if u.User != nil {
+		pUser = u.User.Username()
+	}
+	return
+}
+
+func parseCSVDetailed(text string) (string, []ImportedHost, bool) {
+	norm := strings.ReplaceAll(text, "\r\n", "\n")
+	norm = strings.ReplaceAll(norm, "\r", "\n")
+	r := csv.NewReader(strings.NewReader(norm))
+	if firstLine, _, _ := strings.Cut(norm, "\n"); !strings.Contains(firstLine, ",") && strings.Contains(firstLine, "\t") {
+		r.Comma = '\t'
+	}
 	r.FieldsPerRecord = -1
 	r.LazyQuotes = true
 	rows, err := r.ReadAll()
-	if err != nil || len(rows) < 2 {
-		return nil
+	if err != nil || len(rows) < 1 {
+		return "", nil, false
 	}
 	header := rows[0]
+	normHeader := func(s string) string {
+		s = strings.TrimPrefix(s, "\uFEFF")
+		s = strings.ToLower(strings.TrimSpace(s))
+		return s
+	}
 	col := func(candidates ...string) int {
 		for idx, h := range header {
-			hl := strings.ToLower(strings.TrimSpace(h))
+			hl := normHeader(h)
 			for _, c := range candidates {
 				if hl == c {
 					return idx
@@ -1072,17 +1133,38 @@ func parseCSV(text string) []ImportedHost {
 		}
 		return -1
 	}
-	iName := col("label", "name", "title", "alias", "display name", "displayname")
-	iHost := col("hostname", "host", "address", "ip", "ip address", "server", "uri")
-	iPort := col("port")
-	iUser := col("username", "user", "login", "account")
-	iGroup := col("groups", "group", "folder", "category", "path")
-	iKey := col("identityfile", "keypath", "privatekey", "key")
-	iNotes := col("notes", "comment", "description", "tags")
+	iName := col("label", "name", "title", "alias", "display name", "displayname", "名称", "别名", "主机名")
+	iHost := col("hostname/ip", "host/ip", "hostname", "host", "address", "ip", "ip address", "ip_address", "host_name", "server", "server_address", "uri", "主机", "主机地址", "地址")
+	iPort := col("port", "ssh_port", "ssh port", "端口")
+	iUser := col("username", "user", "user_name", "login", "account", "用户名", "账号")
+	iPass := col("password", "passwd", "pwd", "密码")
+	iGroup := col("groups", "group", "folder", "category", "path", "分组", "目录")
+	iTags := col("tags", "tag", "标签")
+	iProto := col("protocol", "type", "协议")
+	iKey := col("identityfile", "keypath", "key_path", "privatekey", "private_key", "key", "私钥", "私钥路径")
+	iKeyPass := col("passphrase", "keypassphrase", "key_passphrase", "私钥口令")
+	iProxy := col("proxy", "proxy_url", "代理")
+	iJump := col("proxyjump", "proxy_jump", "jump", "jumphost", "跳板机")
+	iNotes := col("notes", "comment", "description", "remark", "备注")
 
 	if iHost < 0 {
-		return nil
+		return "", nil, false
 	}
+
+	firstLower := strings.ToLower(strings.Join(header, ","))
+	fmtName := "CSV 主机列表"
+	if strings.Contains(firstLower, "hostname/ip") && strings.Contains(firstLower, "sshinputcompatibility") {
+		fmtName = "Netcatty (.csv)"
+	} else if strings.Contains(firstLower, "hostname/ip") {
+		fmtName = "Netcatty / CSV (.csv)"
+	} else if strings.Contains(firstLower, "label") && strings.Contains(firstLower, "hostname") {
+		fmtName = "Termius / CSV (.csv)"
+	}
+
+	if len(rows) < 2 {
+		return fmtName, nil, true
+	}
+
 	get := func(row []string, idx int) string {
 		if idx < 0 || idx >= len(row) {
 			return ""
@@ -1093,6 +1175,9 @@ func parseCSV(text string) []ImportedHost {
 	for _, row := range rows[1:] {
 		host := get(row, iHost)
 		if host == "" {
+			continue
+		}
+		if proto := strings.ToLower(get(row, iProto)); proto != "" && proto != "ssh" && proto != "ssh2" && proto != "sftp" {
 			continue
 		}
 		name := get(row, iName)
@@ -1108,23 +1193,42 @@ func parseCSV(text string) []ImportedHost {
 			port = p
 		}
 		keyPath := get(row, iKey)
+		pass := get(row, iPass)
+		keyPass := get(row, iKeyPass)
 		auth := "password"
 		if keyPath != "" {
 			auth = "key"
 		}
+		var tags []string
+		if rawTags := get(row, iTags); rawTags != "" {
+			for _, t := range strings.FieldsFunc(rawTags, func(r rune) bool { return r == ',' || r == ';' || r == '|' }) {
+				if tt := strings.TrimSpace(t); tt != "" {
+					tags = append(tags, tt)
+				}
+			}
+		}
+		pType, pHost, pPort, pUser := parseProxyURL(get(row, iProxy))
 		out = append(out, ImportedHost{
 			Name:         name,
 			Host:         host,
 			Port:         port,
 			User:         user,
 			Auth:         auth,
+			Password:     pass,
 			KeyPath:      keyPath,
+			Passphrase:   keyPass,
 			Group:        get(row, iGroup),
+			Tags:         tags,
+			ProxyType:    pType,
+			ProxyHost:    pHost,
+			ProxyPort:    pPort,
+			ProxyUser:    pUser,
+			ProxyJump:    get(row, iJump),
 			Notes:        get(row, iNotes),
-			SourceFormat: "CSV",
+			SourceFormat: fmtName,
 		})
 	}
-	return out
+	return fmtName, out, true
 }
 
 // --- 9. OpenSSH Config from text ---

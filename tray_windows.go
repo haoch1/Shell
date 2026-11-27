@@ -379,9 +379,8 @@ func (t *systemTray) showContextMenu() {
 	}
 	defer procDestroyMenu.Call(hMenu)
 
-	appendMenuText(hMenu, mfString, trayCmdShow, "显示 Shell 主窗口")
+	appendMenuText(hMenu, mfString, trayCmdShow, "显示主窗口")
 	_, _, _ = procSetMenuDefaultItem.Call(hMenu, trayCmdShow, 0)
-	appendMenuText(hMenu, mfString, trayCmdNewConn, "新建 SSH 连接...")
 
 	// Quick-connect submenu populated with saved hosts (pinned first, then recent).
 	hSub, _, _ := procCreatePopupMenu.Call()
@@ -394,57 +393,20 @@ func (t *systemTray) showContextMenu() {
 		} else {
 			for i, p := range choices {
 				t.quickHostIDs = append(t.quickHostIDs, p.ID)
-				label := fmt.Sprintf("%s  (%s@%s)", p.Name, p.User, p.Host)
+				label := fmt.Sprintf("%s  (%s)", p.Name, p.Host)
 				appendMenuText(hSub, mfString, uintptr(trayCmdHostBase+i), label)
 			}
 		}
 		appendMenuText(hMenu, mfPopup, hSub, "快速连接")
 	}
 
-	appendMenuSep(hMenu)
-
-	// Live sessions & disconnect all
-	liveCount := t.app.ActiveSessionCount()
-	if liveCount > 0 {
-		appendMenuText(hMenu, mfString|mfGrayed|mfDisabled, 0, fmt.Sprintf("活跃会话：%d 个", liveCount))
-		appendMenuText(hMenu, mfString, trayCmdDisconnectAll, "断开全部 SSH 会话")
-	} else {
-		appendMenuText(hMenu, mfString|mfGrayed|mfDisabled, 0, "当前无活跃会话")
+	if liveCount := t.app.ActiveSessionCount(); liveCount > 0 {
+		appendMenuSep(hMenu)
+		appendMenuText(hMenu, mfString, trayCmdDisconnectAll, fmt.Sprintf("断开全部会话 (%d)", liveCount))
 	}
 
 	appendMenuSep(hMenu)
-
-	// MCP Agent bridge live toggle
-	mcpRunning, mcpPort := false, 17822
-	if t.app.bridge != nil {
-		mcpRunning, mcpPort = t.app.bridge.Running()
-	}
-	if mcpPort == 0 {
-		if cfg, err := local.LoadAgentConfig(); err == nil && cfg.Port >= 1024 {
-			mcpPort = cfg.Port
-		} else {
-			mcpPort = 17822
-		}
-	}
-	mcpFlags := uintptr(mfString)
-	mcpLabel := fmt.Sprintf("MCP 桥接服务 (:%d)", mcpPort)
-	if mcpRunning {
-		mcpFlags |= mfChecked
-	}
-	appendMenuText(hMenu, mcpFlags, trayCmdToggleMCP, mcpLabel)
-	appendMenuText(hMenu, mfString, trayCmdOpenMCP, "Agent 与安全设置...")
-
-	appendMenuSep(hMenu)
-
-	// Preferences & close-to-tray live toggle
-	appendMenuText(hMenu, mfString, trayCmdSettings, "偏好设置...")
-	closeFlags := uintptr(mfString)
-	if st, err := local.LoadSettings(); err == nil && st.CloseToTray {
-		closeFlags |= mfChecked
-	}
-	appendMenuText(hMenu, closeFlags, trayCmdToggleClose, "关闭窗口时最小化到托盘")
-
-	appendMenuSep(hMenu)
+	appendMenuText(hMenu, mfString, trayCmdSettings, "偏好设置")
 	appendMenuText(hMenu, mfString, trayCmdQuit, "退出 Shell")
 
 	var pt winPoint

@@ -126,3 +126,52 @@ func TestCancelInFlightAndBoundResponse(t *testing.T) {
 		t.Fatal("request wasn't canceled")
 	}
 }
+
+func TestLocalAICLIExecutionAndPersistence(t *testing.T) {
+	isolated(t)
+
+	// Verify preset arg builders for claude, codex, gemini, and custom {prompt}.
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "claude", CLIModel: "sonnet"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "-p --output-format text --model sonnet" {
+		t.Fatalf("unexpected claude args=%v stdin=%q", args, stdin)
+	}
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "exec --skip-git-repo-check -m o3 -" {
+		t.Fatalf("unexpected codex args=%v stdin=%q", args, stdin)
+	}
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "gemini", CLIModel: "gemini-2.5-pro"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "-m gemini-2.5-pro" {
+		t.Fatalf("unexpected gemini args=%v stdin=%q", args, stdin)
+	}
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "mycli", CLIArgs: `--prompt "{prompt}"`}, "ping"); stdin != "" || len(args) != 2 || args[1] != "ping" {
+		t.Fatalf("unexpected placeholder args=%v stdin=%q", args, stdin)
+	}
+
+	// Execute a real hidden-window .cmd shim (matching npm-installed claude.cmd / codex.cmd / gemini.cmd on Windows).
+	shimPath := filepath.Join(t.TempDir(), "mock-ai.cmd")
+	shimBody := "@echo off\r\necho {\"command\":\"ss -tulpn\",\"explanation\":\"查看监听端口\",\"risk\":\"safe\"}\r\n"
+	if err := os.WriteFile(shimPath, []byte(shimBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cliCfg := AISettings{
+		Mode:       "cli",
+		CLICommand: shimPath,
+	}
+	if err := SaveAI(cliCfg); err != nil {
+		t.Fatalf("SaveAI CLI failed: %v", err)
+	}
+	loaded, err := LoadAI()
+	if err != nil || !loaded.IsCLI() || loaded.CLICommand != shimPath {
+		t.Fatalf("LoadAI CLI mismatch: %+v, err=%v", loaded, err)
+	}
+	var streamed strings.Builder
+	res, err := SuggestStructured(context.Background(), "查看监听端口", "Ubuntu", func(d string) {
+		streamed.WriteString(d)
+	})
+	if err != nil {
+		t.Fatalf("SuggestStructured via CLI failed: %v", err)
+	}
+	if res.Command != "ss -tulpn" || res.Risk != "safe" || streamed.Len() == 0 {
+		t.Fatalf("unexpected CLI AIResult: %+v, streamed=%q", res, streamed.String())
+	}
+	if err := TestAI(context.Background(), cliCfg); err != nil {
+		t.Fatalf("TestAI via CLI failed: %v", err)
+	}
+}

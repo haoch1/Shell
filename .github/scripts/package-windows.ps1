@@ -61,8 +61,8 @@ foreach ($record in $records) {
         $seen[$dir] = $true
         $notices = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Where-Object Name -Match '^(LICENSE|LICENCE|COPYING|NOTICE|PATENTS)([._-].*)?$')
         if ($notices.Count) {
-            $relative = [IO.Path]::GetRelativePath($root, $dir)
-            $noticeDir = (New-Item -ItemType Directory -Force -Path (Join-Path $licenseDir $module $relative)).FullName
+            $relative = if ($dir -eq $root) { '.' } else { $dir.Substring($root.Length).TrimStart('\', '/') }
+            $noticeDir = (New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $licenseDir $module) $relative)).FullName
             foreach ($notice in $notices) { Copy-Item -LiteralPath $notice.FullName -Destination $noticeDir -Force }
         }
         if ($dir -eq $root) { break }

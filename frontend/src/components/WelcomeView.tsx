@@ -98,7 +98,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                   <div className="recent-card-meta">
                     <div className="recent-card-name">{p.name}</div>
                     <div className="recent-card-sub mono">
-                      {p.user}@{p.host}
+                      {p.host}
                       {p.port !== 22 ? `:${p.port}` : ''}
                     </div>
                   </div>

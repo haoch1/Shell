@@ -95,7 +95,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
         </button>
         <div className="brand-pill">
           <span className="brand-icon">&gt;<span>_</span></span>
-          {tabs.length === 0 && <span>Shell</span>}
+          <span>Shell</span>
         </div>
       </div>
 

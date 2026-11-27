@@ -26,9 +26,19 @@ type ProxyConfig struct {
 
 func dialTCPWithProxy(ctx context.Context, targetAddr string, p ProxyConfig) (net.Conn, error) {
 	mode := strings.ToLower(strings.TrimSpace(p.Type))
-	dialer := &net.Dialer{Timeout: 12 * time.Second, KeepAlive: 30 * time.Second}
+	dialer := &net.Dialer{
+		Timeout:       12 * time.Second,
+		KeepAlive:     30 * time.Second,
+		FallbackDelay: 150 * time.Millisecond,
+	}
 	if mode == "" || mode == "none" {
-		return dialer.DialContext(ctx, "tcp", targetAddr)
+		conn, err := dialer.DialContext(ctx, "tcp", targetAddr)
+		if err == nil {
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				_ = tcp.SetNoDelay(true)
+			}
+		}
+		return conn, err
 	}
 	if strings.TrimSpace(p.Host) == "" || p.Port < 1 || p.Port > 65535 {
 		return nil, errors.New("代理配置无效：请填写代理主机和有效端口")

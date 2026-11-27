@@ -116,9 +116,9 @@ const BRIDGE_MOCK_SCRIPT = `
     showTelemetry: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true
   };
   let profiles = [
-    { id: 'p1', name: 'Tokyo Production', group: '生产集群', color: 'green', icon: 'globe', pinned: true, host: '10.24.0.10', port: 22, user: 'deploy', auth: 'agent', keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 300 },
-    { id: 'p2', name: 'Database Bastion', group: '生产集群', color: 'blue', icon: 'database', host: 'bastion.internal.dev', port: 2222, user: 'ops', auth: 'password', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 7200 },
-    { id: 'p3', name: 'Local GPU Box', group: '开发测试', color: 'purple', icon: 'gpu', host: '192.168.1.88', port: 22, user: 'haochi', auth: 'key', keyPath: 'C:\\\\Users\\\\haochi\\\\.ssh\\\\id_ed25519', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 86400 }
+    { id: 'p1', name: 'Tokyo Production', group: '生产集群', icon: 'ubuntu', pinned: true, host: '10.24.0.10', port: 22, user: 'deploy', auth: 'agent', keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 300 },
+    { id: 'p2', name: 'Database Bastion', group: '生产集群', icon: 'debian', host: '56.10.113.238', port: 58222, user: 'root', auth: 'password', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 7200 },
+    { id: 'p3', name: 'Local GPU Box', group: '开发测试', icon: 'rocky', host: '192.168.1.88', port: 22, user: 'haochi', auth: 'key', keyPath: 'C:\\\\Users\\\\haochi\\\\.ssh\\\\id_ed25519', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 86400 }
   ];
   let snippets = [
     { id: 's1', name: '系统负载与内存', category: '系统', command: 'uname -a && uptime && free -h', description: '快速查看内核、运行时间与内存使用', pinned: true },
@@ -143,10 +143,13 @@ const BRIDGE_MOCK_SCRIPT = `
   };
   window.go = { main: { App: {
     AppInfo: async () => ({ version: '1.0.0', dataDir: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\Shell' }),
+    OpenDataDir: async () => {},
+    TermWSURL: async () => '',
     Profiles: async () => profiles,
     SaveProfile: async (p) => { const item = { ...p, id: p.id || 'p' + Date.now() }; profiles = [...profiles.filter(x => x.id !== item.id), item]; return item; },
     DuplicateProfile: async (id) => { const src = profiles.find(x => x.id === id); const c = { ...src, id: 'p' + Date.now(), name: src.name + ' 副本' }; profiles = [...profiles, c]; return c; },
     DeleteProfile: async (id) => { profiles = profiles.filter(x => x.id !== id); },
+    DeleteProfiles: async (ids) => { const drop = new Set(ids); profiles = profiles.filter(x => !drop.has(x.id)); },
     ForgetSecret: async () => {},
     PickKey: async () => '',
     PickAndParseImportFiles: async () => ({
@@ -226,15 +229,26 @@ const BRIDGE_MOCK_SCRIPT = `
     GetSettings: async () => settings,
     SaveSettings: async (s) => { settings = { ...settings, ...s }; return settings; },
     KnownHosts: async () => [
-      { line: 1, hosts: ['10.24.0.10'], keyType: 'ssh-ed25519', fingerprint: 'SHA256:k8xR2fQ9vN4mP7sW1yZ3aB6cD8eF0gH2iJ4kL6mN8oP' }
+      { line: 1, hosts: ['[56.10.113.238]:58222'], keyType: 'ecdsa-sha2-nistp256', fingerprint: 'SHA256:a0Skqj56tH4NyA2btG9Q42FObzEfH8hM53BL9Y3Xd2I' },
+      { line: 2, hosts: ['10.24.0.10'], keyType: 'ssh-ed25519', fingerprint: 'SHA256:k8xR2fQ9vN4mP7sW1yZ3aB6cD8eF0gH2iJ4kL6mN8oP' }
     ],
+    RemoveKnownHost: async () => {},
+    RemoveKnownHosts: async () => {},
+    ClearKnownHosts: async () => {},
     LocalKeys: async () => [
       { name: 'id_ed25519', path: 'C:\\\\Users\\\\haochi\\\\.ssh\\\\id_ed25519', publicPath: 'C:\\\\Users\\\\haochi\\\\.ssh\\\\id_ed25519.pub', keyType: 'ssh-ed25519', fingerprint: 'SHA256:9xL2mN5pQ8rT1vW4yZ7bC0dE3fG6hJ9kM2nP5qR8sT1', publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKey haochi@windows', hasPublic: true, encrypted: false }
     ],
     GenerateSSHKey: async () => ({}),
     ExportBackup: async () => '',
     ImportBackup: async () => ({ profiles: 0, snippets: 0, secrets: 0 }),
-    AIConfig: async () => ({ endpoint: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder:7b', hasKey: false }),
+    AIConfig: async () => ({ mode: 'api', endpoint: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder:7b', hasKey: false, cliCommand: 'claude', ready: true }),
+    DetectAICLIs: async () => [
+      { id: 'claude', name: 'Claude Code', command: 'claude', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Roaming\\\\npm\\\\claude.cmd' },
+      { id: 'codex', name: 'Codex CLI', command: 'codex', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Roaming\\\\npm\\\\codex.cmd' },
+      { id: 'gemini', name: 'Gemini CLI', command: 'gemini', installed: false }
+    ],
+    SaveAIConfig: async () => {},
+    TestAIConfig: async () => {},
     ConfigureAI: async () => {},
     TestAI: async () => {},
     CancelAI: async () => {},
@@ -445,10 +459,24 @@ async function verifyFrontendUI() {
     await shot('10-Universal-Import');
     await click('#importDialog button[aria-label="关闭"]');
 
-    // Settings Sheet Light + Agent Governance & Redaction + Dark
+    // Settings Sheet Light + SSH/KnownHosts + Agent Governance + About + Dark
     await click('#settingsBtn');
     await until(() => evaluate("!!document.querySelector('#settingsDialog')"), 'settings modal');
     await shot('07-Settings-Light');
+
+    await evaluate(`document.querySelector('.settings-nav-btn:nth-child(2)').click()`);
+    await sleep(200);
+    await shot('13-Settings-SSH-KnownHosts');
+
+    await evaluate(`document.querySelector('.settings-nav-btn:nth-child(4)').click()`);
+    await sleep(200);
+    await evaluate(`document.querySelector('#settingsDialog [data-ai-mode="cli"]').click()`);
+    await sleep(200);
+    await shot('15-Settings-AI-CLI');
+
+    await evaluate(`document.querySelector('.settings-nav-btn:nth-child(7)').click()`);
+    await sleep(200);
+    await shot('14-Settings-About');
 
     // Open Agent & Security tab -> screenshot MCP + Unified Security/Redaction view
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(5)').click()`);
@@ -474,7 +502,7 @@ async function verifyFrontendUI() {
     await shot('09-Terminal-Dark');
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 12 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 15 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

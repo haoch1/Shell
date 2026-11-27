@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,7 @@ type App struct {
 	sessionApprovals map[string]bool
 	transfers        map[string]context.CancelFunc
 	bridge           *agentbridge.Server
+	ws               *termWSServer
 	tray             *systemTray
 	quitting         atomic.Bool
 	aiCancel         context.CancelFunc
@@ -75,10 +77,42 @@ func (a *App) startup(ctx context.Context) {
 		}
 	})
 	a.initAgentBridge()
+	if ws, err := startTermWSServer(a); err == nil {
+		a.ws = ws
+	}
 	a.tray = startSystemTray(a)
 }
 
+func (a *App) TermWSURL(sessionID string) string {
+	return a.ws.URLForSession(sessionID)
+}
+
+func (a *App) saveWindowBounds(ctx context.Context) {
+	if ctx == nil || runtime.WindowIsMinimised(ctx) {
+		return
+	}
+	st, err := local.LoadSettings()
+	if err != nil {
+		return
+	}
+	maximised := runtime.WindowIsMaximised(ctx)
+	changed := st.WindowMaximised != maximised
+	st.WindowMaximised = maximised
+	if !maximised {
+		w, h := runtime.WindowGetSize(ctx)
+		if w >= 880 && w <= 3840 && h >= 560 && h <= 2160 && (w != st.WindowWidth || h != st.WindowHeight) {
+			st.WindowWidth = w
+			st.WindowHeight = h
+			changed = true
+		}
+	}
+	if changed {
+		_, _ = local.SaveSettings(st)
+	}
+}
+
 func (a *App) beforeClose(ctx context.Context) bool {
+	a.saveWindowBounds(ctx)
 	if a.quitting.Load() || os.Getenv("SHELL_EXIT_ON_CLOSE") == "1" {
 		return false
 	}
@@ -99,6 +133,7 @@ func (a *App) ShowMainWindow() {
 }
 
 func (a *App) QuitApp() {
+	a.saveWindowBounds(a.ctx)
 	a.quitting.Store(true)
 	if a.tray != nil {
 		a.tray.Stop()
@@ -168,6 +203,9 @@ func (a *App) shutdown(context.Context) {
 	if a.tray != nil {
 		a.tray.Stop()
 	}
+	if a.ws != nil {
+		a.ws.Stop()
+	}
 	if a.bridge != nil {
 		a.bridge.Stop()
 	}
@@ -201,6 +239,16 @@ func (a *App) AppInfo() AppInfoView {
 		Version: appVersion,
 		DataDir: filepath.Join(root, "Shell"),
 	}
+}
+
+func (a *App) OpenDataDir() error {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(root, "Shell")
+	_ = os.MkdirAll(dir, 0700)
+	return exec.Command("explorer.exe", dir).Start()
 }
 
 // --- Profiles ---
@@ -269,13 +317,43 @@ func (a *App) Profiles() ([]ProfileView, error) {
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]string, len(rows))
+	for i, p := range rows {
+		ids[i] = p.ID
+	}
+	savedMap, err := local.SecretIDs(ids)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]ProfileView, 0, len(rows))
 	for _, p := range rows {
-		v, err := view(p)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, v)
+		result = append(result, ProfileView{
+			ID:             p.ID,
+			Name:           p.Name,
+			Group:          p.Group,
+			Tags:           p.Tags,
+			Color:          p.Color,
+			Icon:           p.Icon,
+			Pinned:         p.Pinned,
+			Host:           p.Host,
+			Port:           p.Port,
+			User:           p.User,
+			Auth:           p.Auth,
+			KeyPath:        p.KeyPath,
+			JumpHostID:     p.JumpHostID,
+			ProxyType:      p.ProxyType,
+			ProxyHost:      p.ProxyHost,
+			ProxyPort:      p.ProxyPort,
+			ProxyUser:      p.ProxyUser,
+			ForwardAgent:   p.ForwardAgent,
+			KeepAliveSec:   p.KeepAliveSec,
+			StartupCommand: p.StartupCommand,
+			Notes:          p.Notes,
+			AgentAccess:    p.AgentAccess,
+			Tunnels:        p.Tunnels,
+			LastUsedAt:     p.LastUsedAt,
+			Remembered:     savedMap[p.ID],
+		})
 	}
 	return result, nil
 }
@@ -296,8 +374,9 @@ func (a *App) DuplicateProfile(id string) (ProfileView, error) {
 	return view(cloned)
 }
 
-func (a *App) DeleteProfile(id string) error { return local.DeleteProfile(id) }
-func (a *App) ForgetSecret(id string) error  { return local.ForgetSecret(id) }
+func (a *App) DeleteProfile(id string) error     { return local.DeleteProfile(id) }
+func (a *App) DeleteProfiles(ids []string) error { return local.DeleteProfiles(ids) }
+func (a *App) ForgetSecret(id string) error      { return local.ForgetSecret(id) }
 
 func (a *App) PickKey() (string, error) {
 	home, _ := os.UserHomeDir()
@@ -550,6 +629,9 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 			return a.challenge(ctx, id, p.Host, user, instruction, questions, echo)
 		},
 		Output: func(data []byte) {
+			if a.ws != nil && a.ws.SendOutput(id, data) {
+				return
+			}
 			runtime.EventsEmit(a.ctx, "ssh:data", id, base64.StdEncoding.EncodeToString(data))
 		},
 		Latency: func(ms int64) {
@@ -561,6 +643,9 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 				message = err.Error()
 			}
 			remove()
+			if a.ws != nil {
+				a.ws.CloseSession(id)
+			}
 			runtime.EventsEmit(a.ctx, "ssh:end", id, message)
 		},
 	})
@@ -579,32 +664,34 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 		s.Close()
 		return context.Canceled
 	}
-	if p.ID != "" {
-		_ = local.TouchProfile(p.ID)
-	}
-	if remember && secret != "" && p.ID != "" && p.Auth != "agent" {
-		if err := local.RememberSecret(p, secret); err != nil {
-			runtime.EventsEmit(a.ctx, "shell:notice", "连接已建立，但未能记住凭据："+err.Error())
+	// Run disk persistence & auto-start tunnels asynchronously so Connect returns immediately and typing is unblocked.
+	go func(prof local.Profile, sec string, rem bool, sess *remote.Session) {
+		if prof.ID != "" {
+			_ = local.TouchProfile(prof.ID)
 		}
-	}
-	// Auto-start saved port forwarding rules marked AutoStart.
-	for _, tr := range p.Tunnels {
-		if !tr.AutoStart {
-			continue
+		if rem && sec != "" && prof.ID != "" && prof.Auth != "agent" {
+			if err := local.RememberSecret(prof, sec); err != nil {
+				runtime.EventsEmit(a.ctx, "shell:notice", "连接已建立，但未能记住凭据："+err.Error())
+			}
 		}
-		_, tErr := s.StartTunnel(remote.TunnelSpec{
-			ID:         tr.ID,
-			Name:       tr.Name,
-			Mode:       tr.Mode,
-			BindHost:   tr.BindHost,
-			BindPort:   tr.BindPort,
-			TargetHost: tr.TargetHost,
-			TargetPort: tr.TargetPort,
-		})
-		if tErr != nil {
-			runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("自动启动端口转发「%s」失败：%v", tr.Name, tErr))
+		for _, tr := range prof.Tunnels {
+			if !tr.AutoStart {
+				continue
+			}
+			_, tErr := sess.StartTunnel(remote.TunnelSpec{
+				ID:         tr.ID,
+				Name:       tr.Name,
+				Mode:       tr.Mode,
+				BindHost:   tr.BindHost,
+				BindPort:   tr.BindPort,
+				TargetHost: tr.TargetHost,
+				TargetPort: tr.TargetPort,
+			})
+			if tErr != nil {
+				runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("自动启动端口转发「%s」失败：%v", tr.Name, tErr))
+			}
 		}
-	}
+	}(p, secret, remember, s)
 	return nil
 }
 
@@ -631,6 +718,9 @@ func (a *App) Disconnect(id string) {
 	}
 	if session != nil {
 		session.Close()
+	}
+	if a.ws != nil {
+		a.ws.CloseSession(id)
 	}
 }
 
@@ -946,6 +1036,8 @@ func (a *App) SaveSettings(s local.AppSettings) (local.AppSettings, error) { ret
 
 func (a *App) KnownHosts() ([]local.KnownHostEntry, error) { return local.ListKnownHosts() }
 func (a *App) RemoveKnownHost(line int) error              { return local.RemoveKnownHost(line) }
+func (a *App) RemoveKnownHosts(lines []int) error          { return local.RemoveKnownHosts(lines) }
+func (a *App) ClearKnownHosts() error                      { return local.ClearKnownHosts() }
 
 func (a *App) LocalKeys() ([]local.LocalKeyInfo, error) { return local.ListLocalKeys() }
 func (a *App) GenerateSSHKey(name, algo, passphrase, comment string) (local.LocalKeyInfo, error) {
@@ -985,37 +1077,114 @@ func (a *App) ImportBackup(passphrase string) (local.ImportSummary, error) {
 // --- AI Assistant ---
 
 type AIView struct {
-	Endpoint string `json:"endpoint"`
-	Model    string `json:"model"`
-	HasKey   bool   `json:"hasKey"`
+	Mode       string `json:"mode"` // "api" or "cli"
+	Endpoint   string `json:"endpoint"`
+	Model      string `json:"model"`
+	HasKey     bool   `json:"hasKey"`
+	CLICommand string `json:"cliCommand"`
+	CLIArgs    string `json:"cliArgs"`
+	CLIModel   string `json:"cliModel"`
+	Ready      bool   `json:"ready"`
+}
+
+type AIConfigInput struct {
+	Mode       string `json:"mode"`
+	Endpoint   string `json:"endpoint"`
+	Model      string `json:"model"`
+	APIKey     string `json:"apiKey"`
+	KeepKey    bool   `json:"keepKey"`
+	CLICommand string `json:"cliCommand"`
+	CLIArgs    string `json:"cliArgs"`
+	CLIModel   string `json:"cliModel"`
 }
 
 func (a *App) AIConfig() (AIView, error) {
 	s, err := local.LoadAI()
-	return AIView{s.Endpoint, s.Model, s.APIKey != ""}, err
+	mode := "api"
+	if s.IsCLI() {
+		mode = "cli"
+	}
+	return AIView{
+		Mode:       mode,
+		Endpoint:   s.Endpoint,
+		Model:      s.Model,
+		HasKey:     s.APIKey != "",
+		CLICommand: s.CLICommand,
+		CLIArgs:    s.CLIArgs,
+		CLIModel:   s.CLIModel,
+		Ready:      s.Ready(),
+	}, err
+}
+
+func (a *App) DetectAICLIs() []local.DetectedAICLI {
+	return local.DetectAICLIs()
+}
+
+func resolveAISettingsInput(in AIConfigInput) (local.AISettings, error) {
+	old, loadErr := local.LoadAI()
+	if strings.EqualFold(strings.TrimSpace(in.Mode), "cli") {
+		// Preserve existing API config fields so switching back to API never loses them.
+		out := old
+		out.Mode = "cli"
+		out.CLICommand = strings.TrimSpace(in.CLICommand)
+		out.CLIArgs = strings.TrimSpace(in.CLIArgs)
+		out.CLIModel = strings.TrimSpace(in.CLIModel)
+		return out, nil
+	}
+	key := in.APIKey
+	if in.KeepKey && key == "" {
+		if loadErr != nil {
+			return local.AISettings{}, loadErr
+		}
+		if strings.TrimSpace(in.Endpoint) == old.Endpoint {
+			key = old.APIKey
+		}
+	}
+	return local.AISettings{
+		Mode:       "api",
+		Endpoint:   in.Endpoint,
+		Model:      in.Model,
+		APIKey:     key,
+		CLICommand: old.CLICommand,
+		CLIArgs:    old.CLIArgs,
+		CLIModel:   old.CLIModel,
+	}, nil
+}
+
+func (a *App) SaveAIConfig(in AIConfigInput) error {
+	s, err := resolveAISettingsInput(in)
+	if err != nil {
+		return err
+	}
+	return local.SaveAI(s)
+}
+
+func (a *App) TestAIConfig(in AIConfigInput) error {
+	s, err := resolveAISettingsInput(in)
+	if err != nil {
+		return err
+	}
+	return local.TestAI(a.ctx, s)
 }
 
 func (a *App) ConfigureAI(endpoint, model, key string, keep bool) error {
-	if keep && key == "" {
-		old, err := local.LoadAI()
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(endpoint) == old.Endpoint {
-			key = old.APIKey
-		}
-	}
-	return local.SaveAI(local.AISettings{Endpoint: endpoint, Model: model, APIKey: key})
+	return a.SaveAIConfig(AIConfigInput{
+		Mode:     "api",
+		Endpoint: endpoint,
+		Model:    model,
+		APIKey:   key,
+		KeepKey:  keep,
+	})
 }
 
 func (a *App) TestAI(endpoint, model, key string, keep bool) error {
-	if keep && key == "" {
-		old, err := local.LoadAI()
-		if err == nil && strings.TrimSpace(endpoint) == old.Endpoint {
-			key = old.APIKey
-		}
-	}
-	return local.TestAI(a.ctx, local.AISettings{Endpoint: endpoint, Model: model, APIKey: key})
+	return a.TestAIConfig(AIConfigInput{
+		Mode:     "api",
+		Endpoint: endpoint,
+		Model:    model,
+		APIKey:   key,
+		KeepKey:  keep,
+	})
 }
 
 func (a *App) CancelAI() {

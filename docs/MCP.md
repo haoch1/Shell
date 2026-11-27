@@ -2,18 +2,31 @@
 
 Shell 提供两套统一受控的 AI 协作方式，共享同一套结构化命令权限引擎、自动脱敏流水线、桌面审批弹窗与审计日志：
 
-1. **外部 AI Agent 调用 Shell**：通过标准 **Model Context Protocol (MCP `2025-03-26`)**（支持 Streamable HTTP 与 stdio 两种传输）或本地 REST API，接入 Antigravity、Claude Code、Cursor、Codex、Windsurf 或自定义脚本。
-2. **内置 AI 助手**：在侧边栏中配置任意兼容 OpenAI Chat Completions 接口的服务（DeepSeek、OpenAI、Ollama、OpenRouter 等），支持「写命令 / 查报错 / 自动运维」三种模式。
+1. **外部 AI Agent 调用 Shell**：通过标准 **Model Context Protocol (MCP `2025-03-26`)**（支持 Streamable HTTP 与 stdio 两种传输）或本地 REST API，接入 Antigravity、Claude Code、Codex CLI、Gemini CLI、Cursor、Windsurf 或自定义脚本。
+2. **内置 AI 助手**：在 **偏好设置 → AI 模型** 中支持配置自定义 OpenAI 兼容 API（DeepSeek、OpenAI、Ollama、OpenRouter 等）或直接调用本机 AI CLI（`claude`、`codex`、`gemini` 或自定义命令），提供「写命令 / 查报错 / 自动运维」三种模式。
 
 ---
 
 ## 1. 启用与客户端接入
 
 1. 打开 **偏好设置 → Agent 与安全 → 外部接入 (MCP)**。
-2. 开启 **允许外部 AI 工具连接 Shell**（亦可通过系统托盘右键菜单随时开启或暂停）。
-3. 点击 **复制 HTTP 配置** 或 **复制命令行配置**，粘贴至目标 AI 客户端的 MCP 配置文件中。
+2. 开启 **允许外部 AI 工具连接 Shell**。
+3. 在「客户端接入」卡片中切换 **JSON 配置 / Claude Code / Codex / Gemini CLI**，点击一键复制对应配置或命令行。
 
-### 方式 A：Streamable HTTP（推荐）
+### 方式 A：主流 AI CLI 一键注册
+
+```powershell
+# Claude Code (Streamable HTTP)
+claude mcp add --transport http shell http://127.0.0.1:17822/mcp --header "Authorization: Bearer <令牌>"
+
+# Codex CLI (Stdio 桥接)
+codex mcp add shell -- "C:\Path\To\Shell.exe" --mcp
+
+# Gemini CLI (Streamable HTTP)
+gemini mcp add --transport http shell http://127.0.0.1:17822/mcp --header "Authorization: Bearer <令牌>"
+```
+
+### 方式 B：JSON 配置（Streamable HTTP）
 
 适用于支持 MCP `2025-03-26` Streamable HTTP 的客户端（Antigravity、Cursor、Claude Code 等）：
 
@@ -30,7 +43,7 @@ Shell 提供两套统一受控的 AI 协作方式，共享同一套结构化命�
 }
 ```
 
-### 方式 B：Stdio 模式（`Shell.exe --mcp`）
+### 方式 C：Stdio 模式（`Shell.exe --mcp`）
 
 适用于通过本地子进程标准输入/输出通信的 MCP 客户端。`Shell.exe --mcp` 会自动发现正在运行的 Shell 桌面进程并读取经 DPAPI 保护的访问令牌：
 
@@ -45,7 +58,7 @@ Shell 提供两套统一受控的 AI 协作方式，共享同一套结构化命�
 }
 ```
 
-### 方式 C：本地 REST API
+### 方式 D：本地 REST API
 
 ```bash
 # 查看可用工具列表

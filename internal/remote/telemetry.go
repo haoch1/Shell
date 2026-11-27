@@ -30,7 +30,8 @@ type ServerStats struct {
 	CollectedAt int64   `json:"collectedAt"`
 }
 
-const telemetryScript = `sh -c '
+// telemetryStaticAndDynamic runs once on the first sample (zero sleep!).
+const telemetryFullScript = `sh -c '
 echo "H:$(hostname 2>/dev/null || uname -n)"
 echo "K:$(uname -sr 2>/dev/null)"
 if [ -r /etc/os-release ]; then
@@ -38,39 +39,77 @@ if [ -r /etc/os-release ]; then
 else
   echo "O:$(uname -s 2>/dev/null)"
 fi
-if [ -r /proc/uptime ]; then
-  echo "U:$(awk "{print int(\$1)}" /proc/uptime 2>/dev/null)"
-fi
-if [ -r /proc/loadavg ]; then
-  echo "L:$(awk "{print \$1,\$2,\$3}" /proc/loadavg 2>/dev/null)"
-fi
 echo "C:$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)"
-if [ -r /proc/stat ]; then
-  read _ a1 b1 c1 d1 e1 f1 g1 _ < /proc/stat
-  sleep 0.25 2>/dev/null || true
-  read _ a2 b2 c2 d2 e2 f2 g2 _ < /proc/stat
-  echo "P:$a1 $b1 $c1 $d1 $e1 $f1 $g1 $a2 $b2 $c2 $d2 $e2 $f2 $g2"
-fi
-if [ -r /proc/meminfo ]; then
-  echo "M:$(awk "/^MemTotal:/{t=\$2} /^MemAvailable:/{a=\$2} /^MemFree:/{f=\$2} /^Buffers:/{b=\$2} /^Cached:/{c=\$2} END{if(a==0)a=f+b+c; print int(t/1024),int((t-a)/1024)}" /proc/meminfo 2>/dev/null)"
-fi
-echo "D:$(df -Pk / 2>/dev/null | awk "NR==2{print \$2,\$3,\$5}")"
-if [ -r /proc/net/dev ]; then
-  echo "N:$(awk "NR>2 && \$1!~/^lo:/{rx+=\$2; tx+=\$10} END{printf \"%.0f %.0f\", rx, tx}" /proc/net/dev 2>/dev/null)"
-fi
+if [ -r /proc/uptime ]; then read u _ < /proc/uptime; echo "U:${u%%.*}"; fi
+if [ -r /proc/loadavg ]; then read l1 l2 l3 _ < /proc/loadavg; echo "L:$l1 $l2 $l3"; fi
+if [ -r /proc/stat ]; then read _ a b c d e f g _ < /proc/stat; echo "P:$a $b $c $d $e $f $g"; fi
+if [ -r /proc/meminfo ]; then awk "/^MemTotal:/{t=\$2} /^MemAvailable:/{a=\$2} /^MemFree:/{f=\$2} /^Buffers:/{b=\$2} /^Cached:/{c=\$2} END{if(a==0)a=f+b+c; print \"M:\"int(t/1024),int((t-a)/1024)}" /proc/meminfo 2>/dev/null; fi
+df -Pk / 2>/dev/null | awk "NR==2{print \"D:\"\$2,\$3,\$5}"
+if [ -r /proc/net/dev ]; then awk "NR>2 && \$1!~/^lo:/{rx+=\$2; tx+=\$10} END{printf \"N:%.0f %.0f\n\", rx, tx}" /proc/net/dev 2>/dev/null; fi
 '`
 
-// FetchStats samples live Linux/POSIX telemetry without requiring any remote agent.
+// telemetryFastScript runs on subsequent ticks: zero sleep, no hostname/uname/os-release forks.
+const telemetryFastScript = `sh -c '
+if [ -r /proc/uptime ]; then read u _ < /proc/uptime; echo "U:${u%%.*}"; fi
+if [ -r /proc/loadavg ]; then read l1 l2 l3 _ < /proc/loadavg; echo "L:$l1 $l2 $l3"; fi
+if [ -r /proc/stat ]; then read _ a b c d e f g _ < /proc/stat; echo "P:$a $b $c $d $e $f $g"; fi
+if [ -r /proc/meminfo ]; then awk "/^MemTotal:/{t=\$2} /^MemAvailable:/{a=\$2} /^MemFree:/{f=\$2} /^Buffers:/{b=\$2} /^Cached:/{c=\$2} END{if(a==0)a=f+b+c; print \"M:\"int(t/1024),int((t-a)/1024)}" /proc/meminfo 2>/dev/null; fi
+df -Pk / 2>/dev/null | awk "NR==2{print \"D:\"\$2,\$3,\$5}"
+if [ -r /proc/net/dev ]; then awk "NR>2 && \$1!~/^lo:/{rx+=\$2; tx+=\$10} END{printf \"N:%.0f %.0f\n\", rx, tx}" /proc/net/dev 2>/dev/null; fi
+'`
+
+// FetchStats samples live Linux/POSIX telemetry with zero remote sleep and static metadata caching.
 func (s *Session) FetchStats(ctx context.Context) (ServerStats, error) {
-	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	s.statsMu.Lock()
+	hasStatic := s.staticHost != "" || s.staticOS != ""
+	s.statsMu.Unlock()
+
+	script := telemetryFullScript
+	if hasStatic {
+		script = telemetryFastScript
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	t0 := time.Now()
-	out, err := s.Exec(execCtx, telemetryScript, 16<<10)
+	out, err := s.Exec(execCtx, script, 16<<10)
 	rtt := time.Since(t0).Milliseconds()
 	if err != nil && strings.TrimSpace(out) == "" {
 		return ServerStats{}, err
 	}
-	stats := parseTelemetry(out)
+
+	stats, snap, hasSnap := parseTelemetryWithCPU(out)
+
+	s.statsMu.Lock()
+	if stats.Hostname != "" {
+		s.staticHost = stats.Hostname
+	} else {
+		stats.Hostname = s.staticHost
+	}
+	if stats.OS != "" {
+		s.staticOS = stats.OS
+	} else {
+		stats.OS = s.staticOS
+	}
+	if stats.Kernel != "" {
+		s.staticKernel = stats.Kernel
+	} else {
+		stats.Kernel = s.staticKernel
+	}
+	if stats.CPUCores > 0 {
+		s.staticCores = stats.CPUCores
+	} else {
+		stats.CPUCores = s.staticCores
+	}
+	if hasSnap {
+		if s.hasPrevCPU {
+			stats.CPUPercent = calcCPUPercent(s.prevCPU, snap)
+		}
+		s.prevCPU = snap
+		s.hasPrevCPU = true
+	}
+	s.statsMu.Unlock()
+
 	if s.LatencyMs() > 0 {
 		stats.LatencyMs = s.LatencyMs()
 	} else {
@@ -80,8 +119,35 @@ func (s *Session) FetchStats(ctx context.Context) (ServerStats, error) {
 	return stats, nil
 }
 
+func calcCPUPercent(a, b [7]float64) float64 {
+	idle1 := a[3] + a[4]
+	idle2 := b[3] + b[4]
+	tot1 := a[0] + a[1] + a[2] + a[3] + a[4] + a[5] + a[6]
+	tot2 := b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6]
+	dt := tot2 - tot1
+	di := idle2 - idle1
+	if dt <= 0 {
+		return 0
+	}
+	pct := (1 - di/dt) * 100
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return math.Round(pct*10) / 10
+}
+
 func parseTelemetry(raw string) ServerStats {
+	st, _, _ := parseTelemetryWithCPU(raw)
+	return st
+}
+
+func parseTelemetryWithCPU(raw string) (ServerStats, [7]float64, bool) {
 	var st ServerStats
+	var snap [7]float64
+	var hasSnap bool
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if len(line) < 2 || line[1] != ':' {
@@ -107,26 +173,19 @@ func parseTelemetry(raw string) ServerStats {
 		case 'P':
 			parts := strings.Fields(val)
 			if len(parts) >= 14 {
-				nums := make([]float64, 14)
-				for i := 0; i < 14; i++ {
-					nums[i], _ = strconv.ParseFloat(parts[i], 64)
+				var a, b [7]float64
+				for i := 0; i < 7; i++ {
+					a[i], _ = strconv.ParseFloat(parts[i], 64)
+					b[i], _ = strconv.ParseFloat(parts[i+7], 64)
 				}
-				idle1 := nums[3] + nums[4]
-				idle2 := nums[10] + nums[11]
-				tot1 := nums[0] + nums[1] + nums[2] + nums[3] + nums[4] + nums[5] + nums[6]
-				tot2 := nums[7] + nums[8] + nums[9] + nums[10] + nums[11] + nums[12] + nums[13]
-				dt := tot2 - tot1
-				di := idle2 - idle1
-				if dt > 0 {
-					pct := (1 - di/dt) * 100
-					if pct < 0 {
-						pct = 0
-					}
-					if pct > 100 {
-						pct = 100
-					}
-					st.CPUPercent = math.Round(pct*10) / 10
+				st.CPUPercent = calcCPUPercent(a, b)
+				snap = b
+				hasSnap = true
+			} else if len(parts) >= 7 {
+				for i := 0; i < 7; i++ {
+					snap[i], _ = strconv.ParseFloat(parts[i], 64)
 				}
+				hasSnap = true
 			}
 		case 'M':
 			parts := strings.Fields(val)
@@ -155,5 +214,5 @@ func parseTelemetry(raw string) ServerStats {
 			}
 		}
 	}
-	return st
+	return st, snap, hasSnap
 }

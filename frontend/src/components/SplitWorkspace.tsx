@@ -8,6 +8,7 @@ interface SplitWorkspaceProps {
   tabs: WorkspaceTab[];
   activeTabId: string | null;
   paneDrag: ReturnType<typeof usePaneDrag>;
+  profiles?: Profile[];
   sessions: Record<string, SessionRecord>;
   settings: AppSettings;
   onFocusPane: (tabId: string, paneId: string) => void;
@@ -37,6 +38,7 @@ export const SplitWorkspace: React.FC<SplitWorkspaceProps> = (props) => {
   const slots = new Map(layouts.flatMap(({tab, panes}) => panes.map(p => [p.leaf.sessionId, {tab, ...p}] as const)));
   const activeId = paneDrag.hoverTab ?? props.activeTabId;
   const active = layouts.find(l => l.tab.id === activeId);
+  const profileNameById = new Map((props.profiles ?? []).map((p) => [p.id, p.name || p.host]));
 
   return (
     <div className="workspace-layout" ref={board}>
@@ -47,6 +49,9 @@ export const SplitWorkspace: React.FC<SplitWorkspaceProps> = (props) => {
         const target = {tabId: tab.id, paneId: leaf.paneId};
         const visible = tab.id === activeId;
         const edge = visible && paneDrag.preview?.paneId === leaf.paneId ? paneDrag.preview.edge : undefined;
+        const jumpHostName = session.profile.jumpHostId
+          ? profileNameById.get(session.profile.jumpHostId)
+          : undefined;
         return (
           <div key={session.id} className="terminal-slot" data-drop-edge={edge}
             style={{display: visible ? 'flex' : 'none', left: percent(bounds.x), top: percent(bounds.y),
@@ -56,6 +61,7 @@ export const SplitWorkspace: React.FC<SplitWorkspaceProps> = (props) => {
               paneId={leaf.paneId}
               onDragPane={e => paneDrag.start(e, target)}
               session={session}
+              jumpHostName={jumpHostName}
               settings={props.settings}
               focused={visible && tab.activePaneId === leaf.paneId}
               multiPane={tab.root.type === 'split'}

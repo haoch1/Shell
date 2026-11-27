@@ -7,6 +7,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import {
+  ArrowRight,
   ArrowUpRight,
   Check,
   Clipboard,
@@ -22,9 +23,8 @@ import {
   SplitSquareHorizontal,
   SplitSquareVertical,
   X,
-  XCircle,
 } from 'lucide-react';
-import type { AppSettings, SessionRecord } from '../types/shell';
+import type { AppSettings, ConnectStage, SessionRecord } from '../types/shell';
 import { getTerminalTheme } from '../lib/themes';
 import { formatConnectError } from '../lib/connectError';
 import { TerminalHighlighter } from '../lib/terminalHighlight';
@@ -33,10 +33,74 @@ import { copyToClipboard, openExternalURL, readFromClipboard } from '../lib/brid
 import { formatHostDisplay } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 
+type MilestoneStage = Exclude<ConnectStage, 'error'>;
+type MilestoneState = 'pending' | 'active' | 'done' | 'error';
+
+const MILESTONE_META: Record<
+  MilestoneStage,
+  { label: string; activeText: string; doneText: string; errorText: string }
+> = {
+  jump: { label: '跳板机隧道', activeText: '连接中', doneText: '已连通', errorText: '失败' },
+  dial: { label: '建立网络连接', activeText: '连接中', doneText: '已连通', errorText: '失败' },
+  auth: { label: '指纹校验与认证', activeText: '认证中', doneText: '已通过', errorText: '失败' },
+  shell: { label: '启动交互终端', activeText: '启动中', doneText: '已就绪', errorText: '失败' },
+};
+
+function buildConnectMilestones(
+  session: SessionRecord,
+  hasJump: boolean,
+): { stage: MilestoneStage; label: string; status: MilestoneState; badge: string }[] {
+  const order: MilestoneStage[] = hasJump ? ['jump', 'dial', 'auth', 'shell'] : ['dial', 'auth', 'shell'];
+  const recorded = session.connectSteps ?? [];
+  const byStage = new Map<MilestoneStage, 'active' | 'done' | 'error'>();
+  let lastStageIdx = 0;
+
+  for (const step of recorded) {
+    if (step.stage === 'error') continue;
+    byStage.set(step.stage, step.status);
+    const idx = order.indexOf(step.stage);
+    if (idx >= lastStageIdx) lastStageIdx = idx;
+  }
+
+  const isFailed = session.state === 'closed';
+  let errorIdx = -1;
+  if (isFailed) {
+    const explicitErrIdx = order.findIndex((st) => byStage.get(st) === 'error');
+    errorIdx = explicitErrIdx >= 0 ? explicitErrIdx : lastStageIdx;
+  }
+
+  const items = order.map((stage, idx) => {
+    const meta = MILESTONE_META[stage];
+    let status: MilestoneState;
+    if (isFailed) {
+      if (idx < errorIdx) status = 'done';
+      else if (idx === errorIdx) status = 'error';
+      else status = 'pending';
+    } else {
+      const rec = byStage.get(stage);
+      if (rec === 'done' || idx < lastStageIdx) status = 'done';
+      else if (idx === lastStageIdx) status = 'active';
+      else status = 'pending';
+    }
+    const badge =
+      status === 'done'
+        ? meta.doneText
+        : status === 'active'
+          ? meta.activeText
+          : status === 'error'
+            ? meta.errorText
+            : '等待';
+    return { stage, label: meta.label, status, badge };
+  });
+
+  return isFailed ? items.slice(0, Math.max(1, errorIdx + 1)) : items;
+}
+
 interface TerminalPaneProps {
   paneId: string;
   onDragPane: (e: React.DragEvent) => void;
   session: SessionRecord;
+  jumpHostName?: string;
   settings: AppSettings;
   focused: boolean;
   multiPane: boolean;
@@ -61,6 +125,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   paneId,
   onDragPane,
   session,
+  jumpHostName,
   settings,
   focused,
   multiPane,
@@ -99,6 +164,8 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   stateRef.current = session.state;
 
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
+  const [connectElapsedMs, setConnectElapsedMs] = useState(0);
+  const [copiedErr, setCopiedErr] = useState(false);
 
   const isAppDark =
     settings.theme === 'dark' ||
@@ -338,6 +405,24 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
 
   const showConnectOverlay = !session.hasConnected && session.state !== 'connected';
 
+  useEffect(() => {
+    if (!showConnectOverlay || session.state !== 'connecting') {
+      return;
+    }
+    const start = session.startedAt || Date.now();
+    setConnectElapsedMs(Math.max(0, Date.now() - start));
+    const id = window.setInterval(() => {
+      setConnectElapsedMs(Math.max(0, Date.now() - start));
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [showConnectOverlay, session.state, session.startedAt]);
+
+  useEffect(() => {
+    if (!copiedErr) return;
+    const id = window.setTimeout(() => setCopiedErr(false), 1500);
+    return () => window.clearTimeout(id);
+  }, [copiedErr]);
+
   // Focus xterm crisply right as the connection succeeds while this pane is focused.
   useEffect(() => {
     if (session.state === 'connected' && focused) {
@@ -481,65 +566,104 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       >
         <div ref={hostRef} className={`pane-xterm-host ${showConnectOverlay ? 'is-hidden' : ''}`} />
         {showConnectOverlay && (() => {
-          const steps =
-            session.connectSteps && session.connectSteps.length > 0
-              ? session.connectSteps
-              : [
-                  {
-                    stage: 'dial' as const,
-                    text: session.state === 'closed' ? '连接未完成' : '正在建立连接...',
-                    status: session.state === 'closed' ? ('error' as const) : ('active' as const),
-                  },
-                ];
-          const errInfo =
-            session.state === 'closed' ? formatConnectError(session.endMessage || '连接失败') : null;
+          const hasJump = Boolean(
+            session.profile.jumpHostId ||
+              jumpHostName ||
+              session.connectSteps?.some((s) => s.stage === 'jump'),
+          );
+          const milestones = buildConnectMilestones(session, hasJump);
+          const isFailed = session.state === 'closed';
+          const errInfo = isFailed ? formatConnectError(session.endMessage || '连接失败') : null;
+          const elapsedText = `${(connectElapsedMs / 1000).toFixed(1)}s`;
           return (
             <div className="pane-connect-trace" role="status" aria-live="polite">
-              <div className="pane-connect-head">
-                <HostIcon profile={session.profile} size="sm" />
-                <span className="pane-connect-title">{paneDisplayName}</span>
-                {!hideHostIp && (
-                  <span className="pane-connect-target mono">
-                    {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port)}
-                  </span>
+              <div className={`pane-connect-card ${isFailed ? 'is-error' : ''}`}>
+                <div className="pane-connect-head">
+                  <HostIcon profile={session.profile} size="md" />
+                  <div className="pane-connect-ident">
+                    <div className="pane-connect-title">{paneDisplayName}</div>
+                    <div className="pane-connect-sub">
+                      {jumpHostName && (
+                        <span className="pane-connect-hop">
+                          <span>{jumpHostName}</span>
+                          <ArrowRight size={10.5} strokeWidth={2} />
+                        </span>
+                      )}
+                      {!hideHostIp ? (
+                        <span className="pane-connect-target mono">
+                          {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port)}
+                        </span>
+                      ) : (
+                        <span className="pane-connect-target">
+                          {jumpHostName ? '跳板安全会话' : 'SSH 安全会话'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {isFailed ? (
+                    <span className="pane-connect-pill error">连接失败</span>
+                  ) : (
+                    <span className="pane-connect-elapsed mono tabular">{elapsedText}</span>
+                  )}
+                </div>
+
+                <div className="pane-connect-divider" />
+
+                <div className="pane-connect-steps">
+                  {milestones.map((step, idx) => (
+                    <div
+                      key={step.stage}
+                      className={`pane-connect-step is-${step.status} ${idx === milestones.length - 1 ? 'is-last' : ''}`}
+                    >
+                      <span className={`pane-connect-node is-${step.status}`} aria-hidden="true">
+                        {step.status === 'done' && <Check size={10.5} strokeWidth={2.6} className="pane-step-icon done" />}
+                        {step.status === 'active' && <Loader2 size={11.5} strokeWidth={2.2} className="pane-step-icon active" />}
+                        {step.status === 'error' && <X size={10.5} strokeWidth={2.6} className="pane-step-icon error" />}
+                        {step.status === 'pending' && <span className="pane-step-dot" />}
+                      </span>
+                      <span className="pane-connect-step-label">{step.label}</span>
+                      <span className={`pane-connect-step-badge is-${step.status}`}>{step.badge}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {errInfo && (
+                  <>
+                    <div className="pane-connect-error">
+                      <div className="pane-connect-error-row">
+                        <div className="pane-connect-error-title">{errInfo.title}</div>
+                        {errInfo.detail && (
+                          <button
+                            type="button"
+                            className="pane-connect-copy"
+                            title={copiedErr ? '已复制错误详情' : '复制错误详情'}
+                            aria-label="复制错误详情"
+                            onClick={() => {
+                              void copyToClipboard(errInfo.detail || errInfo.title);
+                              setCopiedErr(true);
+                            }}
+                          >
+                            {copiedErr ? <Check size={12} /> : <Copy size={12} />}
+                          </button>
+                        )}
+                      </div>
+                      {errInfo.detail && <div className="pane-connect-raw mono">{errInfo.detail}</div>}
+                    </div>
+                    <div className="pane-connect-actions">
+                      {errInfo.canEditProfile && onEditProfile && session.profile.id && (
+                        <button type="button" className="btn btn-sm" onClick={onEditProfile}>
+                          <Pencil size={12.5} />
+                          编辑配置
+                        </button>
+                      )}
+                      <button type="button" className="btn btn-primary btn-sm" onClick={onReconnect}>
+                        <RotateCw size={12.5} />
+                        重新连接
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
-              <div className="pane-connect-steps">
-                {steps.map((step, idx) => (
-                  <div key={`${step.stage}-${idx}`} className={`pane-connect-step is-${step.status}`}>
-                    {step.status === 'done' && (
-                      <Check size={12.5} strokeWidth={2.2} className="pane-step-icon done" />
-                    )}
-                    {step.status === 'active' && (
-                      <Loader2 size={12.5} strokeWidth={2} className="pane-step-icon active" />
-                    )}
-                    {step.status === 'error' && (
-                      <XCircle size={12.5} strokeWidth={2} className="pane-step-icon error" />
-                    )}
-                    <span>{step.text}</span>
-                  </div>
-                ))}
-              </div>
-              {errInfo && (
-                <>
-                  <div className="pane-connect-error">
-                    <div className="pane-connect-error-title">{errInfo.title}</div>
-                    {errInfo.detail && <div className="pane-connect-raw mono">{errInfo.detail}</div>}
-                  </div>
-                  <div className="pane-connect-actions">
-                    <button type="button" className="btn btn-primary btn-sm" onClick={onReconnect}>
-                      <RotateCw size={12.5} />
-                      重新连接
-                    </button>
-                    {errInfo.canEditProfile && onEditProfile && session.profile.id && (
-                      <button type="button" className="btn btn-sm" onClick={onEditProfile}>
-                        <Pencil size={12.5} />
-                        编辑配置
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
             </div>
           );
         })()}

@@ -639,6 +639,7 @@ async function verifyFrontendUI() {
     })()`);
     await click('#batchManageBtn');
     await until(() => evaluate("!!document.querySelector('.sidebar-select-header')"), 'sidebar batch select header');
+    await sleep(260);
     const batchMetrics = await evaluate(`(() => {
       const hdr = document.querySelector('.sidebar-select-header')?.getBoundingClientRect();
       const masterCb = document.querySelector('.sidebar-select-header input[type="checkbox"]')?.getBoundingClientRect();
@@ -1096,13 +1097,13 @@ async function verifyFrontendUI() {
     await sleep(200);
     const themeTiles = await evaluate(`[...document.querySelectorAll('#settingsDialog .theme-tile')].map(el => el.textContent.trim())`);
     assert.ok(
-      themeTiles.some(t => t.includes('石墨深色')) && themeTiles.some(t => t.includes('清雅浅色')) && !themeTiles.some(t => t.includes('Termius')),
-      'Expected eye-comfort theme presets 石墨深色 / 清雅浅色 in Settings, got ' + JSON.stringify(themeTiles),
+      themeTiles.some(t => t.includes('默认深色')) && themeTiles.some(t => t.includes('默认浅色')) && !themeTiles.some(t => t.includes('Termius')),
+      'Expected high-clarity theme presets 默认深色 / 默认浅色 in Settings, got ' + JSON.stringify(themeTiles),
     );
     await shot('08-Settings-Dark');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await sleep(250);
-    // Verify 石墨深色 (#1C2028) dark terminal background, calm cursor (#93B4F5) & non-neon ANSI green (#7FD29A)
+    // Verify 默认深色 (#121316) pure-neutral obsidian dark terminal background, crisp neutral cursor (#E6EDF3), GitHub Dark ANSI green (#3FB950), no blue active accent bars & full tab title visibility
     const darkPaletteAudit = await evaluate(`(() => {
       const wrap = document.querySelector('.pane-xterm-wrap');
       const bg = wrap ? getComputedStyle(wrap).backgroundColor : '';
@@ -1111,17 +1112,26 @@ async function verifyFrontendUI() {
       const styleText = [...document.querySelectorAll('.pane-xterm-wrap style')].map(s => s.textContent || '').join('\\n');
       const cursorEl = document.querySelector('.pane-xterm-wrap .xterm-cursor');
       const cursorBoxShadow = cursorEl ? getComputedStyle(cursorEl).boxShadow : '';
-      const hasCalmCursor = /#93b4f5/i.test(styleText) || styleText.includes('147, 180, 245') || cursorBoxShadow.includes('147, 180, 245');
-      const hasSoftGreen = /#7fd29a/i.test(styleText) || greenColor === 'rgb(127, 210, 154)';
-      return { bg, greenColor, cursorBoxShadow, hasCalmCursor, hasSoftGreen };
+      const hasCrispCursor = /#e6edf3/i.test(styleText) || styleText.includes('230, 237, 243') || cursorBoxShadow.includes('230, 237, 243');
+      const hasCrispGreen = /#3fb950/i.test(styleText) || greenColor === 'rgb(63, 185, 80)';
+      const activeTab = document.querySelector('.tab-item.active');
+      const activeHost = document.querySelector('.host-row.active');
+      const tabAfterContent = activeTab ? getComputedStyle(activeTab, '::after').content : null;
+      const hostBeforeContent = activeHost ? getComputedStyle(activeHost, '::before').content : null;
+      const firstTabLabel = activeTab?.querySelector('.tab-label') ?? document.querySelector('.tab-item .tab-label');
+      const tabFullVisible = firstTabLabel ? firstTabLabel.scrollWidth <= firstTabLabel.clientWidth + 1 : false;
+      return { bg, greenColor, cursorBoxShadow, hasCrispCursor, hasCrispGreen, tabAfterContent, hostBeforeContent, tabFullVisible };
     })()`);
-    assert.equal(darkPaletteAudit.bg, 'rgb(28, 32, 40)', 'Expected 石墨深色 canvas background #1C2028, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.greenColor, 'rgb(127, 210, 154)', 'Expected non-neon 石墨深色 ANSI green #7FD29A, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.hasCalmCursor, true, 'Expected calm 石墨深色 cursor color #93B4F5 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.hasSoftGreen, true, 'Expected soft 石墨深色 green #7FD29A in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.bg, 'rgb(18, 19, 22)', 'Expected 默认深色 canvas background #121316, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.greenColor, 'rgb(63, 185, 80)', 'Expected crisp 默认深色 ANSI green #3FB950, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCrispCursor, true, 'Expected crisp neutral cursor #E6EDF3 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCrispGreen, true, 'Expected crisp green #3FB950 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.tabAfterContent, 'none', 'Expected no blue ::after accent bar on .tab-item.active, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hostBeforeContent, 'none', 'Expected no blue ::before accent bar on .host-row.active, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.tabFullVisible, true, 'Expected full host name visible on tab without premature truncation, got ' + JSON.stringify(darkPaletteAudit));
     await shot('09-Terminal-Dark');
 
-    // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #1C2028 canvas)
+    // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #121316 canvas)
     await click('#sftpBtn');
     await until(() => evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'SFTP drawer in dark theme');
     await evaluate(`(() => {
@@ -1134,7 +1144,7 @@ async function verifyFrontendUI() {
       bg: getComputedStyle(document.querySelector('.remote-editor-cm-host .cm-editor')).backgroundColor,
     }))()`);
     assert.equal(cmDarkCheck.lang, 'Nginx', 'Expected Nginx auto-detection, got ' + JSON.stringify(cmDarkCheck));
-    assert.equal(cmDarkCheck.bg, 'rgb(28, 32, 40)', 'Expected Dark CodeMirror 6 editor canvas #1C2028, got ' + cmDarkCheck.bg);
+    assert.equal(cmDarkCheck.bg, 'rgb(18, 19, 22)', 'Expected Dark CodeMirror 6 editor canvas #121316, got ' + cmDarkCheck.bg);
     await shot('25-Remote-Editor-Dark');
     await click('.modal-sheet.editor button[aria-label="关闭"]');
     await until(() => evaluate("!document.querySelector('.modal-sheet.editor')"), 'closed dark editor');

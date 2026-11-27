@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf16"
@@ -66,30 +67,36 @@ func puttyKeyName(raw string) string {
 	return key.String()
 }
 
-func renderPuTTY(selected []Profile, _ []Profile) ([]byte, []string, error) {
+func renderPuTTY(selected, all []Profile) ([]byte, []string, error) {
 	var out strings.Builder
 	out.WriteString("Windows Registry Editor Version 5.00\r\n")
 	used := map[string]bool{"default%20settings": true}
 	var warnings []string
 	cp := windows.GetACP()
+	wanted := make(map[string]bool, len(selected))
 	for _, p := range selected {
-		if p.Host == "" || p.Port < 1 || p.Port > 65535 || p.KeepAliveSec < 0 ||
-			((p.ProxyType == "http" || p.ProxyType == "socks5") && (p.ProxyHost == "" || p.ProxyPort < 1 || p.ProxyPort > 65535)) {
-			return nil, nil, errors.New("PuTTY 会话的主机、端口或代理设置无效")
-		}
+		wanted[p.ID] = true
+	}
+	if len(all) == 0 {
+		all = selected
+	}
+	// Allocate duplicate names in stable profile ID order regardless of selection or display order.
+	all = slices.Clone(all)
+	slices.SortStableFunc(all, func(a, b Profile) int { return strings.Compare(a.ID, b.ID) })
+	for _, p := range all {
 		name := strings.TrimSpace(p.Name)
 		if name == "" {
 			name = p.Host
 		}
 		native, representable := puttyNativeBytes(name, cp)
 		base := puttyKeyName(native)
-		if !representable || base == "" || len(base) > 255 || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+		fallback := !representable || base == "" || len(base) > 255 || strings.IndexFunc(name, unicode.IsControl) >= 0
+		if fallback {
 			nativeHost, ok := puttyNativeBytes(p.Host, cp)
 			base = puttyKeyName(nativeHost)
 			if !ok || base == "" || len(base) > 255 || strings.IndexFunc(p.Host, unicode.IsControl) >= 0 {
 				base = "Shell"
 			}
-			warnings = append(warnings, fmt.Sprintf("“%s”的会话名超出 PuTTY 本机字符集或长度限制，已使用备用名称", name))
 		}
 		key := base
 		for suffix := 2; used[strings.ToLower(key)]; suffix++ {
@@ -99,6 +106,16 @@ func renderPuTTY(selected []Profile, _ []Profile) ([]byte, []string, error) {
 			}
 		}
 		used[strings.ToLower(key)] = true
+		if !wanted[p.ID] {
+			continue
+		}
+		if p.Host == "" || p.Port < 1 || p.Port > 65535 || p.KeepAliveSec < 0 ||
+			((p.ProxyType == "http" || p.ProxyType == "socks5") && (p.ProxyHost == "" || p.ProxyPort < 1 || p.ProxyPort > 65535)) {
+			return nil, nil, errors.New("PuTTY 会话的主机、端口或代理设置无效")
+		}
+		if fallback {
+			warnings = append(warnings, fmt.Sprintf("“%s”的会话名超出 PuTTY 本机字符集或长度限制，已使用备用名称", name))
+		}
 		if key != base {
 			warnings = append(warnings, fmt.Sprintf("“%s”的 PuTTY 会话名重名或保留，已添加序号", name))
 		}

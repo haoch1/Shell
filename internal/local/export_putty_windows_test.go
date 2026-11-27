@@ -81,3 +81,21 @@ func TestPuTTYExportCollisionsAndUnsupportedKeys(t *testing.T) {
 		t.Fatal("unsafe control characters in a quoted .reg value were accepted")
 	}
 }
+
+func TestPuTTYSelectedDuplicateKeepsFullExportRegistryKey(t *testing.T) {
+	first := Profile{ID: "one", Name: "Prod", Host: "one.example", Port: 22}
+	second := Profile{ID: "two", Name: "PROD", Host: "two.example", Port: 22}
+	all := []Profile{first, second}
+	for _, library := range [][]Profile{all, {second, first}} {
+		for _, selected := range [][]Profile{all, {second}} {
+			data, _, err := renderPuTTY(selected, library)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := decodeTextAuto(data)
+			if !strings.Contains(text, "\\PROD%20(2)]\r\n") || strings.Contains(text, "\"one.example\"") != (len(selected) == 2) {
+				t.Fatal("library order or selection changed the key or exported an unselected server")
+			}
+		}
+	}
+}

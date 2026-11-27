@@ -92,3 +92,17 @@ Write-Host $summary
 if ($env:GITHUB_STEP_SUMMARY) {
     $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 }
+
+# Reference sizes are the published Windows assets in haoch1/Shell v1.2.0.
+$releaseBaseline = @{ 'Shell-Windows-x64.exe' = 15375360; 'Shell-Windows-x64.zip' = 6166856 }
+foreach ($name in $releaseBaseline.Keys) {
+    $bytes = (Get-Item -LiteralPath (Join-Path $releaseDir $name)).Length
+    $baseline = $releaseBaseline[$name]
+    $growth = ($bytes - $baseline) * 100.0 / $baseline
+    $line = '{0}  {1:N0} bytes ({2:+0.00;-0.00;0.00}% vs v1.2.0)' -f $name, $bytes, $growth
+    Write-Host $line
+    if ($env:GITHUB_STEP_SUMMARY) {
+        $line | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+    }
+    if ($bytes -gt $baseline * 1.05) { throw "$name exceeds the 5% size growth budget against v1.2.0." }
+}

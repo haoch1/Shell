@@ -54,6 +54,8 @@ jobs:
         run: |
           npm ci
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node --experimental-strip-types --test tests/sessionAttempt.test.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
@@ -75,6 +77,8 @@ jobs:
       - name: Run Windows unit and integration tests
         run: |
           go test -count=1 -timeout=3m -tags desktop,production,wv2runtime.download ./...
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          go test -run '^$' -bench '^BenchmarkStdioDiscovery$' -benchmem -benchtime=1s ./internal/agentbridge
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Determine release version

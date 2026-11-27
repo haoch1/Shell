@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -42,12 +41,12 @@ type Handler interface {
 
 // Server serves MCP Streamable HTTP (/mcp) and REST (/api/v1/*) strictly on 127.0.0.1.
 type Server struct {
-	mu      sync.Mutex
-	srv     *http.Server
-	ln      net.Listener
-	port    int
-	token   string
-	handler Handler
+	lifecycle sync.Mutex // Serialize listener changes independently of request authentication.
+	mu        sync.Mutex
+	srv       *http.Server
+	port      int
+	token     string
+	handler   Handler
 }
 
 func New(handler Handler) *Server {
@@ -55,41 +54,40 @@ func New(handler Handler) *Server {
 }
 
 func (s *Server) Start(port int, token string) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.srv != nil {
-		if s.port == port {
-			s.token = token
-			return s.port, nil
-		}
-		_ = s.stopLocked()
-	}
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
 	if port < 1024 || port > 65535 {
 		port = 17822
 	}
+	s.mu.Lock()
+	if s.srv != nil && s.port == port {
+		s.token = token
+		s.mu.Unlock()
+		return port, nil
+	}
+	s.mu.Unlock()
+	s.stop()
 	ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return 0, fmt.Errorf("无法在 127.0.0.1:%d 启动本地 MCP 服务：%w", port, err)
 	}
-	s.ln = ln
-	s.port = ln.Addr().(*net.TCPAddr).Port
-	s.token = token
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", s.handleMCP)
 	mux.HandleFunc("/api/v1/health", s.handleHealth)
 	mux.HandleFunc("/api/v1/tools", s.handleRESTTools)
 	mux.HandleFunc("/api/v1/call", s.handleRESTCall)
 
-	s.srv = &http.Server{
+	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	s.mu.Lock()
+	s.srv, s.port, s.token = srv, port, token
+	s.mu.Unlock()
 	go func(srv *http.Server, l net.Listener) {
 		_ = srv.Serve(l)
-	}(s.srv, ln)
-	return s.port, nil
+	}(srv, ln)
+	return port, nil
 }
 
 func (s *Server) SetToken(token string) {
@@ -105,22 +103,24 @@ func (s *Server) Running() (bool, int) {
 }
 
 func (s *Server) Stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_ = s.stopLocked()
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	s.stop()
 }
 
-func (s *Server) stopLocked() error {
-	if s.srv == nil {
-		return nil
+func (s *Server) stop() {
+	s.mu.Lock()
+	srv := s.srv
+	s.srv, s.port, s.token = nil, 0, ""
+	s.mu.Unlock()
+	if srv == nil {
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	err := s.srv.Shutdown(ctx)
-	s.srv = nil
-	s.ln = nil
-	s.port = 0
-	return err
+	if err := srv.Shutdown(ctx); err != nil {
+		_ = srv.Close()
+	}
 }
 
 // validateSecurity enforces MCP spec Origin validation (DNS rebinding protection) and Bearer token authentication.
@@ -158,7 +158,7 @@ func (s *Server) validateSecurity(w http.ResponseWriter, r *http.Request) bool {
 
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
@@ -169,10 +169,10 @@ type rpcError struct {
 }
 
 type rpcResponse struct {
-	JSONRPC string    `json:"jsonrpc"`
-	ID      any       `json:"id,omitempty"`
-	Result  any       `json:"result,omitempty"`
-	Error   *rpcError `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  any             `json:"result,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -239,6 +239,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet {
 		// Streamable HTTP optional GET probe -> cleanly indicate stateless POST JSON-RPC support.
+		w.Header().Set("Allow", "POST, DELETE")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -251,20 +252,20 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 2<<20))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "failed to read body"}})
 		return
 	}
 
 	var req rpcRequest
-	if err := json.Unmarshal(raw, &req); err != nil || req.Method == "" {
+	if err := json.Unmarshal(raw, &req); err != nil || req.JSONRPC != "2.0" || req.Method == "" {
 		writeJSON(w, http.StatusBadRequest, rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32600, Message: "invalid JSON-RPC 2.0 request"}})
 		return
 	}
 
 	// JSON-RPC Notification (no ID -> 202 Accepted per MCP Streamable HTTP spec)
-	if req.ID == nil && strings.HasPrefix(req.Method, "notifications/") {
+	if req.ID == nil {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -348,106 +349,4 @@ func (s *Server) dispatchMCP(ctx context.Context, req rpcRequest, clientName str
 			Error:   &rpcError{Code: -32601, Message: "method not found: " + req.Method},
 		}
 	}
-}
-
-// ProxyStdioToHTTP implements `Shell.exe --mcp` stdio JSON-RPC 2.0 mode by forwarding cleanly
-// to the running Shell desktop window's local MCP HTTP endpoint with keep-alive pooling and token caching.
-func ProxyStdioToHTTP(in io.Reader, out io.Writer, resolveEndpoint func() (string, string, error)) error {
-	scanner := bufioNewScanner(in)
-	transport := &http.Transport{
-		MaxIdleConns:        8,
-		MaxIdleConnsPerHost: 8,
-		IdleConnTimeout:     90 * time.Second,
-	}
-	httpClient := &http.Client{Timeout: 180 * time.Second, Transport: transport}
-	enc := json.NewEncoder(out)
-
-	var cachedEndpoint, cachedToken string
-	getEndpoint := func(forceRefresh bool) (string, string, error) {
-		if !forceRefresh && cachedEndpoint != "" && cachedToken != "" {
-			return cachedEndpoint, cachedToken, nil
-		}
-		ep, tok, err := resolveEndpoint()
-		if err != nil {
-			cachedEndpoint, cachedToken = "", ""
-			return "", "", err
-		}
-		cachedEndpoint, cachedToken = ep, tok
-		return ep, tok, nil
-	}
-
-	sendOnce := func(endpoint, token string, line []byte) (*http.Response, error) {
-		req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(line)))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-MCP-Client", "Shell stdio MCP")
-		return httpClient.Do(req)
-	}
-
-	for scanner.Scan() {
-		line := bytesTrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var probe struct {
-			ID     any    `json:"id,omitempty"`
-			Method string `json:"method"`
-		}
-		_ = json.Unmarshal(line, &probe)
-
-		endpoint, token, err := getEndpoint(false)
-		if err != nil {
-			if probe.ID != nil {
-				_ = enc.Encode(rpcResponse{
-					JSONRPC: "2.0",
-					ID:      probe.ID,
-					Error:   &rpcError{Code: -32000, Message: "Shell 未启动或未开启本地 MCP 服务：" + err.Error()},
-				})
-			}
-			continue
-		}
-
-		resp, err := sendOnce(endpoint, token, line)
-		if err != nil || (resp != nil && resp.StatusCode == http.StatusUnauthorized) {
-			if resp != nil {
-				resp.Body.Close()
-			}
-			// Re-resolve endpoint/token once (e.g. if Shell restarted on a new port or rotated token).
-			if ep2, tok2, err2 := getEndpoint(true); err2 == nil {
-				resp, err = sendOnce(ep2, tok2, line)
-			}
-		}
-		if err != nil {
-			if probe.ID != nil {
-				_ = enc.Encode(rpcResponse{
-					JSONRPC: "2.0",
-					ID:      probe.ID,
-					Error:   &rpcError{Code: -32001, Message: "无法连接到运行中的 Shell 窗口，请确认 Shell 已启动并在「设置 -> Agent 与安全」中开启了 MCP 服务：" + err.Error()},
-				})
-			}
-			continue
-		}
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusAccepted || len(bytesTrimSpace(respBody)) == 0 {
-			continue
-		}
-		if resp.StatusCode >= 400 && probe.ID != nil {
-			_ = enc.Encode(rpcResponse{
-				JSONRPC: "2.0",
-				ID:      probe.ID,
-				Error:   &rpcError{Code: -32002, Message: fmt.Sprintf("Shell MCP 拒绝请求 (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))},
-			})
-			continue
-		}
-		_, _ = out.Write(append(bytesTrimSpace(respBody), '\n'))
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	return nil
 }

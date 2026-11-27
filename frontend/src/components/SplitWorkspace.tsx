@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import type { AppSettings, SessionRecord, WorkspaceTab } from '../types/shell';
+import type { AppSettings, Profile, SessionRecord, WorkspaceTab } from '../types/shell';
 import { paneGeometry } from '../lib/paneLayout';
 import type { usePaneDrag } from '../lib/usePaneDrag';
 import { TerminalPane } from './TerminalPane';
@@ -16,6 +16,7 @@ interface SplitWorkspaceProps {
   onPaneResize: (sessionId: string, cols: number, rows: number) => void;
   onPaneCwdChange: (sessionId: string, dir: string) => void;
   onReconnectPane: (tabId: string, paneId: string, sessionId: string) => void;
+  onEditProfile?: (profile: Profile) => void;
   onClosePane: (tabId: string, paneId: string) => void;
   onDetachPane: (tabId: string, paneId: string) => void;
   onSplitPane: (tabId: string, paneId: string, dir: 'horizontal' | 'vertical') => void;
@@ -63,6 +64,7 @@ export const SplitWorkspace: React.FC<SplitWorkspaceProps> = (props) => {
               onResize={(c, r) => props.onPaneResize(session.id, c, r)}
               onCwdChange={dir => props.onPaneCwdChange(session.id, dir)}
               onReconnect={() => props.onReconnectPane(tab.id, leaf.paneId, session.id)}
+              onEditProfile={props.onEditProfile ? () => props.onEditProfile?.(session.profile) : undefined}
               onClosePane={() => props.onClosePane(tab.id, leaf.paneId)}
               onDetachPane={() => props.onDetachPane(tab.id, leaf.paneId)}
               onSplit={dir => props.onSplitPane(tab.id, leaf.paneId, dir)}

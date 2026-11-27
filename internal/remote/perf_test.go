@@ -625,3 +625,133 @@ func TestSessionIsPromptIdle(t *testing.T) {
 		t.Fatal("closed session reported IsPromptIdle=true")
 	}
 }
+
+func TestConnectStatusCallbacks(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	bastionKey, _ := signer(t)
+	targetKey, _ := signer(t)
+
+	bastion := startPerfSSH(t, bastionKey, 0, 0, 0)
+	target := startPerfSSH(t, targetKey, 0, 0, 0)
+	bPort := bastion.listener.Addr().(*net.TCPAddr).Port
+	tPort := target.listener.Addr().(*net.TCPAddr).Port
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	type statusEvent struct {
+		stage   string
+		message string
+	}
+
+	// 1. Direct Connect emits dial -> auth -> shell and never leaks password.
+	var directEvents []statusEvent
+	var mu sync.Mutex
+	s1, err := Connect(ctx, Config{
+		Host:     "127.0.0.1",
+		Port:     tPort,
+		User:     "test",
+		Password: "unit-password",
+		Auth:     "password",
+		Cols:     80,
+		Rows:     24,
+	}, Callbacks{
+		Verify: func(_, _, _ string) bool { return true },
+		Status: func(stage, message string) {
+			mu.Lock()
+			directEvents = append(directEvents, statusEvent{stage: stage, message: message})
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("direct Connect failed: %v", err)
+	}
+	s1.Close()
+
+	wantDirect := []string{"dial", "auth", "shell"}
+	if len(directEvents) != len(wantDirect) {
+		t.Fatalf("expected %d direct status events, got %d: %+v", len(wantDirect), len(directEvents), directEvents)
+	}
+	for i, want := range wantDirect {
+		if directEvents[i].stage != want {
+			t.Fatalf("direct event[%d] stage = %q, want %q (%+v)", i, directEvents[i].stage, want, directEvents)
+		}
+		if strings.Contains(directEvents[i].message, "unit-password") {
+			t.Fatalf("status event leaked secret: %q", directEvents[i].message)
+		}
+	}
+	if !strings.Contains(directEvents[0].message, fmt.Sprintf("127.0.0.1:%d", tPort)) {
+		t.Fatalf("expected direct dial message to contain target address, got %q", directEvents[0].message)
+	}
+
+	// 2. ProxyJump Connect emits jump -> dial -> auth -> shell cleanly without jump hop duplicates.
+	var jumpEvents []statusEvent
+	jumpCfg := Config{Host: "127.0.0.1", Port: bPort, User: "test", Password: "unit-password", Auth: "password"}
+	s2, err := Connect(ctx, Config{
+		Host:     "127.0.0.1",
+		Port:     tPort,
+		User:     "test",
+		Password: "unit-password",
+		Auth:     "password",
+		Cols:     80,
+		Rows:     24,
+		Jump:     &jumpCfg,
+	}, Callbacks{
+		Verify: func(_, _, _ string) bool { return true },
+		Status: func(stage, message string) {
+			mu.Lock()
+			jumpEvents = append(jumpEvents, statusEvent{stage: stage, message: message})
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("jumped Connect failed: %v", err)
+	}
+	s2.Close()
+
+	wantJump := []string{"jump", "dial", "auth", "shell"}
+	if len(jumpEvents) != len(wantJump) {
+		t.Fatalf("expected %d jump status events, got %d: %+v", len(wantJump), len(jumpEvents), jumpEvents)
+	}
+	for i, want := range wantJump {
+		if jumpEvents[i].stage != want {
+			t.Fatalf("jump event[%d] stage = %q, want %q (%+v)", i, jumpEvents[i].stage, want, jumpEvents)
+		}
+		if strings.Contains(jumpEvents[i].message, "unit-password") {
+			t.Fatalf("jump status event leaked secret: %q", jumpEvents[i].message)
+		}
+	}
+	if jumpEvents[1].message != "正在经跳板机连接目标主机..." {
+		t.Fatalf("unexpected jump dial message: %q", jumpEvents[1].message)
+	}
+
+	// 3. Auth failure emits dial -> auth and stops before shell.
+	var failEvents []statusEvent
+	_, err = Connect(ctx, Config{
+		Host:     "127.0.0.1",
+		Port:     tPort,
+		User:     "test",
+		Password: "wrong-secret-password",
+		Auth:     "password",
+		Cols:     80,
+		Rows:     24,
+	}, Callbacks{
+		Verify: func(_, _, _ string) bool { return true },
+		Status: func(stage, message string) {
+			mu.Lock()
+			failEvents = append(failEvents, statusEvent{stage: stage, message: message})
+			mu.Unlock()
+		},
+	})
+	if err == nil {
+		t.Fatal("expected auth failure with wrong password")
+	}
+	if len(failEvents) != 2 || failEvents[0].stage != "dial" || failEvents[1].stage != "auth" {
+		t.Fatalf("expected [dial auth] before auth failure, got %+v", failEvents)
+	}
+	for _, ev := range failEvents {
+		if strings.Contains(ev.message, "wrong-secret-password") {
+			t.Fatalf("status event leaked wrong password: %q", ev.message)
+		}
+	}
+}

@@ -5,6 +5,8 @@ import type {
   AgentStatusView,
   AppSettings,
   ChallengeRequest,
+  ConnectStage,
+  ConnectStep,
   DrawerMode,
   HostVerifyRequest,
   Profile,
@@ -152,6 +154,8 @@ export const App: React.FC = () => {
   tabsRef.current = tabs;
   const profilesRef = useRef(profiles);
   profilesRef.current = profiles;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   const toast = useCallback((text: string) => {
     const id = Date.now() + Math.random();
@@ -271,7 +275,19 @@ export const App: React.FC = () => {
           setSessions((prev) => {
             const cur = prev[sessionId];
             if (!cur || cur.state !== 'connecting') return prev;
-            return { ...prev, [sessionId]: { ...cur, state: 'connected', startedAt: Date.now() } };
+            const doneSteps = cur.connectSteps?.map((step) =>
+              step.status === 'active' ? { ...step, status: 'done' as const } : step,
+            );
+            return {
+              ...prev,
+              [sessionId]: {
+                ...cur,
+                state: 'connected',
+                hasConnected: true,
+                connectSteps: doneSteps,
+                startedAt: Date.now(),
+              },
+            };
           });
           const latestCtrl = terminalBus.get(sessionId);
           if (latestCtrl) {
@@ -305,9 +321,36 @@ export const App: React.FC = () => {
           setSessions((prev) => {
             const cur = prev[sessionId];
             if (!cur) return prev;
-            return { ...prev, [sessionId]: { ...cur, state: 'closed', endMessage: msg } };
+            const prevSteps = cur.connectSteps ?? [];
+            let marked = false;
+            const failedSteps: ConnectStep[] = prevSteps.map((step) => {
+              if (step.status === 'active') {
+                marked = true;
+                return { ...step, status: 'error' as const };
+              }
+              return step;
+            });
+            if (!marked) {
+              if (failedSteps.length > 0) {
+                const lastIdx = failedSteps.length - 1;
+                failedSteps[lastIdx] = { ...failedSteps[lastIdx], status: 'error' };
+              } else {
+                failedSteps.push({ stage: 'error', text: '建立连接失败', status: 'error' });
+              }
+            }
+            return {
+              ...prev,
+              [sessionId]: {
+                ...cur,
+                state: 'closed',
+                endMessage: msg,
+                connectSteps: failedSteps,
+              },
+            };
           });
-          terminalBus.writeln(sessionId, `\r\n\x1b[31m连接失败：${msg}\x1b[0m`);
+          if (sessionsRef.current[sessionId]?.hasConnected) {
+            terminalBus.writeln(sessionId, `\r\n\x1b[31m连接失败：${msg}\x1b[0m`);
+          }
         } finally {
           connectingRef.current.delete(sessionId);
         }
@@ -341,6 +384,8 @@ export const App: React.FC = () => {
         dir: '.',
         cols: 100,
         rows: 32,
+        hasConnected: false,
+        connectSteps: [{ stage: 'dial', text: '正在初始化连接...', status: 'active' }],
         secret,
         remember,
       };
@@ -506,6 +551,45 @@ export const App: React.FC = () => {
         });
         const cleanMsg = String(message || '连接已关闭').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
         terminalBus.writeln(id, `\r\n\x1b[90m[${cleanMsg}]\x1b[0m`);
+      }),
+      onDesktopEvent<[string, string, string]>('ssh:status', (id, stage, message) => {
+        const validStages: ConnectStage[] = ['jump', 'dial', 'auth', 'shell', 'error'];
+        const normStage: ConnectStage = (validStages as string[]).includes(stage)
+          ? (stage as ConnectStage)
+          : 'dial';
+        const rawText = String(message || '').trim();
+        const text =
+          settingsRef.current.hideHostIp && normStage === 'dial' && rawText !== '正在经跳板机连接目标主机...'
+            ? '正在建立网络连接...'
+            : rawText || '正在建立连接...';
+        setSessions((prev) => {
+          const cur = prev[id];
+          if (!cur || cur.state !== 'connecting') return prev;
+          const prevSteps = cur.connectSteps ?? [];
+          const isInitialPlaceholder =
+            prevSteps.length === 1 &&
+            prevSteps[0].stage === 'dial' &&
+            prevSteps[0].status === 'active' &&
+            (prevSteps[0].text === '正在初始化连接...' || prevSteps[0].text === '正在重新连接...');
+          let nextSteps: ConnectStep[];
+          if (isInitialPlaceholder) {
+            nextSteps = [{ stage: normStage, text, status: 'active' }];
+          } else if (prevSteps.length > 0 && prevSteps[prevSteps.length - 1].stage === normStage) {
+            nextSteps = prevSteps.map((step, idx) =>
+              idx === prevSteps.length - 1
+                ? { ...step, text, status: 'active' as const }
+                : step.status === 'active'
+                  ? { ...step, status: 'done' as const }
+                  : step,
+            );
+          } else {
+            nextSteps = [
+              ...prevSteps.map((step) => (step.status === 'active' ? { ...step, status: 'done' as const } : step)),
+              { stage: normStage, text, status: 'active' as const },
+            ];
+          }
+          return { ...prev, [id]: { ...cur, connectSteps: nextSteps } };
+        });
       }),
       onDesktopEvent<[string, number]>('ssh:latency', (id, ms) => {
         setSessions((prev) => {
@@ -922,6 +1006,9 @@ export const App: React.FC = () => {
         dir: sameSessionTarget(old.profile, latestProfile) ? old.dir : '.',
         cols: old.cols,
         rows: old.rows,
+        endMessage: undefined,
+        hasConnected: false,
+        connectSteps: [{ stage: 'dial', text: '正在重新连接...', status: 'active' }],
         secret,
         remember,
       };
@@ -1230,6 +1317,10 @@ export const App: React.FC = () => {
                   onPaneResize={handlePaneResize}
                   onPaneCwdChange={handlePaneCwdChange}
                   onReconnectPane={handleReconnectPane}
+                  onEditProfile={(profile) => {
+                    const latest = profilesRef.current.find((p) => p.id === profile.id) ?? profile;
+                    setHostModal({ open: true, profile: latest });
+                  }}
                   onClosePane={handleClosePane}
                   onDetachPane={handleDetachPane}
                   onSplitPane={handleSplitPane}

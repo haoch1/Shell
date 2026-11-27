@@ -8,19 +8,25 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import {
   ArrowUpRight,
+  Check,
   Clipboard,
   Copy,
   Download,
   Eraser,
   FolderOpen,
+  Loader2,
+  Pencil,
+  RotateCw,
   Search,
   Sparkles,
   SplitSquareHorizontal,
   SplitSquareVertical,
   X,
+  XCircle,
 } from 'lucide-react';
 import type { AppSettings, SessionRecord } from '../types/shell';
 import { getTerminalTheme } from '../lib/themes';
+import { formatConnectError } from '../lib/connectError';
 import { TerminalHighlighter } from '../lib/terminalHighlight';
 import { terminalBus } from '../lib/terminalBus';
 import { copyToClipboard, openExternalURL, readFromClipboard } from '../lib/bridge';
@@ -39,6 +45,7 @@ interface TerminalPaneProps {
   onResize: (cols: number, rows: number) => void;
   onCwdChange?: (dir: string) => void;
   onReconnect: () => void;
+  onEditProfile?: () => void;
   onClosePane: () => void;
   onDetachPane?: () => void;
   onSplit: (dir: 'horizontal' | 'vertical') => void;
@@ -62,6 +69,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   onResize,
   onCwdChange,
   onReconnect,
+  onEditProfile,
   onClosePane,
   onDetachPane,
   onSplit,
@@ -328,6 +336,37 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     }
   }, [session.state]);
 
+  const showConnectOverlay = !session.hasConnected && session.state !== 'connected';
+
+  // Focus xterm crisply right as the connection succeeds while this pane is focused.
+  useEffect(() => {
+    if (session.state === 'connected' && focused) {
+      terminalBus.get(session.id)?.focus();
+    }
+  }, [session.id, session.state, focused]);
+
+  // Allow pressing Enter on the initial connection error overlay to trigger reconnect immediately.
+  useEffect(() => {
+    if (!showConnectOverlay || session.state !== 'closed' || !focused) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+      if (e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        target.closest('button, a, input, textarea, select, [contenteditable="true"], [role="dialog"], .modal-backdrop') &&
+        !target.classList.contains('xterm-helper-textarea')
+      ) {
+        return;
+      }
+      if (document.querySelector('.modal-backdrop, [role="dialog"]')) return;
+      e.preventDefault();
+      reconnectRef.current();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showConnectOverlay, session.state, focused]);
+
   // Live-update xterm options when user changes appearance settings.
   useEffect(() => {
     const ctrl = terminalBus.get(session.id);
@@ -354,6 +393,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   ]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
+    if (showConnectOverlay) return;
     e.preventDefault();
     onFocus();
     const ctrl = terminalBus.get(session.id);
@@ -437,33 +477,87 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
 
       <div
         className="pane-xterm-wrap"
-        style={{ background: preset.theme.background ?? '#141729' }}
+        style={{ background: preset.theme.background ?? '#1C2028', position: 'relative' }}
       >
-        <div ref={hostRef} className="pane-xterm-host" />
+        <div ref={hostRef} className={`pane-xterm-host ${showConnectOverlay ? 'is-hidden' : ''}`} />
+        {showConnectOverlay && (() => {
+          const steps =
+            session.connectSteps && session.connectSteps.length > 0
+              ? session.connectSteps
+              : [
+                  {
+                    stage: 'dial' as const,
+                    text: session.state === 'closed' ? '连接未完成' : '正在建立连接...',
+                    status: session.state === 'closed' ? ('error' as const) : ('active' as const),
+                  },
+                ];
+          const errInfo =
+            session.state === 'closed' ? formatConnectError(session.endMessage || '连接失败') : null;
+          return (
+            <div className="pane-connect-trace" role="status" aria-live="polite">
+              <div className="pane-connect-head">
+                <HostIcon profile={session.profile} size="sm" />
+                <span className="pane-connect-title">{paneDisplayName}</span>
+                {!hideHostIp && (
+                  <span className="pane-connect-target mono">
+                    {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port)}
+                  </span>
+                )}
+              </div>
+              <div className="pane-connect-steps">
+                {steps.map((step, idx) => (
+                  <div key={`${step.stage}-${idx}`} className={`pane-connect-step is-${step.status}`}>
+                    {step.status === 'done' && (
+                      <Check size={12.5} strokeWidth={2.2} className="pane-step-icon done" />
+                    )}
+                    {step.status === 'active' && (
+                      <Loader2 size={12.5} strokeWidth={2} className="pane-step-icon active" />
+                    )}
+                    {step.status === 'error' && (
+                      <XCircle size={12.5} strokeWidth={2} className="pane-step-icon error" />
+                    )}
+                    <span>{step.text}</span>
+                  </div>
+                ))}
+              </div>
+              {errInfo && (
+                <>
+                  <div className="pane-connect-error">
+                    <div className="pane-connect-error-title">{errInfo.title}</div>
+                    {errInfo.detail && <div className="pane-connect-raw mono">{errInfo.detail}</div>}
+                  </div>
+                  <div className="pane-connect-actions">
+                    <button type="button" className="btn btn-primary btn-sm" onClick={onReconnect}>
+                      <RotateCw size={12.5} />
+                      重新连接
+                    </button>
+                    {errInfo.canEditProfile && onEditProfile && session.profile.id && (
+                      <button type="button" className="btn btn-sm" onClick={onEditProfile}>
+                        <Pencil size={12.5} />
+                        编辑配置
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
-      {session.state === 'connecting' && (
-        <>
-          <div className="pane-loading-track" aria-hidden="true">
-            <div className="pane-loading-bar" />
-          </div>
-          <div className="pane-connecting-center" role="status" aria-live="polite">
-            <div className="pane-connecting-icon">
-              <HostIcon profile={session.profile} size="lg" />
-            </div>
-            <div className="pane-connecting-label">
-              正在连接 {paneDisplayName}
-            </div>
-          </div>
-        </>
-      )}
-
-      {session.state === 'closed' && (
+      {!showConnectOverlay && session.state === 'closed' && (
         <div className="pane-closed-bar">
           <span>{session.endMessage || '会话已断开'}</span>
-          <button type="button" className="btn btn-primary btn-sm" onClick={onReconnect}>
-            重新连接
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+            {onEditProfile && session.profile.id && (
+              <button type="button" className="btn btn-sm" onClick={onEditProfile}>
+                编辑配置
+              </button>
+            )}
+            <button type="button" className="btn btn-primary btn-sm" onClick={onReconnect}>
+              重新连接
+            </button>
+          </div>
         </div>
       )}
 

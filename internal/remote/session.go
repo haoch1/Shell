@@ -49,9 +49,16 @@ type Callbacks struct {
 	Output    func([]byte)
 	End       func(error)
 	Latency   func(ms int64)
+	Status    func(stage, message string)
 	// OnReady fires immediately after SSH authentication (before interactive PTY setup finishes)
 	// so callers can run multiplexed Exec/SFTP/Tunnels or reuse the transport without waiting for PTY.
 	OnReady func(*Session)
+}
+
+func (cb Callbacks) emitStatus(stage, message string) {
+	if cb.Status != nil {
+		cb.Status(stage, message)
+	}
 }
 
 // ExecResult contains structured output from a multiplexed SSH exec command.
@@ -502,8 +509,11 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 		parent = cfg.ParentClient
 		borrowedJump = true
 	} else if parent == nil && cfg.Jump != nil {
+		cb.emitStatus("jump", "正在通过跳板机建立隧道...")
+		jumpCB := cb
+		jumpCB.Status = nil
 		if cfg.DialJump != nil {
-			jClient, owned, rel, jErr := cfg.DialJump(setup, *cfg.Jump, cb)
+			jClient, owned, rel, jErr := cfg.DialJump(setup, *cfg.Jump, jumpCB)
 			if jErr != nil {
 				return nil, nil, nil, nil, fmt.Errorf("连接跳板机 %s 失败：%w", cfg.Jump.Host, jErr)
 			}
@@ -518,7 +528,7 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 				}
 			}
 		} else {
-			jClient, deeperOwned, deeperRel, jumpStops, jErr := dialSSHClient(lifeCtx, setup, *cfg.Jump, cb, nil, depth+1)
+			jClient, deeperOwned, deeperRel, jumpStops, jErr := dialSSHClient(lifeCtx, setup, *cfg.Jump, jumpCB, nil, depth+1)
 			if jErr != nil {
 				return nil, nil, nil, nil, fmt.Errorf("连接跳板机 %s 失败：%w", cfg.Jump.Host, jErr)
 			}
@@ -543,6 +553,7 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 
 	var raw net.Conn
 	if parent != nil {
+		cb.emitStatus("dial", "正在经跳板机连接目标主机...")
 		raw, err = parent.DialContext(setup, "tcp", address)
 		// If a borrowed jump transport died silently (e.g. NAT timeout while idle), evict and retry once.
 		if err != nil && borrowedJump && cfg.Jump != nil && setup.Err() == nil && !isOpenChannelError(err) {
@@ -553,9 +564,11 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 				}
 				borrowedRelease = nil
 			}
+			jumpCB := cb
+			jumpCB.Status = nil
 			canRetryPool := cfg.OnJumpDead != nil && cfg.OnJumpDead(*cfg.Jump, parent)
 			if canRetryPool && cfg.DialJump != nil {
-				if jClient, owned, rel, jErr := cfg.DialJump(setup, *cfg.Jump, cb); jErr == nil {
+				if jClient, owned, rel, jErr := cfg.DialJump(setup, *cfg.Jump, jumpCB); jErr == nil {
 					parent = jClient
 					if owned {
 						ownedJumps = append(ownedJumps, jClient)
@@ -567,7 +580,7 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 			} else if cfg.ParentClient == nil {
 				jumpCopy := *cfg.Jump
 				jumpCopy.ParentClient = nil
-				if jClient, deeperOwned, deeperRel, jumpStops, jErr := dialSSHClient(lifeCtx, setup, jumpCopy, cb, nil, depth+1); jErr == nil {
+				if jClient, deeperOwned, deeperRel, jumpStops, jErr := dialSSHClient(lifeCtx, setup, jumpCopy, jumpCB, nil, depth+1); jErr == nil {
 					ownedJumps = append(deeperOwned, jClient)
 					releaseJumps = append(releaseJumps, deeperRel...)
 					stops = append(stops, jumpStops...)
@@ -584,6 +597,7 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 			return nil, nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 失败：%w", address, err)
 		}
 	} else {
+		cb.emitStatus("dial", fmt.Sprintf("正在连接 %s...", address))
 		raw, err = dialTCPWithProxy(setup, address, cfg.Proxy)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("连接 %s 失败：%w", address, err)
@@ -594,6 +608,7 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 	deadline, _ := setup.Deadline()
 	_ = raw.SetDeadline(deadline)
 
+	cb.emitStatus("auth", "正在校验主机指纹与身份认证...")
 	transport, channels, requests, err := ssh.NewClientConn(raw, address, &ssh.ClientConfig{
 		Config:          preferredSSHConfig(),
 		User:            user,
@@ -720,6 +735,7 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 		cb.OnReady(s)
 	}
 
+	cb.emitStatus("shell", "正在打开交互式终端...")
 	pty, err := client.NewSession()
 	if err != nil {
 		s.Close()

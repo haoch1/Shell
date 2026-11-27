@@ -810,6 +810,11 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 	}
 
 	s, err := remote.Connect(ctx, cfg, remote.Callbacks{
+		Status: func(stage, message string) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "ssh:status", id, stage, message)
+			}
+		},
 		Verify: func(host, algorithm, fingerprint string) bool {
 			return a.confirm(ctx, id, host, algorithm, fingerprint)
 		},
@@ -1056,16 +1061,7 @@ func (a *App) CancelTransfer(transferID string) {
 }
 
 func (a *App) emitTransfer(tid, sessionID, name, direction string, transferred, total int64, status, errMsg string) {
-	runtime.EventsEmit(a.ctx, "sftp:progress", map[string]any{
-		"transferId":  tid,
-		"sessionId":   sessionID,
-		"name":        name,
-		"direction":   direction,
-		"transferred": transferred,
-		"total":       total,
-		"status":      status,
-		"error":       errMsg,
-	})
+	a.emitTransferRich(tid, sessionID, name, direction, transferred, total, 0, status, errMsg, "", "", "")
 }
 
 func (a *App) PickUploadFiles() ([]string, error) {
@@ -1084,18 +1080,61 @@ func (a *App) UploadLocalPaths(id, dir string, paths []string, overwrite bool) (
 			continue
 		}
 		info, statErr := os.Stat(localPath)
-		if statErr != nil || !info.Mode().IsRegular() {
+		if statErr != nil || (!info.Mode().IsRegular() && !info.IsDir()) {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("跳过非普通文件：%s", filepath.Base(localPath))
 			}
 			continue
 		}
-		leaf := filepath.Base(localPath)
+		leaf := filepath.Base(filepath.Clean(localPath))
 		target := path.Join(dir, leaf)
 		tid, ctx, cleanup := a.registerTransfer()
-		a.emitTransfer(tid, id, leaf, "upload", 0, info.Size(), "running", "")
+		speed := newTransferSpeedTracker()
+
+		if info.IsDir() {
+			a.emitTransferRich(tid, id, leaf, "upload", 0, 0, 0, "running", "", localPath, target, "")
+			var lastDone, lastTotal int64
+			var lastItem string
+			lastEmit := time.Time{}
+			_, upErr := s.UploadDir(ctx, localPath, target, overwrite, func(done, total int64, currentItem string) {
+				lastDone = done
+				if total > 0 {
+					lastTotal = total
+				}
+				now := time.Now()
+				if currentItem == lastItem && !lastEmit.IsZero() && now.Sub(lastEmit) < 80*time.Millisecond && done < total {
+					return
+				}
+				lastItem = currentItem
+				lastEmit = now
+				a.emitTransferRich(tid, id, leaf, "upload", done, total, speed.sample(done), "running", "", localPath, target, currentItem)
+			})
+			cleanup()
+			if upErr != nil {
+				status := "error"
+				if errors.Is(upErr, context.Canceled) {
+					status = "canceled"
+				}
+				a.emitTransferRich(tid, id, leaf, "upload", lastDone, lastTotal, 0, status, upErr.Error(), localPath, target, lastItem)
+				if firstErr == nil {
+					firstErr = upErr
+				}
+				continue
+			}
+			finalTotal := lastTotal
+			if finalTotal <= 0 {
+				finalTotal = lastDone
+			}
+			a.emitTransferRich(tid, id, leaf, "upload", finalTotal, finalTotal, speed.final(finalTotal), "done", "", localPath, target, "")
+			uploaded = append(uploaded, target)
+			continue
+		}
+
+		a.emitTransferRich(tid, id, leaf, "upload", 0, info.Size(), 0, "running", "", localPath, target, "")
+		var lastDone int64
 		upErr := s.UploadFile(ctx, localPath, target, overwrite, func(done, total int64) {
-			a.emitTransfer(tid, id, leaf, "upload", done, total, "running", "")
+			lastDone = done
+			a.emitTransferRich(tid, id, leaf, "upload", done, total, speed.sample(done), "running", "", localPath, target, "")
 		})
 		cleanup()
 		if upErr != nil {
@@ -1103,13 +1142,13 @@ func (a *App) UploadLocalPaths(id, dir string, paths []string, overwrite bool) (
 			if errors.Is(upErr, context.Canceled) {
 				status = "canceled"
 			}
-			a.emitTransfer(tid, id, leaf, "upload", 0, info.Size(), status, upErr.Error())
+			a.emitTransferRich(tid, id, leaf, "upload", lastDone, info.Size(), 0, status, upErr.Error(), localPath, target, "")
 			if firstErr == nil {
 				firstErr = upErr
 			}
 			continue
 		}
-		a.emitTransfer(tid, id, leaf, "upload", info.Size(), info.Size(), "done", "")
+		a.emitTransferRich(tid, id, leaf, "upload", info.Size(), info.Size(), speed.final(info.Size()), "done", "", localPath, target, "")
 		uploaded = append(uploaded, target)
 	}
 	return uploaded, firstErr
@@ -1146,29 +1185,10 @@ func (a *App) DownloadFile(id, remotePath string, overwrite bool) (string, error
 	if err != nil || name == "" {
 		return "", err
 	}
-	tid, ctx, cleanup := a.registerTransfer()
-	defer cleanup()
-	a.emitTransfer(tid, id, leaf, "download", 0, 0, "running", "")
-	var lastTotal int64
 	// SaveFileDialog already asks user for confirmation when overwriting an existing file on Windows.
-	err = s.DownloadFile(ctx, remotePath, name, true, func(done, total int64) {
-		if total > 0 {
-			lastTotal = total
-		}
-		a.emitTransfer(tid, id, leaf, "download", done, total, "running", "")
-	})
-	if err != nil {
-		status := "error"
-		if errors.Is(err, context.Canceled) {
-			status = "canceled"
-		}
-		a.emitTransfer(tid, id, leaf, "download", 0, lastTotal, status, err.Error())
+	if err := a.downloadRemoteFileInto(s, id, remotePath, name, leaf); err != nil {
 		return "", err
 	}
-	if lastTotal <= 0 {
-		lastTotal = 1
-	}
-	a.emitTransfer(tid, id, leaf, "download", lastTotal, lastTotal, "done", "")
 	return name, nil
 }
 

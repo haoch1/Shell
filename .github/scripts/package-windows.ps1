@@ -1,12 +1,12 @@
 param(
-    [string]$Version = '1.0.0'
+    [string]$Version = '1.1.0'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Version = $Version.TrimStart('v')
-if (!$Version) { $Version = '1.0.0' }
+if (!$Version) { $Version = '1.1.0' }
 
 $repo = (Resolve-Path "$PSScriptRoot/../..").Path
 Set-Location -LiteralPath $repo

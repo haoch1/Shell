@@ -206,10 +206,39 @@ func ParseImportBytes(filename string, raw []byte) (ImportPreviewResult, error) 
 
 // ImportParsedHosts saves selected ImportedHost entries into Shell profiles.
 // When overrideGroup is empty, each host preserves its original folder/group from the source tool!
+// Second pass resolves ProxyJump references against newly imported hosts, existing saved hosts,
+// multi-hop comma/semicolon chains, or inline `user@host:port` jump addresses.
 func ImportParsedHosts(entries []ImportedHost, overrideGroup string) ([]Profile, error) {
 	overrideGroup = strings.TrimSpace(overrideGroup)
-	created := make([]Profile, 0, len(entries))
-	aliasToID := make(map[string]string, len(entries))
+	type savedEntry struct {
+		entry   ImportedHost
+		profile Profile
+	}
+	pairs := make([]savedEntry, 0, len(entries))
+	lookup := make(map[string]string, len(entries)*3)
+
+	registerLookup := func(p Profile) {
+		add := func(k string) {
+			k = strings.ToLower(strings.TrimSpace(k))
+			if k != "" {
+				if _, exists := lookup[k]; !exists {
+					lookup[k] = p.ID
+				}
+			}
+		}
+		add(p.Name)
+		add(p.Host)
+		add(fmt.Sprintf("%s:%d", p.Host, p.Port))
+		add(fmt.Sprintf("%s@%s", p.User, p.Host))
+		add(fmt.Sprintf("%s@%s:%d", p.User, p.Host, p.Port))
+	}
+
+	// Pre-register already-saved hosts so imported configs can reference existing bastions.
+	if existing, err := Profiles(); err == nil {
+		for _, ep := range existing {
+			registerLookup(ep)
+		}
+	}
 
 	for _, e := range entries {
 		grp := strings.TrimSpace(e.Group)
@@ -266,23 +295,113 @@ func ImportParsedHosts(entries []ImportedHost, overrideGroup string) ([]Profile,
 		} else if auth == "key" && e.Passphrase != "" {
 			_ = RememberSecret(saved, e.Passphrase)
 		}
-		if e.Name != "" {
-			aliasToID[strings.ToLower(e.Name)] = saved.ID
+		// Newly imported hosts take priority over older entries with the same alias.
+		if saved.Name != "" {
+			lookup[strings.ToLower(saved.Name)] = saved.ID
 		}
-		created = append(created, saved)
+		registerLookup(saved)
+		pairs = append(pairs, savedEntry{entry: e, profile: saved})
 	}
 
-	// Second pass: link ProxyJump references
-	for i, e := range entries {
-		if e.ProxyJump == "" || i >= len(created) {
-			continue
+	resolveOrCreateJump := func(spec, defaultUser string) string {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			return ""
 		}
-		if jid, ok := aliasToID[strings.ToLower(e.ProxyJump)]; ok && jid != created[i].ID {
-			created[i].JumpHostID = jid
-			if updated, err := SaveProfile(created[i]); err == nil {
-				created[i] = updated
+		if id, ok := lookup[strings.ToLower(spec)]; ok {
+			return id
+		}
+		// Try parsing inline jump syntax: [user@]host[:port] or [user@][ipv6]:port
+		jUser := defaultUser
+		rest := spec
+		if u, h, hasAt := strings.Cut(rest, "@"); hasAt && h != "" {
+			jUser = strings.TrimSpace(u)
+			rest = strings.TrimSpace(h)
+		}
+		jHost := rest
+		jPort := 22
+		if strings.HasPrefix(rest, "[") {
+			if closeIdx := strings.IndexByte(rest, ']'); closeIdx > 1 {
+				jHost = rest[1:closeIdx]
+				if tail := rest[closeIdx+1:]; strings.HasPrefix(tail, ":") {
+					if pNum, err := strconv.Atoi(tail[1:]); err == nil && pNum >= 1 && pNum <= 65535 {
+						jPort = pNum
+					}
+				}
+			}
+		} else if strings.Count(rest, ":") == 1 {
+			if h, pStr, ok := strings.Cut(rest, ":"); ok {
+				if pNum, err := strconv.Atoi(pStr); err == nil && pNum >= 1 && pNum <= 65535 {
+					jHost = h
+					jPort = pNum
+				}
 			}
 		}
+		if id, ok := lookup[strings.ToLower(jHost)]; ok {
+			return id
+		}
+		if id, ok := lookup[strings.ToLower(fmt.Sprintf("%s:%d", jHost, jPort))]; ok {
+			return id
+		}
+		// Only auto-create an inline jump profile if it looks like a real IP/FQDN (contains '.' or ':').
+		if !strings.ContainsAny(jHost, ".:") {
+			return ""
+		}
+		if _, err := cleanHost(jHost); err != nil {
+			return ""
+		}
+		if jUser == "" {
+			jUser = "root"
+		}
+		jp, err := SaveProfile(Profile{
+			Name:  jHost,
+			Group: "跳板机",
+			Host:  jHost,
+			Port:  jPort,
+			User:  jUser,
+			Auth:  "password",
+		})
+		if err != nil {
+			return ""
+		}
+		registerLookup(jp)
+		pairs = append(pairs, savedEntry{profile: jp})
+		return jp.ID
+	}
+
+	// Second pass: link ProxyJump references (including multi-hop chains like "bastion1,bastion2")
+	for i := range pairs {
+		rawJump := strings.TrimSpace(pairs[i].entry.ProxyJump)
+		if rawJump == "" {
+			continue
+		}
+		hops := strings.FieldsFunc(rawJump, func(r rune) bool { return r == ',' || r == ';' })
+		var prevID string
+		for _, hop := range hops {
+			jid := resolveOrCreateJump(hop, pairs[i].profile.User)
+			if jid == "" || jid == pairs[i].profile.ID {
+				continue
+			}
+			// Chain intermediate hops if multi-hop and hop doesn't already have a jump parent
+			if prevID != "" && prevID != jid {
+				if hp, ok, err := GetProfile(jid); err == nil && ok && hp.JumpHostID == "" {
+					hp.JumpHostID = prevID
+					_, _ = SaveProfile(hp)
+				}
+			}
+			prevID = jid
+		}
+		if prevID != "" && prevID != pairs[i].profile.ID {
+			pairs[i].profile.JumpHostID = prevID
+			if updated, err := SaveProfile(pairs[i].profile); err == nil {
+				pairs[i].profile = updated
+			}
+		}
+	}
+
+	created := make([]Profile, 0, len(pairs))
+	for _, pr := range pairs {
+		created = append(created, pr.profile)
 	}
 	return created, nil
 }
@@ -401,7 +520,7 @@ func parseZipArchive(zipPath string) (ImportPreviewResult, error) {
 // --- 2. Xshell .xsh ---
 func parseXshellXSH(filename, text, group string) []ImportedHost {
 	section := ""
-	var host, user, proto, desc, authMethod string
+	var host, user, proto, desc, authMethod, proxyRaw string
 	port := 22
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	for scanner.Scan() {
@@ -439,6 +558,10 @@ func parseXshellXSH(filename, text, group string) []ImportedHost {
 			case "method":
 				authMethod = strings.ToLower(v)
 			}
+		case "CONNECTION:PROXY":
+			if strings.EqualFold(k, "proxy") && v != "" && !strings.EqualFold(v, "none") {
+				proxyRaw = v
+			}
 		}
 	}
 	if host == "" || (proto != "" && proto != "SSH") {
@@ -455,6 +578,11 @@ func parseXshellXSH(filename, text, group string) []ImportedHost {
 	if strings.Contains(authMethod, "public") || strings.Contains(authMethod, "key") {
 		auth = "agent"
 	}
+	pType, pHost, pPort, pUser := parseProxyURL(proxyRaw)
+	proxyJump := ""
+	if pType == "" && proxyRaw != "" {
+		proxyJump = proxyRaw
+	}
 	return []ImportedHost{{
 		Name:         name,
 		Host:         host,
@@ -462,6 +590,11 @@ func parseXshellXSH(filename, text, group string) []ImportedHost {
 		User:         user,
 		Auth:         auth,
 		Group:        group,
+		ProxyType:    pType,
+		ProxyHost:    pHost,
+		ProxyPort:    pPort,
+		ProxyUser:    pUser,
+		ProxyJump:    proxyJump,
 		Notes:        desc,
 		SourceFormat: "Xshell",
 	}}
@@ -523,6 +656,23 @@ func parseMobaXterm(text string) []ImportedHost {
 			keyPath = strings.TrimSpace(parts[14])
 			auth = "key"
 		}
+		// Optional MobaXterm SSH Gateway (parts[10]=gateway host, parts[11]=gateway port, parts[12]=gateway user)
+		proxyJump := ""
+		if len(parts) > 12 {
+			gwHost := strings.TrimSpace(parts[10])
+			if gwHost != "" && gwHost != "-1" && gwHost != "0" && strings.ContainsAny(gwHost, ".:") {
+				gwPort := strings.TrimSpace(parts[11])
+				gwUser := strings.TrimSpace(parts[12])
+				if gwUser != "" && gwUser != "-1" {
+					proxyJump = gwUser + "@" + gwHost
+				} else {
+					proxyJump = gwHost
+				}
+				if p, err := strconv.Atoi(gwPort); err == nil && p > 0 && p <= 65535 && p != 22 {
+					proxyJump += ":" + strconv.Itoa(p)
+				}
+			}
+		}
 		out = append(out, ImportedHost{
 			Name:         strings.TrimSpace(k),
 			Host:         host,
@@ -531,6 +681,7 @@ func parseMobaXterm(text string) []ImportedHost {
 			Auth:         auth,
 			KeyPath:      keyPath,
 			Group:        currentGroup,
+			ProxyJump:    proxyJump,
 			SourceFormat: "MobaXterm",
 		})
 	}
@@ -540,8 +691,9 @@ func parseMobaXterm(text string) []ImportedHost {
 // --- 4. PuTTY / KiTTY .reg ---
 func parsePuttyReg(text string) []ImportedHost {
 	var out []ImportedHost
-	var curName, host, user, proto, keyPath string
+	var curName, host, user, proto, keyPath, proxyHost, proxyUser string
 	port := 22
+	proxyMethod, proxyPort := 0, 0
 	inSession := false
 
 	flush := func() {
@@ -560,6 +712,14 @@ func parsePuttyReg(text string) []ImportedHost {
 			if keyPath != "" {
 				auth = "key"
 			}
+			pType := ""
+			if proxyHost != "" && proxyPort > 0 {
+				if proxyMethod == 1 {
+					pType = "http"
+				} else if proxyMethod == 3 || proxyMethod == 2 {
+					pType = "socks5"
+				}
+			}
 			out = append(out, ImportedHost{
 				Name:         curName,
 				Host:         host,
@@ -567,12 +727,16 @@ func parsePuttyReg(text string) []ImportedHost {
 				User:         user,
 				Auth:         auth,
 				KeyPath:      keyPath,
+				ProxyType:    pType,
+				ProxyHost:    proxyHost,
+				ProxyPort:    proxyPort,
+				ProxyUser:    proxyUser,
 				SourceFormat: "PuTTY",
 			})
 		}
 		inSession = false
-		curName, host, user, proto, keyPath = "", "", "", "", ""
-		port = 22
+		curName, host, user, proto, keyPath, proxyHost, proxyUser = "", "", "", "", "", "", ""
+		port, proxyMethod, proxyPort = 22, 0, 0
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(text))
@@ -608,6 +772,14 @@ func parsePuttyReg(text string) []ImportedHost {
 			s = strings.Trim(s, `"`)
 			return strings.ReplaceAll(s, `\\`, `\`)
 		}
+		parseHexDword := func(s string) (int, bool) {
+			if strings.HasPrefix(strings.ToLower(s), "dword:") {
+				if p, err := strconv.ParseInt(s[6:], 16, 32); err == nil {
+					return int(p), true
+				}
+			}
+			return 0, false
+		}
 		switch strings.ToLower(k) {
 		case "hostname":
 			host = unq(v)
@@ -618,11 +790,21 @@ func parsePuttyReg(text string) []ImportedHost {
 		case "publickeyfile":
 			keyPath = unq(v)
 		case "portnumber":
-			if strings.HasPrefix(strings.ToLower(v), "dword:") {
-				if p, err := strconv.ParseInt(v[6:], 16, 32); err == nil && p > 0 && p <= 65535 {
-					port = int(p)
-				}
+			if p, ok := parseHexDword(v); ok && p > 0 && p <= 65535 {
+				port = p
 			}
+		case "proxymethod":
+			if m, ok := parseHexDword(v); ok {
+				proxyMethod = m
+			}
+		case "proxyhost":
+			proxyHost = unq(v)
+		case "proxyport":
+			if p, ok := parseHexDword(v); ok && p > 0 && p <= 65535 {
+				proxyPort = p
+			}
+		case "proxyusername":
+			proxyUser = unq(v)
 		}
 	}
 	flush()
@@ -682,6 +864,10 @@ func parseSecureCRTXML(text string) []ImportedHost {
 							groups = append(groups, anc.name)
 						}
 					}
+					fw := top.vals["Firewall Name"]
+					if strings.EqualFold(fw, "None") {
+						fw = ""
+					}
 					out = append(out, ImportedHost{
 						Name:         top.name,
 						Host:         host,
@@ -689,6 +875,7 @@ func parseSecureCRTXML(text string) []ImportedHost {
 						User:         user,
 						Auth:         "password",
 						Group:        strings.Join(groups, "/"),
+						ProxyJump:    fw,
 						SourceFormat: "SecureCRT",
 					})
 				}
@@ -860,6 +1047,8 @@ func parseJSONFormats(text string) (string, []ImportedHost, bool) {
 					label = host
 				}
 				grp := strings.TrimPrefix(strings.ReplaceAll(strField(m, "session.group"), ">", "/"), "/")
+				jump := strField(m, "session.jumpServer", "session.proxyJump")
+				pType, pHost, pPort, pUser := parseProxyURL(strField(m, "session.proxy"))
 				out = append(out, ImportedHost{
 					Name:         label,
 					Host:         host,
@@ -867,6 +1056,11 @@ func parseJSONFormats(text string) (string, []ImportedHost, bool) {
 					User:         user,
 					Auth:         "password",
 					Group:        grp,
+					ProxyType:    pType,
+					ProxyHost:    pHost,
+					ProxyPort:    pPort,
+					ProxyUser:    pUser,
+					ProxyJump:    jump,
 					SourceFormat: "WindTerm",
 				})
 				continue
@@ -930,14 +1124,89 @@ func mapToHost(m map[string]any, source string) (ImportedHost, bool) {
 	}
 	group := strField(m, "group", "folder", "category", "parent_name", "groups")
 	notes := strField(m, "notes", "description", "comment", "remark")
+	password := strField(targetMap, "password", "passwd")
+	if password == "" {
+		password = strField(m, "password", "passwd")
+	}
+	passphrase := strField(targetMap, "passphrase", "keyPassphrase")
+	proxyJump := strField(targetMap, "proxyJump", "proxy_jump", "jumpHost", "jump_host", "jumpHostId", "bastion")
+	if proxyJump == "" {
+		proxyJump = strField(m, "proxyJump", "proxy_jump", "jumpHost", "jump_host", "bastion")
+	}
+	// Electerm connectionHops: [{host, port, username}, ...]
+	if proxyJump == "" {
+		if hops, ok := m["connectionHops"].([]any); ok && len(hops) > 0 {
+			var hopSpecs []string
+			for _, hv := range hops {
+				if hm, ok := hv.(map[string]any); ok {
+					hh := strField(hm, "host", "hostname")
+					if hh == "" {
+						continue
+					}
+					hu := strField(hm, "username", "user")
+					hp := intField(hm, 22, "port")
+					spec := hh
+					if hu != "" {
+						spec = hu + "@" + spec
+					}
+					if hp != 22 {
+						spec = fmt.Sprintf("%s:%d", spec, hp)
+					}
+					hopSpecs = append(hopSpecs, spec)
+				}
+			}
+			proxyJump = strings.Join(hopSpecs, ",")
+		}
+	}
+	pType := strings.ToLower(strField(targetMap, "proxyType", "proxy_type"))
+	if pType == "" {
+		pType = strings.ToLower(strField(m, "proxyType", "proxy_type"))
+	}
+	pHost := strField(targetMap, "proxyHost", "proxy_host")
+	if pHost == "" {
+		pHost = strField(m, "proxyHost", "proxy_host")
+	}
+	pPort := intField(targetMap, 0, "proxyPort", "proxy_port")
+	if pPort == 0 {
+		pPort = intField(m, 0, "proxyPort", "proxy_port")
+	}
+	pUser := strField(targetMap, "proxyUser", "proxy_user")
+	if pUser == "" {
+		pUser = strField(m, "proxyUser", "proxy_user")
+	}
+	if pType == "" {
+		if rawProxy := strField(targetMap, "proxy", "proxyUrl", "proxy_url"); rawProxy != "" {
+			pType, pHost, pPort, pUser = parseProxyURL(rawProxy)
+		} else if rawProxy := strField(m, "proxy", "proxyUrl", "proxy_url"); rawProxy != "" {
+			pType, pHost, pPort, pUser = parseProxyURL(rawProxy)
+		} else if pm, ok := m["proxy"].(map[string]any); ok {
+			// Electerm object proxy: {proxyIp, proxyPort, proxyType, proxyUsername}
+			pt := strings.ToLower(strField(pm, "proxyType", "type"))
+			ph := strField(pm, "proxyIp", "host")
+			pp := intField(pm, 0, "proxyPort", "port")
+			pu := strField(pm, "proxyUsername", "user")
+			if strings.HasPrefix(pt, "socks") {
+				pType, pHost, pPort, pUser = "socks5", ph, pp, pu
+			} else if pt == "http" || pt == "https" {
+				pType, pHost, pPort, pUser = "http", ph, pp, pu
+			}
+		}
+	}
 	return ImportedHost{
 		Name:         name,
 		Host:         host,
 		Port:         port,
 		User:         user,
 		Auth:         auth,
+		Password:     password,
 		KeyPath:      keyPath,
+		Passphrase:   passphrase,
 		Group:        group,
+		ProxyType:    pType,
+		ProxyHost:    pHost,
+		ProxyPort:    pPort,
+		ProxyUser:    pUser,
+		ProxyJump:    proxyJump,
 		Notes:        notes,
 		SourceFormat: source,
 	}, true
@@ -1054,6 +1323,28 @@ func parseTabbyYAML(text string) []ImportedHost {
 				cur.KeyPath = v
 				cur.Auth = "key"
 			}
+		case "jumphost", "proxyjump":
+			if v != "" {
+				cur.ProxyJump = v
+			}
+		case "socksproxyhost":
+			if v != "" {
+				cur.ProxyType = "socks5"
+				cur.ProxyHost = v
+			}
+		case "socksproxyport":
+			if p, err := strconv.Atoi(v); err == nil && p > 0 && p <= 65535 {
+				cur.ProxyPort = p
+			}
+		case "httpproxyhost":
+			if v != "" {
+				cur.ProxyType = "http"
+				cur.ProxyHost = v
+			}
+		case "httpproxyport":
+			if p, err := strconv.Atoi(v); err == nil && p > 0 && p <= 65535 {
+				cur.ProxyPort = p
+			}
 		}
 	}
 	flush()
@@ -1072,6 +1363,13 @@ func parseProxyURL(raw string) (pType, pHost string, pPort int, pUser string) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return
+	}
+	lower := strings.ToLower(raw)
+	switch lower {
+	case "system", "sys", "auto", "系统代理":
+		return "system", "", 0, ""
+	case "direct", "none", "off", "false", "直连":
+		return "direct", "", 0, ""
 	}
 	if !strings.Contains(raw, "://") {
 		raw = "socks5://" + raw

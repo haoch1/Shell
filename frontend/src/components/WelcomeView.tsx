@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { ArrowRight, Download, Plus } from 'lucide-react';
 import type { Profile } from '../types/shell';
-import { parseQuickConnect } from '../lib/utils';
+import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 
 interface WelcomeViewProps {
@@ -27,8 +27,9 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
   const [quickErr, setQuickErr] = useState('');
 
   const recentHosts = useMemo(() => {
-    return [...profiles]
-      .sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0) || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+    return profiles
+      .filter((p) => Boolean(p.lastUsedAt && p.lastUsedAt > 0))
+      .sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))
       .slice(0, 6);
   }, [profiles]);
 
@@ -72,7 +73,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
         </form>
         {quickErr && <p className="error-text" style={{ marginTop: -14 }}>{quickErr}</p>}
 
-        {recentHosts.length === 0 ? (
+        {profiles.length === 0 ? (
           <div className="quick-actions-row">
             <button id="firstConnect" type="button" className="btn btn-primary btn-sm" onClick={onNewConnection}>
               <Plus size={14} />
@@ -83,7 +84,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
               导入配置
             </button>
           </div>
-        ) : (
+        ) : recentHosts.length > 0 ? (
           <div className="recent-section">
             <div className="recent-title">最近使用</div>
             <div className="recent-grid">
@@ -92,21 +93,21 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                   key={p.id}
                   type="button"
                   className="recent-card"
+                  title={`${p.user}@${p.host}:${p.port}`}
                   onClick={() => onConnect(p)}
                 >
                   <HostIcon profile={p} size="lg" />
                   <div className="recent-card-meta">
                     <div className="recent-card-name">{p.name}</div>
                     <div className="recent-card-sub mono">
-                      {p.host}
-                      {p.port !== 22 ? `:${p.port}` : ''}
+                      {formatHostDisplay(p.host, p.port)}
                     </div>
                   </div>
                 </button>
               ))}
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

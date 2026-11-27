@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	goruntime "runtime"
 	"sort"
 	"sync"
@@ -379,34 +378,12 @@ func (t *systemTray) showContextMenu() {
 	}
 	defer procDestroyMenu.Call(hMenu)
 
-	appendMenuText(hMenu, mfString, trayCmdShow, "显示主窗口")
-	_, _, _ = procSetMenuDefaultItem.Call(hMenu, trayCmdShow, 0)
-
-	// Quick-connect submenu populated with saved hosts (pinned first, then recent).
-	hSub, _, _ := procCreatePopupMenu.Call()
-	t.quickHostIDs = nil
-	if hSub != 0 {
-		profiles, _ := local.Profiles()
-		choices := trayHostChoices(profiles, 12)
-		if len(choices) == 0 {
-			appendMenuText(hSub, mfString|mfGrayed|mfDisabled, 0, "暂无已保存主机")
-		} else {
-			for i, p := range choices {
-				t.quickHostIDs = append(t.quickHostIDs, p.ID)
-				label := fmt.Sprintf("%s  (%s)", p.Name, p.Host)
-				appendMenuText(hSub, mfString, uintptr(trayCmdHostBase+i), label)
-			}
-		}
-		appendMenuText(hMenu, mfPopup, hSub, "快速连接")
+	discFlags := uintptr(mfString)
+	if t.app.ActiveSessionCount() == 0 {
+		discFlags |= mfGrayed | mfDisabled
 	}
-
-	if liveCount := t.app.ActiveSessionCount(); liveCount > 0 {
-		appendMenuSep(hMenu)
-		appendMenuText(hMenu, mfString, trayCmdDisconnectAll, fmt.Sprintf("断开全部会话 (%d)", liveCount))
-	}
-
+	appendMenuText(hMenu, discFlags, trayCmdDisconnectAll, "断开全部会话")
 	appendMenuSep(hMenu)
-	appendMenuText(hMenu, mfString, trayCmdSettings, "偏好设置")
 	appendMenuText(hMenu, mfString, trayCmdQuit, "退出 Shell")
 
 	var pt winPoint

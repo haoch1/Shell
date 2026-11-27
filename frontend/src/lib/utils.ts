@@ -56,6 +56,47 @@ export function formatRelativeTime(unixSec?: number): string {
 }
 
 /**
+ * Formats an IPv4, IPv6, or long hostname for clean single-line display in cards and sidebars.
+ * - IPv4: shown in full ("56.10.113.238" or "56.10.113.238:58222")
+ * - IPv6: middle-elided cleanly on colon boundaries ("2406:da18…4e21" or "2406:da18…4e21 :58222")
+ * - Long domain (>22 chars): clean middle-elide preserving prefix & domain suffix
+ */
+export function formatHostDisplay(host: string, port?: number): string {
+  const clean = (host || '').trim().replace(/^\[|\]$/g, '');
+  if (!clean) return '';
+  const hasCustomPort = Boolean(port && port !== 22);
+  const colonCount = (clean.match(/:/g) || []).length;
+
+  // IPv6 address
+  if (colonCount >= 2) {
+    let display = clean;
+    if (clean.length > 16) {
+      const parts = clean.split(':').filter(Boolean);
+      if (parts.length >= 3) {
+        const prefix = `${parts[0]}:${parts[1]}`;
+        const suffix = parts[parts.length - 1];
+        display = clean.endsWith('::') ? `${prefix}::` : `${prefix}…${suffix}`;
+      } else if (parts.length === 2) {
+        display = `${parts[0]}::${parts[1]}`;
+      }
+    }
+    return hasCustomPort ? `${display} :${port}` : display;
+  }
+
+  // IPv4 address (max 15 chars, always fits cleanly)
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(clean)) {
+    return hasCustomPort ? `${clean}:${port}` : clean;
+  }
+
+  // Hostname / FQDN
+  let display = clean;
+  if (clean.length > 22) {
+    display = `${clean.slice(0, 10)}…${clean.slice(-10)}`;
+  }
+  return hasCustomPort ? `${display}:${port}` : display;
+}
+
+/**
  * Parses quick-connect inputs such as:
  * - "root@10.0.0.5"
  * - "ubuntu@server.example.com:2222"

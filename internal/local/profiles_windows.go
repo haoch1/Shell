@@ -164,12 +164,16 @@ func normalize(p Profile) (Profile, error) {
 		p.ProxyHost = ""
 		p.ProxyPort = 0
 		p.ProxyUser = ""
+	case "direct", "system":
+		p.ProxyHost = ""
+		p.ProxyPort = 0
+		p.ProxyUser = ""
 	case "socks5", "http":
 		if p.ProxyHost == "" || p.ProxyPort < 1 || p.ProxyPort > 65535 {
 			return p, errors.New("启用 SOCKS5/HTTP 代理时请填写有效代理地址和端口")
 		}
 	default:
-		return p, errors.New("代理类型仅支持 socks5 或 http")
+		return p, errors.New("代理类型仅支持直连、系统代理、socks5 或 http")
 	}
 	p.Color = strings.ToLower(strings.TrimSpace(p.Color))
 	p.Notes = strings.TrimSpace(p.Notes)

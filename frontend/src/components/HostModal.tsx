@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { FolderOpen, Trash2, X } from 'lucide-react';
-import type { AuthMode, HostAgentAccess, HostIconId, Profile, ProfileColor, ProxyType } from '../types/shell';
+import { Eye, EyeOff, FolderOpen, Trash2, X } from 'lucide-react';
+import type { AuthMode, HostAgentAccess, HostIconId, Profile, ProfileColor, ProxyType, SystemProxyInfo } from '../types/shell';
 import { PROFILE_COLORS, profileColorHex } from '../lib/themes';
 import { errorMessage, getApi } from '../lib/bridge';
 import { HOST_ICONS, inferHostIcon, renderHostGlyph } from './HostIcon';
@@ -10,7 +10,7 @@ interface HostModalProps {
   allProfiles: Profile[];
   existingGroups: string[];
   onClose: () => void;
-  onSave: (p: Profile, secret: string, remember: boolean, andConnect: boolean) => Promise<void>;
+  onSave: (p: Profile, secret: string, remember: boolean, keepExisting: boolean, andConnect: boolean) => Promise<void>;
   onDelete?: (p: Profile) => void;
 }
 
@@ -30,7 +30,9 @@ export const HostModal: React.FC<HostModalProps> = ({
   const [auth, setAuth] = useState<AuthMode>(profile?.auth ?? 'password');
   const [keyPath, setKeyPath] = useState(profile?.keyPath ?? '');
   const [secret, setSecret] = useState('');
-  const [remember, setRemember] = useState(Boolean(profile?.remembered ?? true));
+  const [secretTouched, setSecretTouched] = useState(false);
+  const [showSecret, setShowSecret] = useState(false);
+  const [remember, setRemember] = useState(profile?.id ? Boolean(profile.remembered) : true);
   const [group, setGroup] = useState(profile?.group ?? '');
   const [tags, setTags] = useState((profile?.tags ?? []).join(', '));
   const [color, setColor] = useState<ProfileColor>(profile?.color ?? '');
@@ -46,20 +48,30 @@ export const HostModal: React.FC<HostModalProps> = ({
   const [keepAliveSec, setKeepAliveSec] = useState(String(profile?.keepAliveSec ?? 30));
   const [startupCommand, setStartupCommand] = useState(profile?.startupCommand ?? '');
   const [notes, setNotes] = useState(profile?.notes ?? '');
+  const [sysProxy, setSysProxy] = useState<SystemProxyInfo | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
-  const identityChanged =
-    Boolean(profile?.remembered) &&
-    (host.trim() !== profile?.host ||
-      Number(port) !== profile?.port ||
-      user.trim() !== profile?.user ||
-      auth !== profile?.auth ||
-      (auth === 'key' && keyPath.trim() !== (profile?.keyPath ?? '')));
-
   useEffect(() => {
-    if (identityChanged) setRemember(false);
-  }, [identityChanged]);
+    void getApi().DetectSystemProxy?.().then(setSysProxy).catch(() => {});
+  }, []);
+
+  // Preload saved DPAPI credential when editing an existing host so the user never has to re-type it.
+  useEffect(() => {
+    if (!profile?.id || !profile.remembered || profile.auth === 'agent') return;
+    let canceled = false;
+    void getApi()
+      .GetProfileSecret?.(profile.id)
+      .then((val) => {
+        if (!canceled && val) {
+          setSecret(val);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      canceled = true;
+    };
+  }, [profile?.id, profile?.remembered, profile?.auth]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -110,9 +122,9 @@ export const HostModal: React.FC<HostModalProps> = ({
         pinned,
         jumpHostId,
         proxyType,
-        proxyHost: proxyType ? proxyHost.trim() : '',
-        proxyPort: proxyType ? Number(proxyPort) || 0 : 0,
-        proxyUser: proxyType ? proxyUser.trim() : '',
+        proxyHost: proxyType === 'socks5' || proxyType === 'http' ? proxyHost.trim() : '',
+        proxyPort: proxyType === 'socks5' || proxyType === 'http' ? Number(proxyPort) || 0 : 0,
+        proxyUser: proxyType === 'socks5' || proxyType === 'http' ? proxyUser.trim() : '',
         agentAccess,
         forwardAgent,
         keepAliveSec: Math.max(0, Math.min(3600, Number(keepAliveSec) || 0)),
@@ -122,7 +134,8 @@ export const HostModal: React.FC<HostModalProps> = ({
         lastUsedAt: profile?.lastUsedAt,
         remembered: profile?.remembered,
       };
-      await onSave(payload, secret, auth !== 'agent' && remember, andConnect);
+      const keepExisting = Boolean(profile?.remembered && !secretTouched && auth === profile?.auth);
+      await onSave(payload, secret, auth !== 'agent' && remember, keepExisting, andConnect);
     } catch (e) {
       setErr(errorMessage(e));
     } finally {
@@ -149,10 +162,23 @@ export const HostModal: React.FC<HostModalProps> = ({
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="segmented">
               <button type="button" className={tab === 'basic' ? 'active' : ''} onClick={() => setTab('basic')}>
-                连接
+                基本连接
               </button>
               <button type="button" className={tab === 'advanced' ? 'active' : ''} onClick={() => setTab('advanced')}>
-                高级
+                跳板与代理
+                {(jumpHostId || proxyType) && (
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: 'var(--accent)',
+                      marginLeft: 5,
+                      verticalAlign: 'middle',
+                    }}
+                  />
+                )}
               </button>
             </div>
             <button type="button" data-close className="icon-btn" aria-label="关闭" onClick={onClose}>
@@ -211,7 +237,10 @@ export const HostModal: React.FC<HostModalProps> = ({
                         className={auth === m ? 'active' : ''}
                         onClick={() => {
                           setAuth(m);
-                          setSecret('');
+                          if (m !== profile?.auth) {
+                            setSecret('');
+                            setSecretTouched(true);
+                          }
                         }}
                       >
                         {m === 'password' ? '密码' : m === 'key' ? '私钥' : 'Agent'}
@@ -224,19 +253,34 @@ export const HostModal: React.FC<HostModalProps> = ({
               {auth === 'password' && (
                 <div className="field-group">
                   <label className="field-label" htmlFor="password">密码</label>
-                  <input
-                    id="password"
-                    type="password"
-                    className="input"
-                    autoComplete="off"
-                    placeholder={
-                      profile?.remembered && !identityChanged
-                        ? '已加密保存，留空沿用'
-                        : '可留空（键盘交互 / 2FA）'
-                    }
-                    value={secret}
-                    onChange={(e) => setSecret(e.target.value)}
-                  />
+                  <div className="input-with-action">
+                    <input
+                      id="password"
+                      type={showSecret ? 'text' : 'password'}
+                      className="input"
+                      autoComplete="off"
+                      placeholder={
+                        profile?.remembered && !secretTouched
+                          ? '已加密保存，留空沿用'
+                          : '可留空（键盘交互 / 2FA）'
+                      }
+                      value={secret}
+                      onChange={(e) => {
+                        setSecret(e.target.value);
+                        setSecretTouched(true);
+                      }}
+                    />
+                    {secret && (
+                      <button
+                        type="button"
+                        className="input-eye-btn"
+                        aria-label={showSecret ? '隐藏密码' : '显示密码'}
+                        onClick={() => setShowSecret((v) => !v)}
+                      >
+                        {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -260,17 +304,32 @@ export const HostModal: React.FC<HostModalProps> = ({
                   </div>
                   <div className="field-group">
                     <label className="field-label" htmlFor="passphrase">私钥口令</label>
-                    <input
-                      id="passphrase"
-                      type="password"
-                      className="input"
-                      autoComplete="off"
-                      placeholder={
-                        profile?.remembered && !identityChanged ? '已加密保存，留空沿用' : '输入私钥解锁口令'
-                      }
-                      value={secret}
-                      onChange={(e) => setSecret(e.target.value)}
-                    />
+                    <div className="input-with-action">
+                      <input
+                        id="passphrase"
+                        type={showSecret ? 'text' : 'password'}
+                        className="input"
+                        autoComplete="off"
+                        placeholder={
+                          profile?.remembered && !secretTouched ? '已加密保存，留空沿用' : '输入私钥解锁口令'
+                        }
+                        value={secret}
+                        onChange={(e) => {
+                          setSecret(e.target.value);
+                          setSecretTouched(true);
+                        }}
+                      />
+                      {secret && (
+                        <button
+                          type="button"
+                          className="input-eye-btn"
+                          aria-label={showSecret ? '隐藏口令' : '显示口令'}
+                          onClick={() => setShowSecret((v) => !v)}
+                        >
+                          {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </>
               )}
@@ -328,13 +387,15 @@ export const HostModal: React.FC<HostModalProps> = ({
                   {HOST_ICONS.map((item) => {
                     const active = icon === item.id;
                     const glyph = item.id || inferHostIcon({ name, host, group });
-                    const tint = item.id ? item.brandColor : profileColorHex(color);
                     return (
                       <button
                         key={item.id || 'auto'}
                         type="button"
                         className={`icon-choice-btn ${active ? 'selected' : ''}`}
-                        style={{ '--host-accent': tint } as React.CSSProperties}
+                        style={{
+                          '--host-fg-light': item.id ? item.brandColor : profileColorHex(color),
+                          '--host-fg-dark': item.id ? item.darkColor : profileColorHex(color),
+                        } as React.CSSProperties}
                         title={item.label}
                         onClick={() => setIcon(item.id)}
                       >
@@ -374,9 +435,9 @@ export const HostModal: React.FC<HostModalProps> = ({
           ) : (
             <>
               <div className="field-group">
-                <label className="field-label">跳板机</label>
+                <label className="field-label">SSH 跳板机 (ProxyJump)</label>
                 <select className="select" value={jumpHostId} onChange={(e) => setJumpHostId(e.target.value)}>
-                  <option value="">直连</option>
+                  <option value="">不使用跳板机</option>
                   {jumpCandidates.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name} ({p.user}@{p.host}:{p.port})
@@ -386,43 +447,58 @@ export const HostModal: React.FC<HostModalProps> = ({
               </div>
 
               <div className="field-group">
-                <label className="field-label">网络代理</label>
-                <div className="field-row">
-                  <select
-                    className="select"
-                    style={{ width: 112 }}
-                    value={proxyType}
-                    onChange={(e) => setProxyType(e.target.value as ProxyType)}
-                  >
-                    <option value="">无</option>
-                    <option value="socks5">SOCKS5</option>
-                    <option value="http">HTTP</option>
-                  </select>
-                  {proxyType && (
-                    <>
-                      <input
-                        className="input grow mono"
-                        placeholder="127.0.0.1"
-                        value={proxyHost}
-                        onChange={(e) => setProxyHost(e.target.value)}
-                      />
-                      <input
-                        className="input mono"
-                        style={{ width: 82 }}
-                        placeholder="7890"
-                        value={proxyPort}
-                        onChange={(e) => setProxyPort(e.target.value)}
-                      />
-                      <input
-                        className="input mono"
-                        style={{ width: 92 }}
-                        placeholder="用户名"
-                        value={proxyUser}
-                        onChange={(e) => setProxyUser(e.target.value)}
-                      />
-                    </>
-                  )}
+                <label className="field-label">出站网络代理</label>
+                <div className="segmented" style={{ width: '100%' }}>
+                  {(
+                    [
+                      { id: '', label: '跟随全局' },
+                      { id: 'direct', label: '直连' },
+                      { id: 'system', label: '系统代理' },
+                      { id: 'socks5', label: 'SOCKS5' },
+                      { id: 'http', label: 'HTTP' },
+                    ] as { id: ProxyType; label: string }[]
+                  ).map((opt) => (
+                    <button
+                      key={opt.id || 'inherit'}
+                      type="button"
+                      className={proxyType === opt.id ? 'active' : ''}
+                      onClick={() => setProxyType(opt.id)}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
                 </div>
+                {proxyType === 'system' && (
+                  <div style={{ fontSize: 12, color: sysProxy?.enabled ? 'var(--green)' : 'var(--ink-tertiary)', marginTop: 2 }}>
+                    {sysProxy?.enabled
+                      ? `已检测系统代理：${sysProxy.summary}`
+                      : '当前未开启系统代理，将自动直连'}
+                  </div>
+                )}
+                {(proxyType === 'socks5' || proxyType === 'http') && (
+                  <div className="field-row" style={{ marginTop: 4 }}>
+                    <input
+                      className="input grow mono"
+                      placeholder="127.0.0.1"
+                      value={proxyHost}
+                      onChange={(e) => setProxyHost(e.target.value)}
+                    />
+                    <input
+                      className="input mono"
+                      style={{ width: 86 }}
+                      placeholder="7890"
+                      value={proxyPort}
+                      onChange={(e) => setProxyPort(e.target.value)}
+                    />
+                    <input
+                      className="input mono"
+                      style={{ width: 96 }}
+                      placeholder="用户名"
+                      value={proxyUser}
+                      onChange={(e) => setProxyUser(e.target.value)}
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="field-group">

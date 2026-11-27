@@ -27,8 +27,9 @@ import type {
   DetectedAICLI,
   KnownHostEntry,
   LocalKeyInfo,
+  SystemProxyInfo,
 } from '../types/shell';
-import { TERMINAL_THEMES } from '../lib/themes';
+import { syncTerminalThemeForAppearance, TERMINAL_THEMES } from '../lib/themes';
 import { copyToClipboard, errorMessage, getApi, openExternalURL } from '../lib/bridge';
 import { AgentSecurityTab } from './AgentSecurityTab';
 
@@ -91,11 +92,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onToast,
 }) => {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const [themeFilter, setThemeFilter] = useState<'all' | 'dark' | 'light'>('all');
   const [knownHosts, setKnownHosts] = useState<KnownHostEntry[]>([]);
   const [khQuery, setKhQuery] = useState('');
   const [selectedLines, setSelectedLines] = useState<Record<number, boolean>>({});
   const [keys, setKeys] = useState<LocalKeyInfo[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfoView | null>(null);
+  const [sysProxy, setSysProxy] = useState<SystemProxyInfo | null>(null);
 
   // Key generation state
   const [genOpen, setGenOpen] = useState(false);
@@ -129,6 +132,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     const api = getApi();
     void api.AppInfo().then(setAppInfo).catch(() => {});
+    void api.DetectSystemProxy?.().then(setSysProxy).catch(() => {});
     void api.KnownHosts().then(setKnownHosts).catch(() => {});
     void api.LocalKeys().then(setKeys).catch(() => {});
     void api.DetectAICLIs?.().then((list) => setDetectedCLIs(list || [])).catch(() => {});
@@ -365,7 +369,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             key={t}
                             type="button"
                             className={settings.theme === t ? 'active' : ''}
-                            onClick={() => patch({ theme: t })}
+                            onClick={() => {
+                              const nextIsDark =
+                                t === 'dark' ||
+                                (t === 'system' && (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false));
+                              const syncedTerm = syncTerminalThemeForAppearance(settings.terminalTheme, nextIsDark);
+                              patch({ theme: t, terminalTheme: syncedTerm });
+                            }}
                           >
                             {t === 'light' ? '浅色' : t === 'dark' ? '深色' : '自动'}
                           </button>
@@ -386,10 +396,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 <div className="pref-section">
-                  <div className="pref-section-title">终端配色</div>
+                  <div className="pref-section-head">
+                    <span className="pref-section-title">终端配色</span>
+                    <div className="segmented" style={{ padding: 2 }}>
+                      {(
+                        [
+                          { id: 'all', label: '全部' },
+                          { id: 'dark', label: '深色' },
+                          { id: 'light', label: '浅色' },
+                        ] as const
+                      ).map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          style={{ padding: '2px 9px', fontSize: 11.5 }}
+                          className={themeFilter === f.id ? 'active' : ''}
+                          onClick={() => setThemeFilter(f.id)}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className="pref-group-pad">
                     <div className="theme-grid">
-                      {TERMINAL_THEMES.map((preset) => (
+                      {themeFilter === 'all' && (
+                        <button
+                          type="button"
+                          className={`theme-tile ${settings.terminalTheme === 'auto' || !settings.terminalTheme ? 'active' : ''}`}
+                          onClick={() => patch({ terminalTheme: 'auto' })}
+                        >
+                          <div className="theme-swatch-box theme-swatch-auto">
+                            <span className="theme-swatch-half light">
+                              <span style={{ color: '#2563EB' }}>&gt;_</span>
+                              <span style={{ fontSize: 9.5, opacity: 0.72 }}>浅色</span>
+                            </span>
+                            <span className="theme-swatch-half dark">
+                              <span style={{ color: '#34D399' }}>&gt;_</span>
+                              <span style={{ fontSize: 9.5, opacity: 0.78 }}>深色</span>
+                            </span>
+                          </div>
+                          <span style={{ fontSize: 12, fontWeight: 500 }}>跟随界面外观</span>
+                        </button>
+                      )}
+                      {TERMINAL_THEMES.filter((p) =>
+                        themeFilter === 'all' ? true : themeFilter === 'dark' ? p.isDark : !p.isDark,
+                      ).map((preset) => (
                         <button
                           key={preset.id}
                           type="button"
@@ -405,7 +457,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </span>
                             <span style={{ color: preset.preview[2] }}>ls -la</span>
                           </div>
-                          <span style={{ fontSize: 11.5, fontWeight: 500 }}>{preset.name}</span>
+                          <span style={{ fontSize: 12, fontWeight: 500 }}>{preset.name}</span>
                         </button>
                       ))}
                     </div>
@@ -538,6 +590,78 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <span style={{ fontSize: 12, color: 'var(--ink-tertiary)', width: 16 }}>行</span>
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                <div className="pref-section">
+                  <div className="pref-section-title">默认出站网络</div>
+                  <div className="pref-group">
+                    <div className="pref-row">
+                      <span className="pref-row-label">全局连接方式</span>
+                      <div className="segmented">
+                        {(
+                          [
+                            { id: 'direct', label: '直连' },
+                            { id: 'system', label: '系统代理' },
+                            { id: 'socks5', label: 'SOCKS5' },
+                            { id: 'http', label: 'HTTP' },
+                          ] as const
+                        ).map((pm) => (
+                          <button
+                            key={pm.id}
+                            type="button"
+                            className={(settings.proxyMode || 'direct') === pm.id ? 'active' : ''}
+                            onClick={() =>
+                              patch({
+                                proxyMode: pm.id,
+                                proxyHost: settings.proxyHost || (pm.id === 'socks5' || pm.id === 'http' ? '127.0.0.1' : ''),
+                                proxyPort: settings.proxyPort || (pm.id === 'socks5' ? 10808 : pm.id === 'http' ? 7890 : 0),
+                              })
+                            }
+                          >
+                            {pm.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {(settings.proxyMode || 'direct') === 'system' && (
+                      <div className="pref-row" style={{ minHeight: 38 }}>
+                        <span className="pref-row-sub">
+                          {sysProxy?.enabled
+                            ? `已检测到系统代理：${sysProxy.summary}（自动遵守局域网绕过规则）`
+                            : '当前未检测到系统代理，连接时将自动直连'}
+                        </span>
+                        <span className={`pill-badge ${sysProxy?.enabled ? 'safe' : 'neutral'}`}>
+                          {sysProxy?.enabled ? '已就绪' : '直连'}
+                        </span>
+                      </div>
+                    )}
+                    {(settings.proxyMode === 'socks5' || settings.proxyMode === 'http') && (
+                      <div className="pref-row" style={{ gap: 8 }}>
+                        <input
+                          className="input input-sm mono"
+                          style={{ flex: 1 }}
+                          placeholder="代理地址，如 127.0.0.1"
+                          value={settings.proxyHost || ''}
+                          onChange={(e) => patch({ proxyHost: e.target.value })}
+                        />
+                        <input
+                          className="input input-sm mono"
+                          style={{ width: 84 }}
+                          type="number"
+                          placeholder="端口"
+                          value={settings.proxyPort || ''}
+                          onChange={(e) => patch({ proxyPort: Number(e.target.value) || 0 })}
+                        />
+                        <input
+                          className="input input-sm mono"
+                          style={{ width: 100 }}
+                          placeholder="用户名（可选）"
+                          value={settings.proxyUser || ''}
+                          onChange={(e) => patch({ proxyUser: e.target.value })}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1074,7 +1198,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                   <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.03em' }}>Shell</div>
                   <div className="about-badges">
-                    <span className="pill-badge accent mono">v{appInfo?.version || '1.0.0'}</span>
+                    <span className="pill-badge accent mono">v{appInfo?.version || '1.1.0'}</span>
                     <span className="pill-badge neutral">Windows x64</span>
                     <span className="pill-badge neutral">MIT License</span>
                   </div>

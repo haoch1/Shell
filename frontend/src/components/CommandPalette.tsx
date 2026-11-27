@@ -16,7 +16,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import type { Profile, Snippet } from '../types/shell';
-import { parseQuickConnect } from '../lib/utils';
+import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 
 interface PaletteAction {
@@ -95,7 +95,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         out.push({
           id: `host-${p.id}`,
           label: p.name,
-          subtitle: `${p.user}@${p.host}${p.port !== 22 ? ':' + p.port : ''}${p.group ? ' · ' + p.group : ''}`,
+          subtitle: `${p.user}@${formatHostDisplay(p.host, p.port)}${p.group ? ' · ' + p.group : ''}`,
           category: '主机',
           icon: <HostIcon profile={p} size="sm" />,
           run: () => onConnectProfile(p),

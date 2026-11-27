@@ -1,35 +1,137 @@
 import React from 'react';
+import {
+  siAlpinelinux,
+  siArchlinux,
+  siCentos,
+  siDebian,
+  siDocker,
+  siFedora,
+  siLinux,
+  siRockylinux,
+  siUbuntu,
+} from 'simple-icons';
 import type { HostIconId, Profile, ProfileColor } from '../types/shell';
 import { profileColorHex } from '../lib/themes';
 
-export const HOST_ICONS: { id: HostIconId; label: string; brandColor: string }[] = [
-  { id: '', label: '自动', brandColor: '#8e8e93' },
-  { id: 'ubuntu', label: 'Ubuntu', brandColor: '#E95420' },
-  { id: 'debian', label: 'Debian', brandColor: '#D70A53' },
-  { id: 'centos', label: 'CentOS', brandColor: '#932279' },
-  { id: 'rocky', label: 'Rocky', brandColor: '#10B981' },
-  { id: 'alpine', label: 'Alpine', brandColor: '#0D597F' },
-  { id: 'arch', label: 'Arch', brandColor: '#1793D1' },
-  { id: 'fedora', label: 'Fedora', brandColor: '#3C6EB4' },
-  { id: 'linux', label: 'Linux', brandColor: '#D97706' },
-  { id: 'windows', label: 'Windows', brandColor: '#0078D4' },
-  { id: 'docker', label: 'Docker', brandColor: '#2496ED' },
-];
+interface BrandTheme {
+  lightFg: string;
+  darkFg: string;
+  lightBg: string;
+  darkBg: string;
+  lightRing: string;
+  darkRing: string;
+}
 
-const BRAND_COLORS: Record<Exclude<HostIconId, ''>, string> = {
-  ubuntu: '#E95420',
-  debian: '#D70A53',
-  centos: '#932279',
-  rocky: '#10B981',
-  alpine: '#0D597F',
-  arch: '#1793D1',
-  fedora: '#3C6EB4',
-  linux: '#D97706',
-  windows: '#0078D4',
-  docker: '#2496ED',
+const BRAND_THEMES: Record<Exclude<HostIconId, ''>, BrandTheme> = {
+  ubuntu: {
+    lightFg: '#E95420',
+    darkFg: '#FF8A5B',
+    lightBg: '#FFF2EC',
+    darkBg: '#362925',
+    lightRing: 'rgba(233, 84, 32, 0.22)',
+    darkRing: 'rgba(255, 138, 91, 0.34)',
+  },
+  debian: {
+    lightFg: '#D70A53',
+    darkFg: '#FF6B9A',
+    lightBg: '#FDF0F4',
+    darkBg: '#36252E',
+    lightRing: 'rgba(215, 10, 83, 0.20)',
+    darkRing: 'rgba(255, 107, 154, 0.34)',
+  },
+  centos: {
+    lightFg: '#932279',
+    darkFg: '#E28FFF',
+    lightBg: '#F9EFF7',
+    darkBg: '#31273A',
+    lightRing: 'rgba(147, 34, 121, 0.20)',
+    darkRing: 'rgba(226, 143, 255, 0.32)',
+  },
+  rocky: {
+    lightFg: '#0EA472',
+    darkFg: '#3EE2A5',
+    lightBg: '#ECFBF5',
+    darkBg: '#20342F',
+    lightRing: 'rgba(14, 164, 114, 0.22)',
+    darkRing: 'rgba(62, 226, 165, 0.32)',
+  },
+  alpine: {
+    lightFg: '#0D6B99',
+    darkFg: '#56CCF2',
+    lightBg: '#EDF7FC',
+    darkBg: '#20303B',
+    lightRing: 'rgba(13, 107, 153, 0.22)',
+    darkRing: 'rgba(86, 204, 242, 0.32)',
+  },
+  arch: {
+    lightFg: '#1793D1',
+    darkFg: '#56CCF2',
+    lightBg: '#ECF7FD',
+    darkBg: '#20313D',
+    lightRing: 'rgba(23, 147, 209, 0.22)',
+    darkRing: 'rgba(86, 204, 242, 0.32)',
+  },
+  fedora: {
+    lightFg: '#3C6EB4',
+    darkFg: '#74B3FF',
+    lightBg: '#EFF5FC',
+    darkBg: '#242F42',
+    lightRing: 'rgba(60, 110, 180, 0.22)',
+    darkRing: 'rgba(116, 179, 255, 0.32)',
+  },
+  linux: {
+    lightFg: '#CA8A04',
+    darkFg: '#FCD34D',
+    lightBg: '#FEF9EB',
+    darkBg: '#363022',
+    lightRing: 'rgba(202, 138, 4, 0.22)',
+    darkRing: 'rgba(252, 211, 77, 0.32)',
+  },
+  windows: {
+    lightFg: '#0078D4',
+    darkFg: '#56CCF2',
+    lightBg: '#EDF6FE',
+    darkBg: '#203140',
+    lightRing: 'rgba(0, 120, 212, 0.22)',
+    darkRing: 'rgba(86, 204, 242, 0.32)',
+  },
+  docker: {
+    lightFg: '#1D8CE0',
+    darkFg: '#56CCF2',
+    lightBg: '#EDF7FE',
+    darkBg: '#203240',
+    lightRing: 'rgba(29, 140, 224, 0.22)',
+    darkRing: 'rgba(86, 204, 242, 0.32)',
+  },
 };
 
-const VALID_OS_ICONS = new Set<string>(Object.keys(BRAND_COLORS));
+export const HOST_ICONS: { id: HostIconId; label: string; brandColor: string; darkColor: string }[] = [
+  { id: '', label: '自动', brandColor: '#6e6e73', darkColor: '#a1a1a6' },
+  { id: 'ubuntu', label: 'Ubuntu', brandColor: BRAND_THEMES.ubuntu.lightFg, darkColor: BRAND_THEMES.ubuntu.darkFg },
+  { id: 'debian', label: 'Debian', brandColor: BRAND_THEMES.debian.lightFg, darkColor: BRAND_THEMES.debian.darkFg },
+  { id: 'centos', label: 'CentOS', brandColor: BRAND_THEMES.centos.lightFg, darkColor: BRAND_THEMES.centos.darkFg },
+  { id: 'rocky', label: 'Rocky', brandColor: BRAND_THEMES.rocky.lightFg, darkColor: BRAND_THEMES.rocky.darkFg },
+  { id: 'alpine', label: 'Alpine', brandColor: BRAND_THEMES.alpine.lightFg, darkColor: BRAND_THEMES.alpine.darkFg },
+  { id: 'arch', label: 'Arch', brandColor: BRAND_THEMES.arch.lightFg, darkColor: BRAND_THEMES.arch.darkFg },
+  { id: 'fedora', label: 'Fedora', brandColor: BRAND_THEMES.fedora.lightFg, darkColor: BRAND_THEMES.fedora.darkFg },
+  { id: 'linux', label: 'Linux', brandColor: BRAND_THEMES.linux.lightFg, darkColor: BRAND_THEMES.linux.darkFg },
+  { id: 'windows', label: 'Windows', brandColor: BRAND_THEMES.windows.lightFg, darkColor: BRAND_THEMES.windows.darkFg },
+  { id: 'docker', label: 'Docker', brandColor: BRAND_THEMES.docker.lightFg, darkColor: BRAND_THEMES.docker.darkFg },
+];
+
+const SIMPLE_ICON_PATHS: Partial<Record<Exclude<HostIconId, ''>, string>> = {
+  ubuntu: siUbuntu.path,
+  debian: siDebian.path,
+  centos: siCentos.path,
+  rocky: siRockylinux.path,
+  alpine: siAlpinelinux.path,
+  arch: siArchlinux.path,
+  fedora: siFedora.path,
+  linux: siLinux.path,
+  docker: siDocker.path,
+};
+
+const VALID_OS_ICONS = new Set<string>(Object.keys(BRAND_THEMES));
 
 export function detectOSIconFromText(text: string): Exclude<HostIconId, ''> | '' {
   const s = (text || '').toLowerCase();
@@ -56,113 +158,23 @@ export function inferHostIcon(profile?: Pick<Profile, 'icon' | 'name' | 'host' |
 }
 
 export function renderHostGlyph(icon: Exclude<HostIconId, ''>, size: number) {
-  switch (icon) {
-    case 'ubuntu':
-      // Classic Ubuntu Circle of Friends
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <circle cx="12" cy="12" r="6.2" stroke="currentColor" strokeWidth="2.1" strokeDasharray="7.6 5.4" strokeDashoffset="1.2" />
-          <circle cx="4.6" cy="12" r="2.2" fill="currentColor" />
-          <circle cx="15.8" cy="5.7" r="2.2" fill="currentColor" />
-          <circle cx="15.8" cy="18.3" r="2.2" fill="currentColor" />
-        </svg>
-      );
-    case 'debian':
-      // Iconic Debian swirl spiral
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M14.2 14.5c-1.8 1.2-4.3.7-5.4-1.1-1.3-2.1-.6-5 1.5-6.2 2.5-1.5 5.9-.5 7.2 2.1 1.6 3.1.3 7.1-2.8 8.7-3.8 1.9-8.6.2-10.3-3.7C2.6 10 4.8 4.9 9.2 3.4c4.9-1.6 10.3 1.1 11.7 6"
-            stroke="currentColor"
-            strokeWidth="2.1"
-            strokeLinecap="round"
-          />
-          <circle cx="12.2" cy="11.2" r="1.4" fill="currentColor" />
-        </svg>
-      );
-    case 'centos':
-      // CentOS geometric diamond grid
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect x="4" y="4" width="6.5" height="6.5" rx="1.2" stroke="currentColor" strokeWidth="1.9" />
-          <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.2" stroke="currentColor" strokeWidth="1.9" />
-          <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.2" stroke="currentColor" strokeWidth="1.9" />
-          <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.2" stroke="currentColor" strokeWidth="1.9" />
-          <path d="M12 2.5L15 5.5M12 21.5L9 18.5M2.5 12L5.5 9M21.5 12L18.5 15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      );
-    case 'rocky':
-      // Rocky Linux circular mountain emblem
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <circle cx="12" cy="12" r="8.8" stroke="currentColor" strokeWidth="2" />
-          <path d="M6.2 17.5L12.6 10.4L16.2 14L19 10.8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      );
-    case 'alpine':
-      // Alpine Linux twin peaks
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M2.5 17.5L9.2 6.5L14.2 14.5L16.8 10.5L21.5 17.5H2.5Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-        </svg>
-      );
-    case 'arch':
-      // Iconic Arch Linux pointed chevron
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M12 3L4.2 20.5C6.8 18.8 9.2 17.8 10.6 17.6C10.3 16.5 10.7 15.1 12 15.1C13.3 15.1 13.7 16.5 13.4 17.6C14.8 17.8 17.2 18.8 19.8 20.5L12 3Z"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinejoin="round"
-          />
-        </svg>
-      );
-    case 'fedora':
-      // Fedora rounded badge + f-loop
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M12 3C7.03 3 3 7.03 3 12V19.2C3 20.2 3.8 21 4.8 21H12C16.97 21 21 16.97 21 12C21 7.03 16.97 3 12 3Z" stroke="currentColor" strokeWidth="1.9" />
-          <path d="M15.2 9.2A2.2 2.2 0 0 0 11 10.2V14.8A2.2 2.2 0 1 1 8.8 12.6H13.5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-        </svg>
-      );
-    case 'windows':
-      // Crisp 4-pane Windows logo
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <rect x="3.5" y="3.5" width="7.6" height="7.6" rx="1.2" />
-          <rect x="12.9" y="3.5" width="7.6" height="7.6" rx="1.2" />
-          <rect x="3.5" y="12.9" width="7.6" height="7.6" rx="1.2" />
-          <rect x="12.9" y="12.9" width="7.6" height="7.6" rx="1.2" />
-        </svg>
-      );
-    case 'docker':
-      // Docker container blocks
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect x="5" y="8.5" width="3.2" height="3" rx="0.5" fill="currentColor" />
-          <rect x="9.2" y="8.5" width="3.2" height="3" rx="0.5" fill="currentColor" />
-          <rect x="13.4" y="8.5" width="3.2" height="3" rx="0.5" fill="currentColor" />
-          <rect x="9.2" y="4.8" width="3.2" height="3" rx="0.5" fill="currentColor" />
-          <path d="M3 13.2H18.5C19.6 13.2 20.8 12.5 21.4 11.4C21 15.8 17.8 19 12.2 19C6.8 19 3.5 16.5 3 13.2Z" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" />
-        </svg>
-      );
-    default:
-      // Linux Tux penguin silhouette
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M12 3.2C9.5 3.2 8.2 5 8.2 7.6C8.2 9.2 7.2 10.8 6.4 12.6C5.6 14.3 5.8 16.8 7.5 18.2C8.7 19.2 10.2 19.6 12 19.6C13.8 19.6 15.3 19.2 16.5 18.2C18.2 16.8 18.4 14.3 17.6 12.6C16.8 10.8 15.8 9.2 15.8 7.6C15.8 5 14.5 3.2 12 3.2Z"
-            stroke="currentColor"
-            strokeWidth="1.9"
-          />
-          <circle cx="10.4" cy="7.2" r="0.9" fill="currentColor" />
-          <circle cx="13.6" cy="7.2" r="0.9" fill="currentColor" />
-          <path d="M10.7 9.4L12 10.4L13.3 9.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M8.5 19.8L6.5 20.6M15.5 19.8L17.5 20.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-        </svg>
-      );
+  const path = SIMPLE_ICON_PATHS[icon];
+  if (path) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d={path} />
+      </svg>
+    );
   }
+  // Windows 11 crisp 4-pane logo
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="8.7" height="8.7" rx="1.1" />
+      <rect x="12.8" y="2.5" width="8.7" height="8.7" rx="1.1" />
+      <rect x="2.5" y="12.8" width="8.7" height="8.7" rx="1.1" />
+      <rect x="12.8" y="12.8" width="8.7" height="8.7" rx="1.1" />
+    </svg>
+  );
 }
 
 interface HostIconProps {
@@ -182,15 +194,30 @@ export const HostIcon: React.FC<HostIconProps> = ({
 }) => {
   const resolvedIcon = iconOverride !== undefined ? (iconOverride || inferHostIcon(profile)) : inferHostIcon(profile);
   const customColor = colorOverride ?? profile?.color;
-  // Use authentic OS distro color by default unless user explicitly picked a custom color tag
-  const hex = customColor ? profileColorHex(customColor) : BRAND_COLORS[resolvedIcon];
+  const theme = BRAND_THEMES[resolvedIcon];
   const glyphSize = size === 'sm' ? 13 : size === 'lg' ? 18 : 16;
 
+  const customHex = customColor ? profileColorHex(customColor) : '';
+  const styleVars = (customHex
+    ? {
+        '--host-fg-light': customHex,
+        '--host-fg-dark': customHex,
+        '--host-bg-light': `color-mix(in srgb, ${customHex} 12%, #ffffff)`,
+        '--host-bg-dark': `color-mix(in srgb, ${customHex} 18%, #1d1e22)`,
+        '--host-ring-light': `color-mix(in srgb, ${customHex} 24%, transparent)`,
+        '--host-ring-dark': `color-mix(in srgb, ${customHex} 32%, transparent)`,
+      }
+    : {
+        '--host-fg-light': theme.lightFg,
+        '--host-fg-dark': theme.darkFg,
+        '--host-bg-light': theme.lightBg,
+        '--host-bg-dark': theme.darkBg,
+        '--host-ring-light': theme.lightRing,
+        '--host-ring-dark': theme.darkRing,
+      }) as React.CSSProperties;
+
   return (
-    <span
-      className={`host-icon-badge size-${size}`}
-      style={{ '--host-accent': hex } as React.CSSProperties}
-    >
+    <span className={`host-icon-badge size-${size}`} style={styleVars}>
       {renderHostGlyph(resolvedIcon, glyphSize)}
       {isLive && <span className="host-icon-live" title="在线会话" />}
     </span>

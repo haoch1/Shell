@@ -238,6 +238,11 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
                           </span>
                         )}
                         {h.proxyJump && <span className="pill-badge accent">跳板 {h.proxyJump}</span>}
+                        {h.proxyType && (
+                          <span className="pill-badge neutral">
+                            代理 {h.proxyType === 'system' ? '系统' : h.proxyType === 'direct' ? '直连' : `${h.proxyType} ${h.proxyHost || ''}`}
+                          </span>
+                        )}
                         {h.alreadySaved && <span className="pill-badge caution">已存在</span>}
                       </div>
                       <div className="mono" style={{ fontSize: 11.5, color: 'var(--ink-secondary)' }}>

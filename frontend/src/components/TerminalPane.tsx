@@ -87,12 +87,19 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
 
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
 
-  const preset = getTerminalTheme(settings.terminalTheme);
+  const isAppDark =
+    settings.theme === 'dark' ||
+    (settings.theme === 'system' && (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false));
+  const preset = getTerminalTheme(settings.terminalTheme, isAppDark);
 
   useEffect(() => {
     const container = hostRef.current;
     if (!container) return;
 
+    const initDark =
+      settingsRef.current.theme === 'dark' ||
+      (settingsRef.current.theme === 'system' &&
+        (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false));
     const term = new Terminal({
       fontFamily: settingsRef.current.fontFamily,
       fontSize: settingsRef.current.fontSize,
@@ -100,7 +107,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       cursorStyle: settingsRef.current.cursorStyle,
       cursorBlink: settingsRef.current.cursorBlink,
       scrollback: settingsRef.current.scrollback,
-      theme: getTerminalTheme(settingsRef.current.terminalTheme).theme,
+      theme: getTerminalTheme(settingsRef.current.terminalTheme, initDark).theme,
       allowProposedApi: true,
       macOptionIsMeta: true,
     });
@@ -282,10 +289,11 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     ctrl.term.options.cursorStyle = settings.cursorStyle;
     ctrl.term.options.cursorBlink = settings.cursorBlink;
     ctrl.term.options.scrollback = settings.scrollback;
-    ctrl.term.options.theme = getTerminalTheme(settings.terminalTheme).theme;
+    ctrl.term.options.theme = getTerminalTheme(settings.terminalTheme, isAppDark).theme;
     requestAnimationFrame(() => ctrl.fit());
   }, [
     session.id,
+    settings.theme,
     settings.fontFamily,
     settings.fontSize,
     settings.lineHeight,
@@ -293,6 +301,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     settings.cursorBlink,
     settings.scrollback,
     settings.terminalTheme,
+    isAppDark,
   ]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -346,10 +355,11 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       )}
 
       <div
-        ref={hostRef}
-        className="pane-xterm-host"
-        style={{ background: preset.theme.background ?? '#111214' }}
-      />
+        className="pane-xterm-wrap"
+        style={{ background: preset.theme.background ?? '#141720' }}
+      >
+        <div ref={hostRef} className="pane-xterm-host" />
+      </div>
 
       {session.state === 'closed' && (
         <div className="pane-closed-bar">

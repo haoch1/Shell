@@ -21,6 +21,7 @@ import type {
   RemoteEntry,
   ServerStats,
   Snippet,
+  SystemProxyInfo,
   TunnelRule,
   TunnelStatus,
 } from '../types/shell';
@@ -31,6 +32,8 @@ interface GoAppBindings {
   TermWSURL(sessionId: string): Promise<string>;
   Profiles(): Promise<Profile[]>;
   SaveProfile(p: Profile): Promise<Profile>;
+  GetProfileSecret(id: string): Promise<string>;
+  SaveProfileWithSecret(p: Profile, secret: string, remember: boolean, keepExisting: boolean): Promise<Profile>;
   DuplicateProfile(id: string): Promise<Profile>;
   DeleteProfile(id: string): Promise<void>;
   DeleteProfiles(ids: string[]): Promise<void>;
@@ -77,6 +80,7 @@ interface GoAppBindings {
 
   GetSettings(): Promise<AppSettings>;
   SaveSettings(s: AppSettings): Promise<AppSettings>;
+  DetectSystemProxy(): Promise<SystemProxyInfo>;
 
   KnownHosts(): Promise<KnownHostEntry[]>;
   RemoveKnownHost(line: number): Promise<void>;

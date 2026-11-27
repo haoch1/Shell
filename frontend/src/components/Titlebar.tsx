@@ -1,11 +1,10 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ArrowLeftRight,
   Code2,
   Command,
   CopyPlus,
   FolderOpen,
-  Minus,
   PanelLeft,
   Plus,
   Radio,
@@ -13,7 +12,6 @@ import {
   Sparkles,
   SplitSquareHorizontal,
   SplitSquareVertical,
-  Square,
   X,
 } from 'lucide-react';
 import type { DrawerMode, SessionRecord, WorkspaceTab } from '../types/shell';
@@ -58,6 +56,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onOpenPalette,
 }) => {
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+  const [maximised, setMaximised] = useState(false);
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeLeaves = activeTab ? collectLeaves(activeTab.root) : [];
   const activeLeaf = activeLeaves.find((l) => l.paneId === activeTab?.activePaneId) ?? activeLeaves[0];
@@ -65,6 +64,34 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   const isConnected = activeSession?.state === 'connected';
   const isMultiPane = activeLeaves.length > 1;
   const rt = getRuntime();
+
+  const syncMaximised = useCallback(() => {
+    if (!rt?.WindowIsMaximised) return;
+    void rt
+      .WindowIsMaximised()
+      .then((val) => setMaximised(Boolean(val)))
+      .catch(() => {});
+  }, [rt]);
+
+  useEffect(() => {
+    syncMaximised();
+    let timer: number | null = null;
+    const onResize = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(syncMaximised, 80);
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [syncMaximised]);
+
+  const handleToggleMaximise = () => {
+    rt?.WindowToggleMaximise();
+    setMaximised((v) => !v);
+    window.setTimeout(syncMaximised, 120);
+  };
 
   const tabState = (tab: WorkspaceTab): 'connected' | 'connecting' | 'closed' => {
     const leaves = collectLeaves(tab.root);
@@ -79,7 +106,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
       className="titlebar"
       onDoubleClick={(e) => {
         if ((e.target as HTMLElement).closest('button')) return;
-        rt?.WindowToggleMaximise();
+        handleToggleMaximise();
       }}
     >
       <div className="titlebar-group">
@@ -257,26 +284,42 @@ export const Titlebar: React.FC<TitlebarProps> = ({
         <button
           type="button"
           className="win-btn"
+          title="最小化"
           aria-label="最小化"
           onClick={() => rt?.WindowMinimise()}
         >
-          <Minus size={14} strokeWidth={1.6} />
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+            <path d="M1.5 5.5H9.5" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
+          </svg>
         </button>
         <button
           type="button"
           className="win-btn"
-          aria-label="最大化"
-          onClick={() => rt?.WindowToggleMaximise()}
+          title={maximised ? '向下还原' : '最大化'}
+          aria-label={maximised ? '向下还原' : '最大化'}
+          onClick={handleToggleMaximise}
         >
-          <Square size={11} strokeWidth={1.7} />
+          {maximised ? (
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+              <rect x="1.5" y="3.2" width="6.3" height="6.3" rx="1" stroke="currentColor" strokeWidth="1.1" />
+              <path d="M3.4 3.2V2.2C3.4 1.75 3.75 1.4 4.2 1.4H8.8C9.25 1.4 9.6 1.75 9.6 2.2V6.8C9.6 7.25 9.25 7.6 8.8 7.6H7.8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+              <rect x="1.6" y="1.6" width="7.8" height="7.8" rx="1.2" stroke="currentColor" strokeWidth="1.15" />
+            </svg>
+          )}
         </button>
         <button
           type="button"
           className="win-btn close"
+          title="关闭"
           aria-label="关闭窗口"
           onClick={() => rt?.Quit()}
         >
-          <X size={14} strokeWidth={1.7} />
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+            <path d="M2 2L9 9M9 2L2 9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
         </button>
       </div>
 

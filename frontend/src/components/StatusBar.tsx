@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Activity, Bot, Cpu, HardDrive, MemoryStick, Network } from 'lucide-react';
 import type { AgentStatusView, ServerStats, SessionRecord } from '../types/shell';
-import { formatBytes, formatDuration } from '../lib/utils';
+import { formatBytes, formatDuration, formatHostDisplay } from '../lib/utils';
 
 interface StatusBarProps {
   session?: SessionRecord;
@@ -51,11 +51,10 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   return (
     <footer className="statusbar">
       <div className="statusbar-left">
-        <span className="status-chip">
+        <span className="status-chip" title={`${session.profile.user}@${session.profile.host}:${session.profile.port}`}>
           <span className={`tab-dot ${session.state}`} />
           <span className="mono">
-            {session.profile.user}@{session.profile.host}
-            {session.profile.port !== 22 ? `:${session.profile.port}` : ''}
+            {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port)}
           </span>
         </span>
         {jumpHostName && (

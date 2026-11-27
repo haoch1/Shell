@@ -35,11 +35,11 @@ Built with Go 1.26, Wails v2 (WebView2), and xterm.js v6. Distributed as a singl
 
 ## Features
 
-- **SSH Engine**: Password, private key (encrypted/unencrypted), Windows OpenSSH Agent, keyboard-interactive 2FA, multi-hop `ProxyJump`, `ForwardAgent`, per-host SOCKS5/HTTP `CONNECT` proxies, KeepAlive, RTT latency measurement, and SHA-256 `known_hosts` verification.
-- **Terminal & Workspace**: xterm.js v6 with WebGL acceleration, recursive horizontal/vertical split panes, broadcast input, regex search (`Ctrl+Shift+F`), command palette (`Ctrl+K`), OSC 7 working-directory tracking, and native Windows system tray support with quick-connect menu.
-- **SFTP, Port Forwarding & Telemetry**: Integrated SFTP browser with drag-and-drop uploads, progress queue, `chmod`, remote text editor; Local (`-L`), Remote (`-R`), and dynamic SOCKS5 (`-D`) tunnels; zero-agent Linux CPU/RAM/disk/network telemetry; Ed25519/RSA-4096 key generator; AES-256-GCM + scrypt vault backup.
-- **Universal Config Importer**: Auto-detects exports from Xshell (`.xsh`/`.xts`/`.zip`), MobaXterm (`.mxtsessions`), Termius (`.csv`/`.json`), Tabby (`.yaml`), Electerm (`.json`), SecureCRT (`.xml`/`.ini`), PuTTY/KiTTY (`.reg`), WindTerm, FinalShell, OpenSSH `config`, and generic CSV/JSON/text while preserving original folder groups.
-- **AI Assistant & MCP Server**: Supports OpenAI-compatible APIs (DeepSeek, OpenAI, Ollama, OpenRouter) alongside a built-in MCP `2025-03-26` server (Streamable HTTP `127.0.0.1:17822/mcp` and stdio `Shell.exe --mcp`) guarded by a structural command policy engine, automatic secret/PII redaction, interactive approval dialogs, and JSONL audit logging.
+- **SSH Engine & Routing**: Password, private key (encrypted/unencrypted), Windows OpenSSH Agent, keyboard-interactive 2FA, up to 5-hop `ProxyJump`, `ForwardAgent`, global & per-host **Direct / Windows System Proxy (with `ProxyOverride` bypass) / SOCKS5 / HTTP `CONNECT`** routing, KeepAlive, RTT latency measurement, and SHA-256 `known_hosts` verification.
+- **Terminal & Workspace**: Low-latency loopback binary WebSocket terminal powered by xterm.js v6 with optional WebGL acceleration, paired light/dark terminal themes synced to the daylight-readable UI appearance, recursive horizontal/vertical split panes, broadcast input, regex search (`Ctrl+Shift+F`), command palette (`Ctrl+K`), OSC 7 working-directory tracking, window bounds persistence, and native Windows system tray minimization.
+- **SFTP, Port Forwarding & Telemetry**: Integrated SFTP browser with drag-and-drop uploads, progress queue, `chmod`, remote text editor; Local (`-L`), Remote (`-R`), and dynamic SOCKS5 (`-D`) tunnels; zero-sleep Linux CPU/RAM/disk/network telemetry with OS distro detection; Ed25519/RSA-4096 key generator; AES-256-GCM + scrypt vault backup.
+- **Universal Config Importer**: Auto-detects exports from Netcatty (`.csv`), Xshell (`.xsh`/`.xts`/`.zip`), MobaXterm (`.mxtsessions`), Termius (`.csv`/`.json`), Tabby (`.yaml`), Electerm (`.json`), SecureCRT (`.xml`/`.ini`), PuTTY/KiTTY (`.reg`), WindTerm, FinalShell, OpenSSH `config`, and generic CSV/JSON/text while preserving groups, credentials, jump hosts, and proxy settings.
+- **AI Assistant & MCP Server**: Supports OpenAI-compatible APIs (DeepSeek, OpenAI, Ollama, OpenRouter) and local AI CLIs (Claude Code, Codex CLI, Gemini CLI) alongside a built-in MCP `2025-03-26` server (Streamable HTTP `127.0.0.1:17822/mcp` and stdio `Shell.exe --mcp`) guarded by a structural command policy engine, automatic secret/PII redaction, interactive approval dialogs, and JSONL audit logging.
 
 ---
 
@@ -51,7 +51,7 @@ Requires Go 1.26+ (`CGO_ENABLED=0`) and Node.js 22+ on Windows x64.
 cd frontend && npm ci && npm run build && cd ..
 $env:CGO_ENABLED = '0'
 go test -v -count=1 -tags desktop,production,wv2runtime.download ./...
-./.github/scripts/package-windows.ps1 -Version 1.0.0
+./.github/scripts/package-windows.ps1 -Version 1.1.0
 node .github/scripts/smoke-windows.mjs
 ```
 

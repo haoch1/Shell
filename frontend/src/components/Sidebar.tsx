@@ -1,28 +1,54 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ArrowUpDown,
+  Check,
   CheckSquare,
   ChevronDown,
   ChevronRight,
   Copy,
   Download,
   KeyRound,
+  Moon,
   Pencil,
   Pin,
   Plus,
   Search,
   Settings,
+  Sun,
   Terminal,
   Trash2,
 } from 'lucide-react';
 import type { Profile, SessionRecord } from '../types/shell';
-import { parseQuickConnect } from '../lib/utils';
+import { copyToClipboard } from '../lib/bridge';
+import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
+
+type HostSortMode = 'default' | 'name-asc' | 'name-desc' | 'recent' | 'host';
+
+const SORT_OPTIONS: { id: HostSortMode; label: string }[] = [
+  { id: 'default', label: '默认顺序' },
+  { id: 'name-asc', label: '名称 A → Z' },
+  { id: 'name-desc', label: '名称 Z → A' },
+  { id: 'recent', label: '最近使用' },
+  { id: 'host', label: '主机地址' },
+];
+
+function loadSortMode(): HostSortMode {
+  try {
+    const v = localStorage.getItem('shell.sidebar.sort') as HostSortMode | null;
+    if (v && SORT_OPTIONS.some((o) => o.id === v)) return v;
+  } catch {
+    // ignore storage restrictions
+  }
+  return 'default';
+}
 
 interface SidebarProps {
   open: boolean;
   profiles: Profile[];
   sessions: Record<string, SessionRecord>;
   activeProfileId?: string;
+  isDark?: boolean;
   onConnect: (profile: Profile) => void;
   onQuickConnect: (target: { user: string; host: string; port: number }) => void;
   onAddHost: () => void;
@@ -33,6 +59,8 @@ interface SidebarProps {
   onTogglePin: (profile: Profile) => void;
   onOpenImportSSH: () => void;
   onOpenSettings: (tab?: 'appearance' | 'ssh' | 'keys' | 'ai' | 'agent' | 'backup' | 'about') => void;
+  onToggleTheme?: () => void;
+  onToast?: (msg: string) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = React.memo(({
@@ -40,6 +68,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   profiles,
   sessions,
   activeProfileId,
+  isDark = false,
   onConnect,
   onQuickConnect,
   onAddHost,
@@ -50,13 +79,27 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   onTogglePin,
   onOpenImportSSH,
   onOpenSettings,
+  onToggleTheme,
+  onToast,
 }) => {
   const [query, setQuery] = useState('');
+  const [sortMode, setSortMode] = useState<HostSortMode>(loadSortMode);
+  const [sortOpen, setSortOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; profile: Profile } | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [deletingBatch, setDeletingBatch] = useState(false);
+
+  const changeSortMode = (next: HostSortMode) => {
+    setSortMode(next);
+    setSortOpen(false);
+    try {
+      localStorage.setItem('shell.sidebar.sort', next);
+    } catch {
+      // ignore
+    }
+  };
 
   const liveProfileIds = useMemo(() => {
     const set = new Set<string>();
@@ -76,7 +119,30 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   }, [profiles, query]);
 
   const sections = useMemo(() => {
-    const pinned = filtered.filter((p) => p.pinned);
+    const sortList = (items: Profile[]) => {
+      if (sortMode === 'default') return items;
+      const copy = [...items];
+      copy.sort((a, b) => {
+        switch (sortMode) {
+          case 'name-asc':
+            return a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
+          case 'name-desc':
+            return b.name.localeCompare(a.name, 'zh-CN', { numeric: true, sensitivity: 'base' });
+          case 'recent':
+            return (
+              (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0) ||
+              a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' })
+            );
+          case 'host':
+            return a.host.localeCompare(b.host, undefined, { numeric: true, sensitivity: 'base' });
+          default:
+            return 0;
+        }
+      });
+      return copy;
+    };
+
+    const pinned = sortList(filtered.filter((p) => p.pinned));
     const groupMap = new Map<string, Profile[]>();
     for (const p of filtered) {
       if (p.pinned) continue;
@@ -95,10 +161,10 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
       return a[0].localeCompare(b[0], 'zh-CN');
     });
     for (const [label, items] of sortedGroups) {
-      list.push({ key: label, label, items });
+      list.push({ key: label, label, items: sortList(items) });
     }
     return list;
-  }, [filtered]);
+  }, [filtered, sortMode]);
 
   const quickTarget = useMemo(() => {
     if (!query.trim() || filtered.length > 0) return null;
@@ -167,16 +233,50 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
           <span className="kbd-hint">⌃K</span>
         </div>
 
-        <button
-          id="addHost"
-          type="button"
-          className="btn btn-primary btn-sm"
-          style={{ width: '100%' }}
-          onClick={onAddHost}
-        >
-          <Plus size={14} strokeWidth={2} />
-          <span>新建主机</span>
-        </button>
+        <div className="sidebar-action-row">
+          <button
+            id="addHost"
+            type="button"
+            className="btn btn-primary"
+            style={{ flex: 1 }}
+            onClick={onAddHost}
+          >
+            <Plus size={15} strokeWidth={2.1} />
+            <span>新建主机</span>
+          </button>
+          <div style={{ position: 'relative' }}>
+            <button
+              id="sortHostsBtn"
+              type="button"
+              className={`btn sidebar-sort-btn ${sortMode !== 'default' ? 'active' : ''}`}
+              title={`排序：${SORT_OPTIONS.find((o) => o.id === sortMode)?.label}`}
+              aria-label="主机排序"
+              onClick={() => setSortOpen((v) => !v)}
+            >
+              <ArrowUpDown size={14} strokeWidth={1.8} />
+            </button>
+            {sortOpen && (
+              <>
+                <div style={{ position: 'fixed', inset: 0, zIndex: 139 }} onClick={() => setSortOpen(false)} />
+                <div className="context-menu sort-popover">
+                  {SORT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className="context-menu-item"
+                      onClick={() => changeSortMode(opt.id)}
+                    >
+                      <span style={{ width: 14, display: 'inline-flex', justifyContent: 'center' }}>
+                        {sortMode === opt.id && <Check size={13} />}
+                      </span>
+                      <span>{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="sidebar-list" onClick={() => setCtxMenu(null)}>
@@ -192,8 +292,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             <div className="host-meta">
               <div className="host-name">快速连接</div>
               <div className="host-sub mono">
-                {quickTarget.host}
-                {quickTarget.port !== 22 ? `:${quickTarget.port}` : ''}
+                {formatHostDisplay(quickTarget.host, quickTarget.port)}
               </div>
             </div>
           </div>
@@ -264,12 +363,23 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                           <span className="host-name">{p.name}</span>
                         </div>
                         <div className="host-sub mono">
-                          {p.host}
-                          {p.port !== 22 ? `:${p.port}` : ''}
+                          {formatHostDisplay(p.host, p.port)}
                         </div>
                       </div>
                       {!selectMode && (
                         <div className="host-actions">
+                          <button
+                            type="button"
+                            className="host-action-btn"
+                            title={`复制地址 (${p.host})`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void copyToClipboard(p.host);
+                              onToast?.('已复制主机地址');
+                            }}
+                          >
+                            <Copy size={12.5} strokeWidth={1.8} />
+                          </button>
                           <button
                             type="button"
                             className="host-action-btn"
@@ -279,7 +389,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                               onEditHost(p);
                             }}
                           >
-                            <Pencil size={12} strokeWidth={1.8} />
+                            <Pencil size={12.5} strokeWidth={1.8} />
                           </button>
                         </div>
                       )}
@@ -335,6 +445,17 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                 <CheckSquare size={14} strokeWidth={1.7} />
               </button>
             )}
+            {onToggleTheme && (
+              <button
+                type="button"
+                className="icon-btn"
+                title={isDark ? '切换浅色外观' : '切换深色外观'}
+                aria-label="切换深浅色外观"
+                onClick={onToggleTheme}
+              >
+                {isDark ? <Sun size={15} strokeWidth={1.7} /> : <Moon size={15} strokeWidth={1.7} />}
+              </button>
+            )}
             <button
               id="keysBtn"
               type="button"
@@ -343,7 +464,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               aria-label="密钥管理"
               onClick={() => onOpenSettings('keys')}
             >
-              <KeyRound size={14} strokeWidth={1.7} />
+              <KeyRound size={15} strokeWidth={1.7} />
             </button>
             <button
               id="settingsBtn"
@@ -353,7 +474,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               aria-label="偏好设置"
               onClick={() => onOpenSettings('appearance')}
             >
-              <Settings size={14} strokeWidth={1.7} />
+              <Settings size={15} strokeWidth={1.7} />
             </button>
           </div>
         </div>
@@ -408,6 +529,18 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             >
               <Pin size={13} />
               {ctxMenu.profile.pinned ? '取消置顶' : '置顶主机'}
+            </button>
+            <button
+              type="button"
+              className="context-menu-item"
+              onClick={() => {
+                void copyToClipboard(ctxMenu.profile.host);
+                onToast?.('已复制主机地址');
+                setCtxMenu(null);
+              }}
+            >
+              <Copy size={13} />
+              复制主机地址
             </button>
             <button
               type="button"

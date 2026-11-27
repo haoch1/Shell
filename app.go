@@ -22,7 +22,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-var appVersion = "1.0.0"
+var appVersion = "1.1.0"
 
 type liveSession struct {
 	cancel  context.CancelFunc
@@ -366,6 +366,42 @@ func (a *App) SaveProfile(p local.Profile) (ProfileView, error) {
 	return view(saved)
 }
 
+func (a *App) GetProfileSecret(id string) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", nil
+	}
+	p, ok, err := local.GetProfile(id)
+	if err != nil || !ok {
+		return "", err
+	}
+	return local.LoadSecret(p)
+}
+
+func (a *App) SaveProfileWithSecret(p local.Profile, secret string, remember bool, keepExisting bool) (ProfileView, error) {
+	carriedSecret := secret
+	if carriedSecret == "" && keepExisting && remember && p.ID != "" && (p.Auth == "password" || p.Auth == "key") {
+		if old, ok, err := local.GetProfile(p.ID); err == nil && ok {
+			if oldSec, err := local.LoadSecret(old); err == nil && oldSec != "" {
+				carriedSecret = oldSec
+			}
+		}
+	}
+	saved, err := local.SaveProfile(p)
+	if err != nil {
+		return ProfileView{}, err
+	}
+	if remember && (saved.Auth == "password" || saved.Auth == "key") {
+		if carriedSecret != "" {
+			if err := local.RememberSecret(saved, carriedSecret); err != nil {
+				return ProfileView{}, err
+			}
+		}
+	} else {
+		_ = local.ForgetSecret(saved.ID)
+	}
+	return view(saved)
+}
+
 func (a *App) DuplicateProfile(id string) (ProfileView, error) {
 	cloned, err := local.DuplicateProfile(id)
 	if err != nil {
@@ -500,7 +536,46 @@ func (a *App) confirm(ctx context.Context, id, host, algo, fingerprint string) b
 	}
 }
 
-func resolveJumpChain(jumpID string, visited map[string]bool, depth int) (*remote.Config, error) {
+func effectiveProxyConfig(p local.Profile, st local.AppSettings) remote.ProxyConfig {
+	mode := strings.ToLower(strings.TrimSpace(p.ProxyType))
+	switch mode {
+	case "direct":
+		return remote.ProxyConfig{Type: "direct"}
+	case "system":
+		return remote.ProxyConfig{Type: "system"}
+	case "socks5", "http":
+		return remote.ProxyConfig{
+			Type: mode,
+			Host: p.ProxyHost,
+			Port: p.ProxyPort,
+			User: p.ProxyUser,
+		}
+	default:
+		// Inherit global proxy routing preference ("direct", "system", "socks5", or "http")
+		gMode := strings.ToLower(strings.TrimSpace(st.ProxyMode))
+		if gMode == "" || gMode == "direct" {
+			return remote.ProxyConfig{Type: "direct"}
+		}
+		if gMode == "system" {
+			return remote.ProxyConfig{Type: "system"}
+		}
+		if (gMode == "socks5" || gMode == "http") && st.ProxyHost != "" && st.ProxyPort > 0 {
+			return remote.ProxyConfig{
+				Type: gMode,
+				Host: st.ProxyHost,
+				Port: st.ProxyPort,
+				User: st.ProxyUser,
+			}
+		}
+		return remote.ProxyConfig{Type: "direct"}
+	}
+}
+
+func (a *App) DetectSystemProxy() remote.SystemProxyInfo {
+	return remote.DetectSystemProxy()
+}
+
+func resolveJumpChain(jumpID string, settings local.AppSettings, visited map[string]bool, depth int) (*remote.Config, error) {
 	if jumpID == "" {
 		return nil, nil
 	}
@@ -522,7 +597,7 @@ func resolveJumpChain(jumpID string, visited map[string]bool, depth int) (*remot
 	if jp.Auth == "password" || jp.Auth == "key" {
 		secret, _ = local.LoadSecret(jp)
 	}
-	parent, err := resolveJumpChain(jp.JumpHostID, visited, depth+1)
+	parent, err := resolveJumpChain(jp.JumpHostID, settings, visited, depth+1)
 	if err != nil {
 		return nil, err
 	}
@@ -532,13 +607,8 @@ func resolveJumpChain(jumpID string, visited map[string]bool, depth int) (*remot
 		User:    jp.User,
 		Auth:    jp.Auth,
 		KeyPath: jp.KeyPath,
-		Proxy: remote.ProxyConfig{
-			Type: jp.ProxyType,
-			Host: jp.ProxyHost,
-			Port: jp.ProxyPort,
-			User: jp.ProxyUser,
-		},
-		Jump: parent,
+		Proxy:   effectiveProxyConfig(jp, settings),
+		Jump:    parent,
 	}
 	if jp.Auth == "key" {
 		rc.Passphrase = secret
@@ -567,7 +637,7 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 	if p.ID != "" {
 		visited[p.ID] = true
 	}
-	jumpCfg, err := resolveJumpChain(p.JumpHostID, visited, 1)
+	jumpCfg, err := resolveJumpChain(p.JumpHostID, settings, visited, 1)
 	if err != nil {
 		return err
 	}
@@ -607,13 +677,8 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 		KeepAliveSec:   keepAlive,
 		ForwardAgent:   p.ForwardAgent,
 		StartupCommand: p.StartupCommand,
-		Proxy: remote.ProxyConfig{
-			Type: p.ProxyType,
-			Host: p.ProxyHost,
-			Port: p.ProxyPort,
-			User: p.ProxyUser,
-		},
-		Jump: jumpCfg,
+		Proxy:          effectiveProxyConfig(p, settings),
+		Jump:           jumpCfg,
 	}
 	if p.Auth == "key" {
 		cfg.Passphrase = secret

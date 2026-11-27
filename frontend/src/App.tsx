@@ -16,6 +16,7 @@ import type {
   WorkspaceTab,
 } from './types/shell';
 import { errorMessage, getApi, hasDesktopBridge, onDesktopEvent } from './lib/bridge';
+import { syncTerminalThemeForAppearance } from './lib/themes';
 import { decodeBase64, encodeBase64, terminalBus } from './lib/terminalBus';
 import {
   collectLeaves,
@@ -46,7 +47,7 @@ import { detectOSIconFromText } from './components/HostIcon';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
-  terminalTheme: 'apple-dark',
+  terminalTheme: 'auto',
   fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
   fontSize: 14,
   lineHeight: 1.28,
@@ -806,13 +807,18 @@ export const App: React.FC = () => {
     [profiles],
   );
 
-  const handleSaveHost = async (p: Profile, secret: string, remember: boolean, andConnect: boolean) => {
+  const handleSaveHost = async (
+    p: Profile,
+    secret: string,
+    remember: boolean,
+    keepExisting: boolean,
+    andConnect: boolean,
+  ) => {
     const api = getApi();
-    const stored = await api.SaveProfile(p);
-    if (stored.remembered && !remember) {
-      await api.ForgetSecret(stored.id);
-      stored.remembered = false;
-    }
+    const stored =
+      typeof api.SaveProfileWithSecret === 'function'
+        ? await api.SaveProfileWithSecret(p, secret, remember, keepExisting)
+        : await api.SaveProfile(p);
     setHostModal({ open: false, profile: null });
     await reloadData();
     if (andConnect) {
@@ -900,6 +906,16 @@ export const App: React.FC = () => {
           }}
           onOpenImportSSH={() => setImportOpen(true)}
           onOpenSettings={(tab = 'appearance') => setSettingsModal({ open: true, tab })}
+          isDark={isDark}
+          onToggleTheme={() => {
+            const nextDark = !isDark;
+            void updateSettings({
+              ...settings,
+              theme: nextDark ? 'dark' : 'light',
+              terminalTheme: syncTerminalThemeForAppearance(settings.terminalTheme, nextDark),
+            });
+          }}
+          onToast={toast}
         />
 
         <main className="workspace-col">
@@ -1111,7 +1127,14 @@ export const App: React.FC = () => {
           onToggleSFTP={() => toggleDrawer('sftp')}
           onToggleTunnels={() => toggleDrawer('tunnels')}
           onToggleAI={() => toggleDrawer('ai')}
-          onToggleTheme={() => void updateSettings({ ...settings, theme: isDark ? 'light' : 'dark' })}
+          onToggleTheme={() => {
+            const nextDark = !isDark;
+            void updateSettings({
+              ...settings,
+              theme: nextDark ? 'dark' : 'light',
+              terminalTheme: syncTerminalThemeForAppearance(settings.terminalTheme, nextDark),
+            });
+          }}
           onOpenSettings={(tab = 'appearance') => setSettingsModal({ open: true, tab })}
         />
       )}

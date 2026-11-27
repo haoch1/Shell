@@ -119,4 +119,45 @@ func TestUniversalSSHImporters(t *testing.T) {
 	if sec, err := LoadSecret(savedNet[0]); err != nil || sec != "s3cr3tPass" {
 		t.Fatalf("Expected Netcatty password saved to DPAPI, got %q err=%v", sec, err)
 	}
+
+	// 10. Netcatty CSV with label-based ProxyJump + inline user@host:port ProxyJump + system/direct proxy
+	netcattyJumpCSV := netcattyHeader +
+		"Prod,Bastion-HK,,Jump,47.88.1.1,ssh,22,ops,jumpPass,,,system,,,\r\n" +
+		"Prod,Internal-DB,,DB,10.0.1.50,ssh,22,root,dbPass,,,direct,Bastion-HK,,\r\n" +
+		"Prod,Edge-Node,,Edge,10.0.2.9,ssh,22,root,edgePass,,,,admin@198.51.100.7:2222,,\r\n"
+	resJump, err := ParseImportBytes("netcatty_jumps.csv", []byte(netcattyJumpCSV))
+	if err != nil || len(resJump.Hosts) != 3 {
+		t.Fatalf("Netcatty jump CSV parse failed: %+v, %v", resJump, err)
+	}
+	if resJump.Hosts[0].ProxyType != "system" || resJump.Hosts[1].ProxyType != "direct" || resJump.Hosts[1].ProxyJump != "Bastion-HK" {
+		t.Fatalf("Netcatty proxy/jump fields mismatch: %+v", resJump.Hosts)
+	}
+	savedJump, err := ImportParsedHosts(resJump.Hosts, "")
+	if err != nil || len(savedJump) < 4 {
+		t.Fatalf("Expected 3 hosts + 1 auto-created inline jump host, got %d err=%v", len(savedJump), err)
+	}
+	var bastionID, dbJumpID, edgeJumpID string
+	for _, sp := range savedJump {
+		switch sp.Name {
+		case "Bastion-HK":
+			bastionID = sp.ID
+		case "Internal-DB":
+			dbJumpID = sp.JumpHostID
+		case "Edge-Node":
+			edgeJumpID = sp.JumpHostID
+		}
+	}
+	if bastionID == "" || dbJumpID != bastionID {
+		t.Fatalf("Expected Internal-DB to link JumpHostID=%q, got %q", bastionID, dbJumpID)
+	}
+	if edgeJumpID == "" {
+		t.Fatalf("Expected Edge-Node to link auto-created inline jump host")
+	}
+
+	// 11. PuTTY .reg with SOCKS5 proxy
+	puttyProxy := "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\ProxyBox]\r\n\"HostName\"=\"203.0.113.5\"\r\n\"PortNumber\"=dword:00000016\r\n\"Protocol\"=\"ssh\"\r\n\"ProxyMethod\"=dword:00000003\r\n\"ProxyHost\"=\"127.0.0.1\"\r\n\"ProxyPort\"=dword:00001ed2\r\n"
+	resPutty, err := ParseImportBytes("putty_proxy.reg", []byte(puttyProxy))
+	if err != nil || len(resPutty.Hosts) != 1 || resPutty.Hosts[0].ProxyType != "socks5" || resPutty.Hosts[0].ProxyPort != 7890 {
+		t.Fatalf("PuTTY SOCKS5 proxy parse failed: %+v, %v", resPutty, err)
+	}
 }

@@ -13,8 +13,20 @@ export type HostIconId =
   | 'windows'
   | 'docker';
 export type TunnelMode = 'local' | 'remote' | 'dynamic';
-export type ProxyType = '' | 'socks5' | 'http';
+export type ProxyType = '' | 'direct' | 'system' | 'socks5' | 'http';
+export type GlobalProxyMode = 'direct' | 'system' | 'socks5' | 'http';
 export type HostAgentAccess = '' | 'readonly' | 'allow' | 'deny';
+
+export interface SystemProxyInfo {
+  enabled: boolean;
+  protocol?: string;
+  host?: string;
+  port?: number;
+  user?: string;
+  bypass?: string;
+  source?: string;
+  summary?: string;
+}
 export type PermissionMode = 'readonly' | 'smart' | 'ask_all' | 'trusted';
 
 export interface TunnelRule {
@@ -72,6 +84,9 @@ export interface ImportedHost {
   auth: string;
   keyPath?: string;
   group?: string;
+  proxyType?: string;
+  proxyHost?: string;
+  proxyPort?: number;
   proxyJump?: string;
   forwardAgent?: boolean;
   keepAliveSec?: number;
@@ -152,6 +167,10 @@ export interface AppSettings {
   showTelemetry: boolean;
   webglEnabled: boolean;
   defaultKeepAlive: number;
+  proxyMode?: GlobalProxyMode;
+  proxyHost?: string;
+  proxyPort?: number;
+  proxyUser?: string;
   confirmOnClose: boolean;
   closeToTray: boolean;
 }

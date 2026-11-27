@@ -24,6 +24,10 @@ type AppSettings struct {
 	ShowTelemetry    bool    `json:"showTelemetry"`
 	WebGLEnabled     bool    `json:"webglEnabled"`
 	DefaultKeepAlive int     `json:"defaultKeepAlive"`
+	ProxyMode        string  `json:"proxyMode,omitempty"` // "direct" (default), "system", "socks5", "http"
+	ProxyHost        string  `json:"proxyHost,omitempty"`
+	ProxyPort        int     `json:"proxyPort,omitempty"`
+	ProxyUser        string  `json:"proxyUser,omitempty"`
 	ConfirmOnClose   bool    `json:"confirmOnClose"`
 	CloseToTray      bool    `json:"closeToTray"`
 	WindowWidth      int     `json:"windowWidth,omitempty"`
@@ -34,7 +38,7 @@ type AppSettings struct {
 func DefaultSettings() AppSettings {
 	return AppSettings{
 		Theme:            "light",
-		TerminalTheme:    "apple-dark",
+		TerminalTheme:    "auto",
 		FontFamily:       `"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace`,
 		FontSize:         14,
 		LineHeight:       1.28,
@@ -46,6 +50,7 @@ func DefaultSettings() AppSettings {
 		ShowTelemetry:    true,
 		WebGLEnabled:     false,
 		DefaultKeepAlive: 30,
+		ProxyMode:        "direct",
 		ConfirmOnClose:   true,
 		CloseToTray:      true,
 		WindowWidth:      1280,
@@ -84,6 +89,19 @@ func normalizeSettings(s AppSettings) AppSettings {
 	}
 	if s.DefaultKeepAlive < 0 || s.DefaultKeepAlive > 3600 {
 		s.DefaultKeepAlive = d.DefaultKeepAlive
+	}
+	switch strings.ToLower(strings.TrimSpace(s.ProxyMode)) {
+	case "", "none", "direct":
+		s.ProxyMode = "direct"
+	case "system", "socks5", "http":
+		s.ProxyMode = strings.ToLower(strings.TrimSpace(s.ProxyMode))
+	default:
+		s.ProxyMode = "direct"
+	}
+	s.ProxyHost = strings.TrimSpace(s.ProxyHost)
+	s.ProxyUser = strings.TrimSpace(s.ProxyUser)
+	if s.ProxyPort < 0 || s.ProxyPort > 65535 {
+		s.ProxyPort = 0
 	}
 	if s.WindowWidth < 880 || s.WindowWidth > 3840 {
 		s.WindowWidth = d.WindowWidth

@@ -109,7 +109,7 @@ const BRIDGE_MOCK_SCRIPT = `
   const listeners = new Map();
   const emit = (ev, ...args) => { for (const fn of listeners.get(ev) || []) fn(...args); };
   let settings = {
-    theme: 'light', terminalTheme: 'apple-dark',
+    theme: 'light', terminalTheme: 'auto',
     fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
     fontSize: 14, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
@@ -117,7 +117,7 @@ const BRIDGE_MOCK_SCRIPT = `
   };
   let profiles = [
     { id: 'p1', name: 'Tokyo Production', group: '生产集群', icon: 'ubuntu', pinned: true, host: '10.24.0.10', port: 22, user: 'deploy', auth: 'agent', keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 300 },
-    { id: 'p2', name: 'Database Bastion', group: '生产集群', icon: 'debian', host: '56.10.113.238', port: 58222, user: 'root', auth: 'password', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 7200 },
+    { id: 'p2', name: 'SG - AWS', group: '生产集群', icon: 'debian', host: '2406:da18:b15:8000:4839:f12a:9c3b:4e21', port: 58222, user: 'root', auth: 'password', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 7200 },
     { id: 'p3', name: 'Local GPU Box', group: '开发测试', icon: 'rocky', host: '192.168.1.88', port: 22, user: 'haochi', auth: 'key', keyPath: 'C:\\\\Users\\\\haochi\\\\.ssh\\\\id_ed25519', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 86400 }
   ];
   let snippets = [
@@ -142,11 +142,13 @@ const BRIDGE_MOCK_SCRIPT = `
     Quit() {},
   };
   window.go = { main: { App: {
-    AppInfo: async () => ({ version: '1.0.0', dataDir: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\Shell' }),
+    AppInfo: async () => ({ version: '1.1.0', dataDir: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\Shell' }),
     OpenDataDir: async () => {},
     TermWSURL: async () => '',
     Profiles: async () => profiles,
     SaveProfile: async (p) => { const item = { ...p, id: p.id || 'p' + Date.now() }; profiles = [...profiles.filter(x => x.id !== item.id), item]; return item; },
+    GetProfileSecret: async () => 'demo-saved-password',
+    SaveProfileWithSecret: async (p, secret, remember) => { const item = { ...p, id: p.id || 'p' + Date.now(), remembered: Boolean(remember && (secret || p.remembered)) }; profiles = [...profiles.filter(x => x.id !== item.id), item]; return item; },
     DuplicateProfile: async (id) => { const src = profiles.find(x => x.id === id); const c = { ...src, id: 'p' + Date.now(), name: src.name + ' 副本' }; profiles = [...profiles, c]; return c; },
     DeleteProfile: async (id) => { profiles = profiles.filter(x => x.id !== id); },
     DeleteProfiles: async (ids) => { const drop = new Set(ids); profiles = profiles.filter(x => !drop.has(x.id)); },
@@ -228,6 +230,7 @@ const BRIDGE_MOCK_SCRIPT = `
     DeleteSnippet: async (id) => { snippets = snippets.filter(x => x.id !== id); },
     GetSettings: async () => settings,
     SaveSettings: async (s) => { settings = { ...settings, ...s }; return settings; },
+    DetectSystemProxy: async () => ({ enabled: true, protocol: 'http', host: '127.0.0.1', port: 7897, source: 'windows', summary: 'http://127.0.0.1:7897' }),
     KnownHosts: async () => [
       { line: 1, hosts: ['[56.10.113.238]:58222'], keyType: 'ecdsa-sha2-nistp256', fingerprint: 'SHA256:a0Skqj56tH4NyA2btG9Q42FObzEfH8hM53BL9Y3Xd2I' },
       { line: 2, hosts: ['10.24.0.10'], keyType: 'ssh-ed25519', fingerprint: 'SHA256:k8xR2fQ9vN4mP7sW1yZ3aB6cD8eF0gH2iJ4kL6mN8oP' }
@@ -414,9 +417,16 @@ async function verifyFrontendUI() {
       call('Emulation.setDeviceMetricsOverride', { width: 1280, height: 820, deviceScaleFactor: 2, mobile: false }),
     ]);
 
-    await until(() => evaluate("document.querySelectorAll('.host-row').length === 3"), 'initial Apple workbench render');
+    await until(() => evaluate("document.querySelectorAll('.host-row').length === 3"), 'initial workbench render');
     await sleep(250);
     await shot('01-Workbench-Light');
+
+    // Toggle Dark Mode on Welcome Workbench to verify dark OS icons + IPv6 display
+    await click('button[aria-label="切换深浅色外观"]');
+    await sleep(250);
+    await shot('16-Workbench-Dark');
+    await click('button[aria-label="切换深浅色外观"]');
+    await sleep(200);
 
     // Host modal (Basic + Private Key)
     await click('#addHost');
@@ -502,7 +512,7 @@ async function verifyFrontendUI() {
     await shot('09-Terminal-Dark');
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 15 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 16 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

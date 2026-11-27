@@ -15,9 +15,9 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// ProxyConfig configures an optional outbound SOCKS5 or HTTP CONNECT proxy for dialing SSH.
+// ProxyConfig configures an optional outbound SOCKS5, HTTP CONNECT, Windows system proxy, or direct dial for SSH.
 type ProxyConfig struct {
-	Type     string // "", "none", "socks5", "http"
+	Type     string // "", "none", "direct", "system", "socks5", "http"
 	Host     string
 	Port     int
 	User     string
@@ -26,12 +26,20 @@ type ProxyConfig struct {
 
 func dialTCPWithProxy(ctx context.Context, targetAddr string, p ProxyConfig) (net.Conn, error) {
 	mode := strings.ToLower(strings.TrimSpace(p.Type))
+	if mode == "system" {
+		if resolved, useProxy := ResolveSystemProxy(targetAddr); useProxy {
+			p = resolved
+			mode = strings.ToLower(strings.TrimSpace(p.Type))
+		} else {
+			mode = "direct"
+		}
+	}
 	dialer := &net.Dialer{
 		Timeout:       12 * time.Second,
 		KeepAlive:     30 * time.Second,
 		FallbackDelay: 150 * time.Millisecond,
 	}
-	if mode == "" || mode == "none" {
+	if mode == "" || mode == "none" || mode == "direct" {
 		conn, err := dialer.DialContext(ctx, "tcp", targetAddr)
 		if err == nil {
 			if tcp, ok := conn.(*net.TCPConn); ok {
@@ -56,7 +64,13 @@ func dialTCPWithProxy(ctx context.Context, targetAddr string, p ProxyConfig) (ne
 			return nil, fmt.Errorf("初始化 SOCKS5 代理失败：%w", err)
 		}
 		if cd, ok := socksDialer.(proxy.ContextDialer); ok {
-			return cd.DialContext(ctx, "tcp", targetAddr)
+			conn, err := cd.DialContext(ctx, "tcp", targetAddr)
+			if err == nil {
+				if tcp, ok := conn.(*net.TCPConn); ok {
+					_ = tcp.SetNoDelay(true)
+				}
+			}
+			return conn, err
 		}
 		return socksDialer.Dial("tcp", targetAddr)
 
@@ -64,6 +78,9 @@ func dialTCPWithProxy(ctx context.Context, targetAddr string, p ProxyConfig) (ne
 		conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
 		if err != nil {
 			return nil, fmt.Errorf("连接 HTTP 代理 %s 失败：%w", proxyAddr, err)
+		}
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetNoDelay(true)
 		}
 		stop := context.AfterFunc(ctx, func() { conn.Close() })
 		defer stop()

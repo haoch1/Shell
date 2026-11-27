@@ -2,6 +2,20 @@
 
 本项目遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 规范。
 
+## [1.1.0] - 2026-11-27
+
+### 终端配色与视觉升级
+- **强光高可读深色模式与深浅色同步终端配色**：采用接近 GitHub Dark Dimmed / VS Code Modern 的高对比石墨深色层级（强光下依然清晰可辨），新增「跟随界面外观」默认模式与成对商业级终端配色（Termius Dark/Light、Tokyo Night/Day、Catppuccin Mocha/Latte、Rosé Pine/Dawn、Nord Dark/Light、Dracula、GitHub Light、Solarized Light），切换浅色/深色外观时终端与界面自动协调同步，侧栏底部新增一键深浅色切换按钮。
+- **官方品牌发行版图标**：集成 `simple-icons` 官方矢量图标（Ubuntu、Debian、CentOS、Rocky、Alpine、Arch、Fedora、Linux、Docker 及 Windows），为深色与浅色模式分别校准高亮与背景层级。
+- **整体组件与字号比例优化**：调优标题栏、侧边栏、主机卡片、输入框、按钮、偏好设置与状态栏的字号与内边距，显著提升 Windows 高分屏阅读舒适度。
+
+### 网络代理、跳板机与交互修复
+- **系统代理 / 直连 / 多级 SSH 跳板机**：新增纯 Go Windows 系统代理检测（自动读取注册表 `ProxyEnable` / `ProxyServer` / `ProxyOverride` 绕过列表及环境变量），支持在「偏好设置 → 连接与指纹」配置全局默认网络（直连 / 系统代理 / SOCKS5 / HTTP），并可在主机「跳板与代理」页按单机覆盖直连、系统代理、自定义代理或最多 5 级 SSH 跳板链路。
+- **多平台导入自动识别跳板与代理**：导入 Netcatty、OpenSSH、MobaXterm、Xshell、PuTTY、SecureCRT、Tabby、Electerm、WindTerm 等配置时自动解析 `Proxy` 与 `ProxyJump`（支持按别名/IP 关联已有主机、多级链式跳板及内联 `user@host:port` 自动建档关联）。
+- **编辑主机免重输密码**：编辑已有主机资料时自动预填已加密保存的凭据（支持切换明文查看），点击「仅保存」立即持久化 DPAPI 凭据，修改 IP / 端口时默认沿用原密码不再强制重输。
+- **智能 IPv6 / 长域名展示与侧栏排序**：将长 IPv6 地址按段中段缩略为 `2406:da18…4e21 :58222` 形式，悬停显示完整地址并支持侧栏悬浮一键复制；左侧主机栏新增排序按钮（默认顺序 / 名称 A→Z / Z→A / 最近使用 / 主机地址），并修复新导入未连接主机误入「最近使用」列表的问题。
+- **终端底部留白与窗口控制细节**：采用独立外层留白容器避免终端末行提示符贴底，优化终端滚动条样式；标题栏最大化/还原按钮随窗口状态实时切换标准单框与双框图标；系统托盘右键精简为「断开全部会话」与「退出 Shell」。
+
 ## [1.0.0] - 2026-11-27
 
 Shell 首个正式发行版本，基于 Go 1.26、Wails v2 (WebView2)、React 19 与 xterm.js v6 构建。

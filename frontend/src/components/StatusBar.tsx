@@ -9,6 +9,7 @@ interface StatusBarProps {
   stats?: ServerStats;
   netRate?: { rxPerSec: number; txPerSec: number };
   showTelemetry: boolean;
+  hideHostIp?: boolean;
   activeTunnelsCount: number;
   agentStatus?: AgentStatusView | null;
   onOpenTunnels: () => void;
@@ -21,6 +22,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   stats,
   netRate,
   showTelemetry,
+  hideHostIp = false,
   activeTunnelsCount,
   agentStatus,
   onOpenTunnels,
@@ -51,10 +53,17 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   return (
     <footer className="statusbar">
       <div className="statusbar-left">
-        <span className="status-chip" title={`${session.profile.user}@${session.profile.host}:${session.profile.port}`}>
+        <span
+          className="status-chip"
+          title={
+            hideHostIp
+              ? `${session.profile.user}@${formatHostDisplay(session.profile.host, session.profile.port, true)}`
+              : `${session.profile.user}@${session.profile.host}:${session.profile.port}`
+          }
+        >
           <span className={`tab-dot ${session.state}`} />
           <span className="mono">
-            {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port)}
+            {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port, hideHostIp)}
           </span>
         </span>
         {jumpHostName && (
@@ -120,7 +129,9 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           <div style={{ position: 'fixed', inset: 0, zIndex: 29 }} onClick={() => setShowPopover(false)} />
           <div className="telemetry-popover">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{stats.hostname || session.profile.host}</div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>
+                {stats.hostname || formatHostDisplay(session.profile.host, undefined, hideHostIp)}
+              </div>
               <span className="pill-badge safe">在线</span>
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--ink-secondary)' }}>

@@ -109,7 +109,7 @@ func verifyPin(ctx context.Context, path, host string, peer net.Addr, key ssh.Pu
 	if closeErr != nil {
 		return false, closeErr
 	}
-	if err = os.Rename(tmp.Name(), path); err != nil {
+	if err = replaceFileAtomic(tmp.Name(), path); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // TunnelSpec defines a Local (-L), Remote (-R), or Dynamic SOCKS5 (-D) port forward.
@@ -42,6 +44,7 @@ type activeTunnel struct {
 	bytesOut atomic.Int64
 	lastErr  atomic.Value
 	connsMu  sync.Mutex
+	closed   bool
 	openSet  map[net.Conn]struct{}
 }
 
@@ -57,10 +60,16 @@ func (t *activeTunnel) status() TunnelStatus {
 	}
 }
 
-func (t *activeTunnel) track(c net.Conn) {
+func (t *activeTunnel) track(c net.Conn) bool {
 	t.connsMu.Lock()
+	if t.closed {
+		t.connsMu.Unlock()
+		_ = c.Close()
+		return false
+	}
 	t.openSet[c] = struct{}{}
 	t.connsMu.Unlock()
+	return true
 }
 
 func (t *activeTunnel) untrack(c net.Conn) {
@@ -75,6 +84,7 @@ func (t *activeTunnel) close() {
 		_ = t.listener.Close()
 	}
 	t.connsMu.Lock()
+	t.closed = true
 	for c := range t.openSet {
 		_ = c.Close()
 	}
@@ -165,8 +175,10 @@ func (s *Session) serveTunnel(t *activeTunnel) {
 			}
 			return
 		}
+		if !t.track(inConn) {
+			return
+		}
 		t.conns.Add(1)
-		t.track(inConn)
 		go func(c net.Conn) {
 			defer func() {
 				t.untrack(c)
@@ -182,10 +194,14 @@ func (s *Session) serveTunnel(t *activeTunnel) {
 				}
 				t.pipe(c, outConn)
 			case "remote":
-				outConn, err := net.Dial("tcp", targetAddr)
+				dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+				outConn, err := dialer.Dial("tcp", targetAddr)
 				if err != nil {
 					t.lastErr.Store(err.Error())
 					return
+				}
+				if tcp, ok := outConn.(*net.TCPConn); ok {
+					_ = tcp.SetNoDelay(true)
 				}
 				t.pipe(c, outConn)
 			case "dynamic":
@@ -196,7 +212,9 @@ func (s *Session) serveTunnel(t *activeTunnel) {
 }
 
 func (t *activeTunnel) pipe(a, b net.Conn) {
-	t.track(b)
+	if !t.track(b) {
+		return
+	}
 	defer func() {
 		t.untrack(b)
 		_ = b.Close()
@@ -224,12 +242,17 @@ func (t *activeTunnel) pipe(a, b net.Conn) {
 
 // handleSOCKS5 implements a minimal RFC 1928 SOCKS5 CONNECT proxy over the SSH connection.
 func (s *Session) handleSOCKS5(t *activeTunnel, c net.Conn) {
+	_ = c.SetDeadline(time.Now().Add(15 * time.Second))
 	hdr := make([]byte, 2)
 	if _, err := io.ReadFull(c, hdr); err != nil || hdr[0] != 0x05 {
 		return
 	}
 	methods := make([]byte, int(hdr[1]))
 	if _, err := io.ReadFull(c, methods); err != nil {
+		return
+	}
+	if bytes.IndexByte(methods, 0x00) < 0 {
+		_, _ = c.Write([]byte{0x05, 0xFF})
 		return
 	}
 	// Accept NO AUTHENTICATION REQUIRED (0x00).
@@ -274,6 +297,10 @@ func (s *Session) handleSOCKS5(t *activeTunnel, c net.Conn) {
 		return
 	}
 	port := int(binary.BigEndian.Uint16(portBuf[:]))
+	if host == "" || port == 0 {
+		_, _ = c.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
 	dest := net.JoinHostPort(host, strconv.Itoa(port))
 
 	outConn, err := s.client.Dial("tcp", dest)
@@ -285,6 +312,7 @@ func (s *Session) handleSOCKS5(t *activeTunnel, c net.Conn) {
 		_ = outConn.Close()
 		return
 	}
+	_ = c.SetDeadline(time.Time{})
 	t.pipe(c, outConn)
 }
 

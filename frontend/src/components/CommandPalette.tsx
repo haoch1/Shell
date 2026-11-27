@@ -35,6 +35,7 @@ interface CommandPaletteProps {
   snippets: Snippet[];
   hasActiveSession: boolean;
   isDark: boolean;
+  hideHostIp?: boolean;
   onClose: () => void;
   onConnectProfile: (p: Profile) => void;
   onQuickConnect: (target: { user: string; host: string; port: number }) => void;
@@ -55,6 +56,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   snippets,
   hasActiveSession,
   isDark,
+  hideHostIp = false,
   onClose,
   onConnectProfile,
   onQuickConnect,
@@ -94,7 +96,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     if (splitSource) {
       const currentLabel = '当前主机';
       if (!q || `${currentLabel} ${splitSource.name} ${splitSource.host}`.toLowerCase().includes(q)) {
-        out.push({id: 'split-current', label: currentLabel, subtitle: `${splitSource.user}@${formatHostDisplay(splitSource.host, splitSource.port)}`,
+        out.push({id: 'split-current', label: currentLabel, subtitle: `${splitSource.user}@${formatHostDisplay(splitSource.host, splitSource.port, hideHostIp)}`,
           category: '分屏', icon: <HostIcon profile={splitSource} size="sm" />, run: () => onConnectProfile(splitSource)});
       }
       if (!q || '新建 SSH 主机'.toLowerCase().includes(q)) {
@@ -108,7 +110,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         out.push({
           id: `host-${p.id}`,
           label: p.name,
-          subtitle: `${p.user}@${formatHostDisplay(p.host, p.port)}${p.group ? ' · ' + p.group : ''}`,
+          subtitle: `${p.user}@${formatHostDisplay(p.host, p.port, hideHostIp)}${p.group ? ' · ' + p.group : ''}`,
           category: '主机',
           icon: <HostIcon profile={p} size="sm" />,
           run: () => onConnectProfile(p),
@@ -165,7 +167,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
 
     return out.slice(0, 24);
-  }, [query, profiles, snippets, splitSource, hasActiveSession, isDark, onClose, onConnectProfile, onQuickConnect,
+  }, [query, profiles, snippets, splitSource, hasActiveSession, isDark, hideHostIp, onClose, onConnectProfile, onQuickConnect,
     onNewHost, onImportSSH, onToggleAI, onOpenSettings, onToggleTheme, onToggleSFTP, onToggleTunnels, onSplit, onRunSnippet]);
 
   useEffect(() => {

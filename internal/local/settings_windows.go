@@ -30,6 +30,7 @@ type AppSettings struct {
 	ConfirmOnClose   bool    `json:"confirmOnClose"`
 	CloseToTray      bool    `json:"closeToTray"`
 	AutoCheckUpdate  bool    `json:"autoCheckUpdate"`
+	HideHostIP       bool    `json:"hideHostIp,omitempty"`
 	WindowWidth      int     `json:"windowWidth,omitempty"`
 	WindowHeight     int     `json:"windowHeight,omitempty"`
 	WindowMaximised  bool    `json:"windowMaximised,omitempty"`
@@ -54,6 +55,7 @@ func DefaultSettings() AppSettings {
 		ConfirmOnClose:   true,
 		CloseToTray:      true,
 		AutoCheckUpdate:  true,
+		HideHostIP:       false,
 		WindowWidth:      1280,
 		WindowHeight:     820,
 		WindowMaximised:  false,

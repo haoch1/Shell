@@ -8,6 +8,8 @@ import {
   Copy,
   CopyPlus,
   Download,
+  Eye,
+  EyeOff,
   KeyRound,
   Moon,
   Pencil,
@@ -55,6 +57,7 @@ interface SidebarProps {
   onDragPane: (event: React.DragEvent, source: PaneSource) => void;
   activeProfileId?: string;
   isDark?: boolean;
+  hideHostIp?: boolean;
   hasUpdate?: boolean;
   onConnect: (profile: Profile) => void;
   onConnectNewSession?: (profile: Profile) => void;
@@ -68,6 +71,7 @@ interface SidebarProps {
   onOpenImportSSH: () => void;
   onOpenExportHosts: (ids: string[]) => void;
   onOpenSettings: (tab?: 'appearance' | 'ssh' | 'keys' | 'ai' | 'agent' | 'backup' | 'about') => void;
+  onToggleHideIp?: () => void;
   onToggleTheme?: () => void;
   onToast?: (msg: string) => void;
 }
@@ -81,6 +85,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   onDragPane,
   activeProfileId,
   isDark = false,
+  hideHostIp = false,
   hasUpdate = false,
   onConnect,
   onConnectNewSession,
@@ -94,6 +99,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   onOpenImportSSH,
   onOpenExportHosts,
   onOpenSettings,
+  onToggleHideIp,
   onToggleTheme,
   onToast,
 }) => {
@@ -263,7 +269,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             style={{ flex: 1 }}
             onClick={onAddHost}
           >
-            <Plus size={15} strokeWidth={2.1} />
+            <Plus size={13.5} strokeWidth={2} />
             <span>新建主机</span>
           </button>
           <button
@@ -318,7 +324,6 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             </div>
             {profiles.length === 0 && (
               <button type="button" className="btn btn-sm" onClick={onOpenImportSSH}>
-                <Download size={13} />
                 导入主机配置
               </button>
             )}
@@ -354,7 +359,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                         if (!selectMode && source) onDragPane(e, source);
                         else e.preventDefault();
                       }}
-                      className={`host-row ${isActive ? 'active' : ''}`}
+                      className={`host-row ${isActive ? 'active' : ''} ${isLive ? 'live' : ''}`}
                       onClick={() => {
                         if (selectMode) {
                           setSelectedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }));
@@ -366,7 +371,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                         e.preventDefault();
                         setCtxMenu({ x: e.clientX, y: e.clientY, profile: p });
                       }}
-                      title={`${p.user}@${p.host}:${p.port}${p.notes ? '\n' + p.notes : ''}`}
+                      title={`${p.user}@${hideHostIp ? formatHostDisplay(p.host, p.port, true) : `${p.host}:${p.port}`}${p.notes ? '\n' + p.notes : ''}`}
                     >
                       {selectMode && (
                         <input
@@ -376,13 +381,14 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                           style={{ margin: 0, flexShrink: 0, cursor: 'pointer' }}
                         />
                       )}
-                      <HostIcon profile={p} size="md" isLive={isLive} />
+                      <HostIcon profile={p} size="md" />
                       <div className="host-meta">
                         <div className="host-name-line">
                           <span className="host-name">{p.name}</span>
+                          {isLive && !selectMode && <span className="host-live-pill">在线</span>}
                         </div>
                         <div className="host-sub mono">
-                          {formatHostDisplay(p.host, p.port)}
+                          {formatHostDisplay(p.host, p.port, hideHostIp)}
                         </div>
                       </div>
                       {!selectMode && (
@@ -390,7 +396,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                           <button
                             type="button"
                             className="host-action-btn"
-                            title={`复制地址 (${p.host})`}
+                            title={hideHostIp ? '复制主机地址' : `复制地址 (${p.host})`}
                             onClick={(e) => {
                               e.stopPropagation();
                               void copyToClipboard(p.host);
@@ -425,9 +431,15 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
           <button type="button" className="btn btn-sm btn-ghost" onClick={toggleSelectAll}>
             {chosenIds.length === filtered.length && filtered.length > 0 ? '取消全选' : '全选'}
           </button>
-          <div style={{ display: 'flex', gap: 4 }}>
-            <button type="button" className="btn btn-sm" title="导出已选主机" aria-label="导出已选主机"
-              disabled={!exportIds.length} onClick={() => onOpenExportHosts(exportIds)}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              title="导出已选主机"
+              aria-label="导出已选主机"
+              disabled={!exportIds.length}
+              onClick={() => onOpenExportHosts(exportIds)}
+            >
               <Upload size={13} />
             </button>
             <button
@@ -436,7 +448,6 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               disabled={!chosenIds.length || deletingBatch}
               onClick={() => void commitBatchDelete()}
             >
-              <Trash2 size={12} />
               删除 ({chosenIds.length})
             </button>
             <button type="button" className="btn btn-sm" onClick={exitSelectMode}>
@@ -446,17 +457,27 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
         </div>
       ) : (
         <div className="sidebar-footer">
-          <div className="sidebar-file-actions">
-            <button id="importSshBtn" type="button" className="icon-btn"
-              title="导入 SSH 配置" onClick={onOpenImportSSH}>
-              <Download size={14} strokeWidth={1.7} /><span>导入</span>
+          <div className="sidebar-footer-group sidebar-file-actions">
+            <button
+              id="importSshBtn"
+              type="button"
+              className="icon-btn"
+              title="导入主机配置"
+              aria-label="导入主机配置"
+              onClick={onOpenImportSSH}
+            >
+              <Download size={14} strokeWidth={1.7} />
             </button>
-            <button id="exportHostsBtn" type="button" className="icon-btn" title="导出主机配置"
-              aria-label="导出主机配置" onClick={() => onOpenExportHosts([])}>
-              <Upload size={14} strokeWidth={1.7} /><span>导出</span>
+            <button
+              id="exportHostsBtn"
+              type="button"
+              className="icon-btn"
+              title="导出主机配置"
+              aria-label="导出主机配置"
+              onClick={() => onOpenExportHosts([])}
+            >
+              <Upload size={14} strokeWidth={1.7} />
             </button>
-          </div>
-          <div style={{ display: 'flex', gap: 2 }}>
             {profiles.length > 0 && (
               <button
                 type="button"
@@ -468,6 +489,19 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                 <CheckSquare size={14} strokeWidth={1.7} />
               </button>
             )}
+          </div>
+          <div className="sidebar-footer-group">
+            <button
+              id="toggleHideIpBtn"
+              type="button"
+              className={`icon-btn ${hideHostIp ? 'active' : ''}`}
+              title={hideHostIp ? '显示主机 IP' : '隐藏主机 IP（隐私模式）'}
+              aria-label="切换隐藏主机 IP"
+              aria-pressed={hideHostIp}
+              onClick={() => onToggleHideIp?.()}
+            >
+              {hideHostIp ? <EyeOff size={14} strokeWidth={1.7} /> : <Eye size={14} strokeWidth={1.7} />}
+            </button>
             {onToggleTheme && (
               <button
                 type="button"
@@ -484,7 +518,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               type="button"
               className="icon-btn"
               title="SSH 密钥管理"
-              aria-label="密钥管理"
+              aria-label="SSH 密钥管理"
               onClick={() => onOpenSettings('keys')}
             >
               <KeyRound size={14} strokeWidth={1.7} />

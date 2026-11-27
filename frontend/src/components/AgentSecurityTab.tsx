@@ -1,14 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Bot,
   ChevronRight,
   Copy,
   Eye,
   EyeOff,
-  Play,
   RefreshCw,
-  Shield,
-  Trash2,
 } from 'lucide-react';
 import type {
   AgentConfig,
@@ -237,7 +233,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
           <div className="pref-group-pad">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
               <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 7 }}>
-                <Bot size={15} style={{ color: 'var(--accent)' }} />
                 <span>允许外部 AI 工具连接 Shell</span>
                 {status.running && <span className="pill-badge safe mono">:{status.port}</span>}
               </div>
@@ -378,7 +373,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                     onToast(mcpClient === 'json' ? '已复制 HTTP 配置' : '已复制 CLI 接入命令');
                   }}
                 >
-                  <Copy size={12} />
                   {mcpClient === 'json' ? '复制 HTTP 配置' : '复制命令'}
                 </button>
                 {mcpClient === 'json' && (
@@ -390,7 +384,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                       onToast('已复制 Stdio 配置');
                     }}
                   >
-                    <Copy size={12} />
                     复制 Stdio
                   </button>
                 )}
@@ -586,7 +579,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                     placeholder="输入命令检测…"
                   />
                   <button type="button" className="btn btn-sm" onClick={() => void runPolicyTest()}>
-                    <Play size={12} />
                     检测
                   </button>
                 </div>
@@ -608,7 +600,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span style={{ fontWeight: 600, fontSize: 12 }}>脱敏测试</span>
                   <button id="runRedactTestBtn" type="button" className="btn btn-sm" onClick={() => void runRedactTest()}>
-                    <Shield size={12} />
                     运行测试
                   </button>
                 </div>
@@ -646,7 +637,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
             </span>
             <div style={{ display: 'flex', gap: 6 }}>
               <button type="button" className="btn btn-sm" onClick={() => void loadAudit()}>
-                <RefreshCw size={12} />
                 刷新
               </button>
               <button
@@ -658,7 +648,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                   onToast('已清空记录');
                 }}
               >
-                <Trash2 size={12} />
                 清空
               </button>
             </div>

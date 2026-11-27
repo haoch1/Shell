@@ -7,6 +7,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -79,6 +80,35 @@ var (
 	ipv4Re       = regexp.MustCompile(`\b((?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b`)
 )
 
+var (
+	regexCacheMu sync.RWMutex
+	regexCache   = make(map[string]*regexp.Regexp)
+)
+
+const maxCompiledRegexCache = 256
+
+func compileCachedRegex(pattern string) (*regexp.Regexp, bool) {
+	regexCacheMu.RLock()
+	re, ok := regexCache[pattern]
+	regexCacheMu.RUnlock()
+	if ok {
+		return re, re != nil
+	}
+	compiled, err := regexp.Compile(pattern)
+	regexCacheMu.Lock()
+	if len(regexCache) >= maxCompiledRegexCache {
+		clear(regexCache)
+	}
+	if err != nil {
+		regexCache[pattern] = nil
+		regexCacheMu.Unlock()
+		return nil, false
+	}
+	regexCache[pattern] = compiled
+	regexCacheMu.Unlock()
+	return compiled, true
+}
+
 // Redact scrubs secrets, credentials, PII, and optional IP addresses from text according to cfg.
 func Redact(input string, cfg RedactionConfig) RedactResult {
 	res := RedactResult{Text: input, Hits: map[string]int{}}
@@ -92,7 +122,7 @@ func Redact(input string, cfg RedactionConfig) RedactResult {
 		if raw == "" {
 			continue
 		}
-		if r, err := regexp.Compile(raw); err == nil {
+		if r, ok := compileCachedRegex(raw); ok {
 			allowRes = append(allowRes, r)
 		}
 	}
@@ -245,8 +275,8 @@ func Redact(input string, cfg RedactionConfig) RedactResult {
 		if raw == "" {
 			continue
 		}
-		re, err := regexp.Compile(raw)
-		if err != nil {
+		re, ok := compileCachedRegex(raw)
+		if !ok {
 			continue
 		}
 		out = re.ReplaceAllStringFunc(out, func(m string) string {

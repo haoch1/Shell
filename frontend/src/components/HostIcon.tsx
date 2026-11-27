@@ -190,7 +190,6 @@ export const HostIcon: React.FC<HostIconProps> = ({
   iconOverride,
   colorOverride,
   size = 'md',
-  isLive = false,
 }) => {
   const resolvedIcon = iconOverride !== undefined ? (iconOverride || inferHostIcon(profile)) : inferHostIcon(profile);
   const customColor = colorOverride ?? profile?.color;
@@ -219,7 +218,6 @@ export const HostIcon: React.FC<HostIconProps> = ({
   return (
     <span className={`host-icon-badge size-${size}`} style={styleVars}>
       {renderHostGlyph(resolvedIcon, glyphSize)}
-      {isLive && <span className="host-icon-live" title="在线会话" />}
     </span>
   );
 };

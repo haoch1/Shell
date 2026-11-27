@@ -63,6 +63,23 @@ func TestPreferencesKeepConcurrentTrayAndWindowChanges(t *testing.T) {
 	if err != nil || s.WindowWidth != 1450 || s.WindowHeight != 950 || s.FontSize != 17 || s.CloseToTray || s.Theme != "light" {
 		t.Fatalf("lost or partially applied a preference update: %+v, %v", s, err)
 	}
+
+	// Verify hideHostIp privacy preference persists on/off and rejects invalid types.
+	if s.HideHostIP {
+		t.Fatal("expected default hideHostIp to be false")
+	}
+	if updated, err := app.UpdatePreferences(map[string]any{"hideHostIp": true}); err != nil || !updated.HideHostIP {
+		t.Fatalf("failed to enable hideHostIp: %+v, %v", updated, err)
+	}
+	if reloaded, err := local.LoadSettings(); err != nil || !reloaded.HideHostIP || reloaded.FontSize != 17 {
+		t.Fatalf("hideHostIp did not persist cleanly: %+v, %v", reloaded, err)
+	}
+	if updated, err := app.UpdatePreferences(map[string]any{"hideHostIp": false}); err != nil || updated.HideHostIP {
+		t.Fatalf("failed to disable hideHostIp: %+v, %v", updated, err)
+	}
+	if _, err := app.UpdatePreferences(map[string]any{"hideHostIp": "yes"}); err == nil {
+		t.Fatal("accepted non-boolean hideHostIp value")
+	}
 }
 
 func TestSaveProfileWithSecretRetainsPasswordOnEdit(t *testing.T) {

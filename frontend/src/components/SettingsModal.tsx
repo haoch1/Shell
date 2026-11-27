@@ -4,20 +4,14 @@ import {
   Bot,
   Check,
   Copy,
-  Download,
   ExternalLink,
-  FolderOpen,
   Info,
   KeyRound,
   Loader2,
   Palette,
-  Plus,
-  RefreshCw,
   Search,
-  Send,
   Shield,
   Sparkles,
-  Trash2,
   X,
 } from 'lucide-react';
 import type {
@@ -83,12 +77,12 @@ const FONT_OPTIONS = [
 const SHORTCUTS: { label: string; keys: string[] }[] = [
   { label: '全局命令面板', keys: ['Ctrl', 'K'] },
   { label: '新建 SSH 主机', keys: ['Ctrl', 'N'] },
-  { label: '切换主机侧栏', keys: ['Ctrl', 'B'] },
-  { label: '打开偏好设置', keys: ['Ctrl', ','] },
+  { label: '切换侧边栏', keys: ['Ctrl', 'B'] },
+  { label: '偏好设置', keys: ['Ctrl', ','] },
   { label: '终端内搜索', keys: ['Ctrl', 'Shift', 'F'] },
-  { label: '打开 AI 助手', keys: ['Ctrl', 'Shift', 'A'] },
-  { label: '终端复制 / 粘贴', keys: ['Ctrl', 'Shift', 'C / V'] },
-  { label: '调整 / 重置字号', keys: ['Ctrl', '+ / - / 0'] },
+  { label: 'AI 助手', keys: ['Ctrl', 'Shift', 'A'] },
+  { label: '切换标签页', keys: ['Ctrl', '1..9'] },
+  { label: '调整字号', keys: ['Ctrl', '+ / - / 0'] },
 ];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -409,6 +403,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         onClick={() => patch({ closeToTray: !settings.closeToTray })}
                       />
                     </div>
+                    <div className="pref-row">
+                      <span className="pref-row-label">隐藏主机 IP（隐私模式）</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={Boolean(settings.hideHostIp)}
+                        className="apple-switch accent"
+                        onClick={() => patch({ hideHostIp: !settings.hideHostIp })}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -674,7 +678,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             className="btn btn-sm btn-danger"
                             onClick={() => void removeKnownLines(chosenKnownLines)}
                           >
-                            <Trash2 size={12} />
                             批量移除 ({chosenKnownLines.length})
                           </button>
                         )}
@@ -743,7 +746,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               className="btn btn-sm btn-danger"
                               onClick={() => void removeKnownLines([kh.line])}
                             >
-                              <Trash2 size={12} />
                               移除
                             </button>
                           </div>
@@ -761,7 +763,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="pref-section-head">
                     <span className="pref-section-title">本地 SSH 密钥 (~/.ssh)</span>
                     <button type="button" className="btn btn-primary btn-sm" onClick={() => setGenOpen((v) => !v)}>
-                      <Plus size={13} />
                       生成密钥
                     </button>
                   </div>
@@ -853,7 +854,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   onToast('已复制公钥');
                                 }}
                               >
-                                <Copy size={12} />
                                 复制公钥
                               </button>
                               {activeSessionId && (
@@ -862,7 +862,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   className="btn btn-primary btn-sm"
                                   onClick={() => void deployPublicKey(k.publicKey)}
                                 >
-                                  <Send size={12} />
                                   部署公钥
                                 </button>
                               )}
@@ -1066,7 +1065,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               required
                               value={cliCommand}
                               onChange={(e) => setCliCommand(e.target.value)}
-                              placeholder="claude / codex / gemini"
+                              placeholder="claude / codex / agy"
                             />
                           </div>
                           <div className="field-group grow">
@@ -1137,7 +1136,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           onOpenImportSSH();
                         }}
                       >
-                        <Download size={12} />
                         打开导入向导
                       </button>
                     </div>
@@ -1209,13 +1207,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <span className="pill-badge safe">已是最新</span>
                           ) : null}
                         </div>
-                        <div className="pref-row-sub">
-                          {updateProgress
-                            ? updateProgress.message
-                            : updateInfo?.hasUpdate
-                              ? '点击「立即更新」将在应用内下载、校验 SHA-256 并自动重启生效'
-                              : '支持应用内检测与一键更新，自动保留原有主机配置与凭据'}
-                        </div>
+                        {updateProgress && <div className="pref-row-sub">{updateProgress.message}</div>}
                       </div>
                       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                         {updateInfo?.hasUpdate && onApplyUpdate && (
@@ -1226,7 +1218,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             disabled={updatingApp}
                             onClick={() => void onApplyUpdate()}
                           >
-                            {updatingApp ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
+                            {updatingApp && <Loader2 size={12} className="spin" />}
                             {updatingApp ? '更新中…' : '立即更新'}
                           </button>
                         )}
@@ -1237,7 +1229,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           disabled={checkingUpdate || updatingApp}
                           onClick={() => void onCheckUpdate?.()}
                         >
-                          {checkingUpdate ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
+                          {checkingUpdate && <Loader2 size={12} className="spin" />}
                           检查更新
                         </button>
                       </div>
@@ -1294,6 +1286,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <button
                           type="button"
                           className="btn btn-sm btn-ghost"
+                          title="复制目录路径"
+                          aria-label="复制目录路径"
                           onClick={() => {
                             void copyToClipboard(appInfo?.dataDir || '');
                             onToast('已复制目录路径');
@@ -1306,7 +1300,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           className="btn btn-sm"
                           onClick={() => void getApi().OpenDataDir().catch(() => {})}
                         >
-                          <FolderOpen size={12} />
                           打开目录
                         </button>
                       </div>

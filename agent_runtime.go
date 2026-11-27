@@ -12,6 +12,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/haoch1/Shell/internal/agentbridge"
 	"github.com/haoch1/Shell/internal/local"
@@ -126,7 +127,21 @@ func (a *App) SaveAgentConfig(cfg local.AgentConfig) (AgentStatusView, error) {
 		a.bridge.Stop()
 		local.ClearBridgeRuntime()
 	}
-	return a.GetAgentStatus()
+	running, port := a.bridge.Running()
+	if port == 0 {
+		port = saved.Port
+	}
+	exePath, _ := os.Executable()
+	return AgentStatusView{
+		Enabled:   saved.Enabled,
+		Running:   running,
+		Port:      port,
+		ExecMode:  saved.ExecMode,
+		Token:     token,
+		ExePath:   exePath,
+		Policy:    saved.Policy,
+		Redaction: saved.Redaction,
+	}, nil
 }
 
 func (a *App) RotateAgentToken() (string, error) {
@@ -451,6 +466,17 @@ func (a *App) mirrorToTerminal(sessionID, text string) {
 	}
 }
 
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	n := maxBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
 func formatMirrorLines(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\n", "\r\n")
@@ -595,6 +621,7 @@ func (a *App) dialHeadlessProfile(ctx context.Context, p local.Profile) (string,
 			cancel()
 			a.mu.Lock()
 			delete(a.headless, sid)
+			a.clearSessionApprovalsLocked(sid)
 			a.mu.Unlock()
 		},
 	})
@@ -978,6 +1005,9 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		audit.Phases = &security.AuditPhases{}
 		cmd := strings.TrimSpace(strArg(args, "command"))
 		audit.Summary = cmd
+		if cmd == "" {
+			return finish(agentbridge.ToolCallOutcome{Text: "策略已拦截：命令为空", IsError: true, Risk: "safe", Decision: "policy-deny"})
+		}
 		sessionStart := time.Now()
 		sid, entry, isGUI, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		audit.Phases.SessionMs = elapsedMs(sessionStart)
@@ -1023,14 +1053,14 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			var mirrorBuf strings.Builder
 			if outPreview := strings.TrimRight(res.Stdout, "\r\n"); outPreview != "" {
 				if len(outPreview) > 8192 {
-					outPreview = outPreview[:8192] + "\n…(已截断显示)"
+					outPreview = truncateUTF8(outPreview, 8192) + "\n…(已截断显示)"
 				}
 				mirrorBuf.WriteString(formatMirrorLines(outPreview))
 				mirrorBuf.WriteString("\r\n")
 			}
 			if errPreview := strings.TrimRight(res.Stderr, "\r\n"); errPreview != "" {
 				if len(errPreview) > 4096 {
-					errPreview = errPreview[:4096] + "\n…(已截断显示)"
+					errPreview = truncateUTF8(errPreview, 4096) + "\n…(已截断显示)"
 				}
 				mirrorBuf.WriteString("\x1b[31m")
 				mirrorBuf.WriteString(formatMirrorLines(errPreview))
@@ -1125,6 +1155,9 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 	case "shell_sftp_read":
 		p := strings.TrimSpace(strArg(args, "path"))
 		audit.Summary = "sftp read " + p
+		if p == "" {
+			return finish(agentbridge.ToolCallOutcome{Text: "请输入远端文件路径", IsError: true})
+		}
 		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
@@ -1154,6 +1187,9 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		p := strings.TrimSpace(strArg(args, "path"))
 		content := strArg(args, "content")
 		audit.Summary = fmt.Sprintf("sftp write %s (%d bytes)", p, len(content))
+		if p == "" {
+			return finish(agentbridge.ToolCallOutcome{Text: "请输入远端文件路径", IsError: true})
+		}
 		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})

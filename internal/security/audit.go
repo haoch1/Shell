@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // AuditEntry records a single Agent or MCP tool invocation for compliance & traceability.
@@ -79,7 +80,11 @@ func AppendAudit(e AuditEntry) error {
 		e.Error = Redact(e.Error, redCfg).Text
 	}
 	if len(e.Summary) > 512 {
-		e.Summary = e.Summary[:512] + "…"
+		n := 512
+		for n > 0 && !utf8.RuneStart(e.Summary[n]) {
+			n--
+		}
+		e.Summary = e.Summary[:n] + "…"
 	}
 
 	line, err := json.Marshal(e)
@@ -126,7 +131,23 @@ func compactAuditLocked(p string) {
 	}
 	kept := lines[len(lines)-maxAuditEntries:]
 	out := append(bytes.Join(kept, []byte("\n")), '\n')
-	_ = os.WriteFile(p, out, 0600)
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".audit-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpName := tmp.Name()
+	_, wErr := tmp.Write(out)
+	if wErr == nil {
+		wErr = tmp.Sync()
+	}
+	cErr := tmp.Close()
+	if wErr != nil || cErr != nil {
+		_ = os.Remove(tmpName)
+		return
+	}
+	if os.Rename(tmpName, p) != nil {
+		_ = os.Remove(tmpName)
+	}
 }
 
 // ListAudit returns up to `limit` most recent audit entries (newest first).

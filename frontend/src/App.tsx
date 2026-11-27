@@ -69,6 +69,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   copyOnSelect: false,
   rightClickPaste: false,
   showTelemetry: true,
+  hideHostIp: false,
   webglEnabled: false,
   defaultKeepAlive: 30,
   confirmOnClose: true,
@@ -1073,6 +1074,7 @@ export const App: React.FC = () => {
         activeTabId={activeTabId}
         sessions={sessions}
         drawer={drawer}
+        hideHostIp={Boolean(settings.hideHostIp)}
         onSelectTab={(id) => {
           setActiveTabId(id);
           setSearchOpen(false);
@@ -1124,6 +1126,8 @@ export const App: React.FC = () => {
           onOpenExportHosts={setExportIds}
           onOpenSettings={(tab = 'appearance') => setSettingsModal({ open: true, tab })}
           isDark={isDark}
+          hideHostIp={Boolean(settings.hideHostIp)}
+          onToggleHideIp={() => void updateSettings({ hideHostIp: !settings.hideHostIp })}
           onToggleTheme={() => {
             const nextDark = !isDark;
             void updateSettings({
@@ -1157,6 +1161,7 @@ export const App: React.FC = () => {
               {tabs.length === 0 ? (
                 <WelcomeView
                   profiles={profiles}
+                  hideHostIp={Boolean(settings.hideHostIp)}
                   onConnect={(p) => connectOrPromptProfile(p, false)}
                   onQuickConnect={handleQuickConnect}
                   onNewConnection={() => setHostModal({ open: true, profile: null })}
@@ -1293,6 +1298,7 @@ export const App: React.FC = () => {
             stats={activeSession ? statsBySession[activeSession.id] : undefined}
             netRate={activeSession ? netRateBySession[activeSession.id] : undefined}
             showTelemetry={settings.showTelemetry}
+            hideHostIp={Boolean(settings.hideHostIp)}
             activeTunnelsCount={activeSession ? tunnelsCountBySession[activeSession.id] ?? 0 : 0}
             agentStatus={agentStatus}
             onOpenTunnels={() => setDrawer('tunnels')}
@@ -1321,6 +1327,7 @@ export const App: React.FC = () => {
           snippets={snippets}
           hasActiveSession={activeSession?.state === 'connected'}
           isDark={isDark}
+          hideHostIp={Boolean(settings.hideHostIp)}
           onClose={() => { setPaletteOpen(false); setSplitPicker(null); }}
           onConnectProfile={splitPicker ? chooseSplitProfile : connectOrPromptProfile}
           onQuickConnect={(target) => handleQuickConnect(target, splitPicker?.target)}
@@ -1353,7 +1360,12 @@ export const App: React.FC = () => {
       )}
 
       {exportIds !== null && (
-        <HostExportModal profiles={profiles} initialIds={exportIds} onClose={() => setExportIds(null)} />
+        <HostExportModal
+          profiles={profiles}
+          initialIds={exportIds}
+          hideHostIp={Boolean(settings.hideHostIp)}
+          onClose={() => setExportIds(null)}
+        />
       )}
 
       {settingsModal.open && (

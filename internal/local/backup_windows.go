@@ -162,10 +162,16 @@ func ImportData(raw []byte, passphrase string) (ImportSummary, error) {
 		return ImportSummary{}, fmt.Errorf("备份文件格式无效：%w", err)
 	}
 	var summary ImportSummary
+	type pendingJump struct {
+		idx        int
+		origJumpID string
+	}
 	oldToNewID := make(map[string]string, len(bundle.Profiles))
 	importedProfiles := make([]Profile, 0, len(bundle.Profiles))
+	var pendingJumps []pendingJump
 	for _, p := range bundle.Profiles {
 		oldID := p.ID
+		origJumpID := p.JumpHostID
 		p.ID = ""
 		p.JumpHostID = ""
 		saved, err := SaveProfile(p)
@@ -176,6 +182,9 @@ func ImportData(raw []byte, passphrase string) (ImportSummary, error) {
 			oldToNewID[oldID] = saved.ID
 		}
 		importedProfiles = append(importedProfiles, saved)
+		if origJumpID != "" {
+			pendingJumps = append(pendingJumps, pendingJump{idx: len(importedProfiles) - 1, origJumpID: origJumpID})
+		}
 		summary.Profiles++
 		if bundle.Secrets != nil && oldID != "" {
 			if sec := bundle.Secrets[oldID]; sec != "" {
@@ -185,14 +194,11 @@ func ImportData(raw []byte, passphrase string) (ImportSummary, error) {
 			}
 		}
 	}
-	// Restore JumpHostID references among imported profiles.
-	for i, orig := range bundle.Profiles {
-		if orig.JumpHostID == "" || i >= len(importedProfiles) {
-			continue
-		}
-		if mapped, ok := oldToNewID[orig.JumpHostID]; ok && mapped != importedProfiles[i].ID {
-			importedProfiles[i].JumpHostID = mapped
-			_, _ = SaveProfile(importedProfiles[i])
+	// Restore JumpHostID references among imported profiles using exact saved indices.
+	for _, pj := range pendingJumps {
+		if mapped, ok := oldToNewID[pj.origJumpID]; ok && mapped != importedProfiles[pj.idx].ID {
+			importedProfiles[pj.idx].JumpHostID = mapped
+			_, _ = SaveProfile(importedProfiles[pj.idx])
 		}
 	}
 	for _, s := range bundle.Snippets {

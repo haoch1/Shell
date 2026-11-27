@@ -18,13 +18,19 @@ import {
   X,
 } from 'lucide-react';
 import type { DrawerMode, Profile, SessionRecord, WorkspaceTab } from '../types/shell';
-import { collectLeaves } from '../lib/utils';
+import { collectLeaves, formatHostDisplay } from '../lib/utils';
 import { getRuntime } from '../lib/bridge';
 import { HostIcon } from './HostIcon';
 import type { usePaneDrag } from '../lib/usePaneDrag';
 
-function tabLabel(tab: WorkspaceTab, profile?: Profile) {
-  return tab.root.type === 'leaf' && profile ? profile.name || profile.host : tab.title;
+function tabLabel(tab: WorkspaceTab, profile?: Profile, hideHostIp = false) {
+  if (tab.root.type === 'leaf' && profile) {
+    if (profile.name && (!hideHostIp || profile.name !== profile.host)) {
+      return profile.name;
+    }
+    return formatHostDisplay(profile.host, undefined, hideHostIp) || profile.name || profile.host;
+  }
+  return tab.title;
 }
 
 interface TitlebarProps {
@@ -36,6 +42,7 @@ interface TitlebarProps {
   activeTabId: string | null;
   sessions: Record<string, SessionRecord>;
   drawer: DrawerMode;
+  hideHostIp?: boolean;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onCloseOtherTabs: (tabId: string) => void;
@@ -57,6 +64,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   activeTabId,
   sessions,
   drawer,
+  hideHostIp = false,
   onSelectTab,
   onCloseTab,
   onCloseOtherTabs,
@@ -232,7 +240,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           {tabs.map((tab) => {
             const st = tabState(tab);
             const prof = tabProfile(tab);
-            const title = tabLabel(tab, prof);
+            const title = tabLabel(tab, prof, hideHostIp);
             const active = tab.id === (paneDrag.hoverTab ?? activeTabId);
             return (
               <div
@@ -245,7 +253,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 onDragLeave={e => paneDrag.leaveTab(e, tab.id)}
                 role="tab"
                 aria-selected={active}
-                className={`tab-item ${active ? 'active' : ''}`}
+                className={`tab-item state-${st} ${active ? 'active' : ''}`}
                 onClick={() => onSelectTab(tab.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -258,12 +266,9 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                     onCloseTab(tab.id);
                   }
                 }}
-                title={(prof ? `${title} (${prof.user}@${prof.host}:${prof.port})` : title) + '\n拖动当前会话到终端边缘分屏'}
+                title={(prof ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port, hideHostIp)})` : title) + '\n拖动当前会话到终端边缘分屏'}
               >
-                <span className="tab-icon-wrap">
-                  <HostIcon profile={prof} size="xs" />
-                  <span className={`tab-dot-badge ${st}`} />
-                </span>
+                <HostIcon profile={prof} size="xs" />
                 <span className="tab-label">{title}</span>
                 <button
                   type="button"
@@ -276,6 +281,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 >
                   <X size={11} strokeWidth={2} />
                 </button>
+                <span className={`tab-status-bar ${st}`} aria-hidden="true" />
               </div>
             );
           })}
@@ -491,26 +497,31 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             {tabs.map((tab) => {
               const st = tabState(tab);
               const prof = tabProfile(tab);
-              const title = tabLabel(tab, prof);
+              const title = tabLabel(tab, prof, hideHostIp);
               const active = tab.id === activeTabId;
               return (
                 <div
                   key={tab.id}
                   className={`context-menu-item ${active ? 'active-row' : ''}`}
                   style={{ justifyContent: 'space-between', paddingRight: 6 }}
+                  title={prof ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port, hideHostIp)})` : title}
                   onClick={() => {
                     onSelectTab(tab.id);
                     setAllTabsMenu(null);
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 1 }}>
-                    <span className="tab-icon-wrap">
-                      <HostIcon profile={prof} size="xs" />
-                      <span className={`tab-dot-badge ${st}`} />
-                    </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 1, opacity: st === 'closed' ? 0.62 : 1 }}>
+                    <HostIcon profile={prof} size="xs" />
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {title}
                     </span>
+                    {st !== 'closed' && (
+                      <span
+                        className={`tab-dot ${st}`}
+                        style={{ width: 5, height: 5, marginLeft: 'auto', flexShrink: 0 }}
+                        aria-hidden="true"
+                      />
+                    )}
                   </div>
                   <button
                     type="button"

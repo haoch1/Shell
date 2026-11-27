@@ -92,6 +92,9 @@ func writeAtomic(path string, data []byte) error {
 		if moveErr == nil {
 			return nil
 		}
+		if !errors.Is(moveErr, windows.ERROR_ACCESS_DENIED) && !errors.Is(moveErr, windows.ERROR_SHARING_VIOLATION) {
+			return moveErr
+		}
 		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
 	}
 	return moveErr

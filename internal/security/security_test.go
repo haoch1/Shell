@@ -3,6 +3,7 @@ package security
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRedactionEngineSecretsPIIAndGuardrails(t *testing.T) {
@@ -170,5 +171,18 @@ func TestAuditLogRedactionAndLifecycle(t *testing.T) {
 	logs, err = ListAudit(10)
 	if err != nil || len(logs) != 0 {
 		t.Fatalf("expected empty audit log after clear, got %+v, %v", logs, err)
+	}
+
+	// Long Chinese summary must truncate cleanly on a UTF-8 rune boundary.
+	longCN := strings.Repeat("运维审计日志", 120)
+	if err := AppendAudit(AuditEntry{Source: "mcp", Tool: "shell_exec", Summary: longCN, OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	logs, err = ListAudit(10)
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("expected 1 audit entry, got %+v, %v", logs, err)
+	}
+	if !utf8.ValidString(logs[0].Summary) || !strings.HasSuffix(logs[0].Summary, "…") {
+		t.Fatalf("truncated audit summary is not valid UTF-8: %q", logs[0].Summary)
 	}
 }

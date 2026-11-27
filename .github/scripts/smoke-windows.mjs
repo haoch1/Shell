@@ -138,7 +138,7 @@ const BRIDGE_MOCK_SCRIPT = `
     fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
     fontSize: 14, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
-    showTelemetry: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true
+    showTelemetry: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false
   };
   let profiles = new URLSearchParams(location.search).has('empty-hosts') ? [] : [
     { id: 'p1', name: 'Tokyo Production', group: '生产集群', icon: 'ubuntu', pinned: true, host: '10.24.0.10', port: 22, user: 'deploy', auth: 'agent', keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 300 },
@@ -478,6 +478,23 @@ async function verifyFrontendUI() {
     await click('button[aria-label="切换深浅色外观"]');
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'light')"), 'persisted light theme');
 
+    // Verify IP privacy masking toggle (#toggleHideIpBtn)
+    await click('#toggleHideIpBtn');
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.hideHostIp === true)"), 'persisted hideHostIp=true');
+    const maskedSubs = await evaluate("[...document.querySelectorAll('.host-row .host-sub')].map(el => el.textContent.trim())");
+    assert.ok(
+      maskedSubs.includes('•••.•••.•••.•••') && maskedSubs.includes('••••:••••:••••') && maskedSubs.every(t => !/\d/.test(t)),
+      'Expected masked sidebar host addresses when hideHostIp is enabled, got ' + JSON.stringify(maskedSubs),
+    );
+    await shot('18-Privacy-HideIP');
+    await click('#toggleHideIpBtn');
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.hideHostIp === false)"), 'persisted hideHostIp=false');
+    const restoredSubs = await evaluate("[...document.querySelectorAll('.host-row .host-sub')].map(el => el.textContent.trim())");
+    assert.ok(
+      restoredSubs.some(t => t.includes('10.24.0.10')) && restoredSubs.some(t => t.includes('192.168.1.88')),
+      'Expected real host addresses restored when hideHostIp is disabled, got ' + JSON.stringify(restoredSubs),
+    );
+
     // Host modal (Basic + Jump/Proxy identical height guard)
     await click('#addHost');
     await until(() => evaluate("!!document.querySelector('#connectDialog')"), 'host modal');
@@ -622,6 +639,7 @@ async function verifyFrontendUI() {
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(7)').click()`);
     await until(() => evaluate(`document.querySelector('#settingsDialog').textContent.includes(${JSON.stringify('v' + expectedVersion)})`), 'about version');
+    await sleep(200);
     await shot('14-Settings-About');
 
     // Open Agent & Security tab -> screenshot MCP + Unified Security/Redaction view
@@ -649,11 +667,11 @@ async function verifyFrontendUI() {
 
     const { verifySplitWorkspace } = await import('./split-workspace.mjs');
     await verifySplitWorkspace({ call, evaluate, until, click });
-    await verifyHostExport({ call, evaluate, until, click });
-    await verifyEmptyHostExport({ call, evaluate, until, click });
+    const exportRect = await verifyHostExport({ call, evaluate, until, click, shot });
+    await verifyEmptyHostExport({ call, evaluate, until, click, expectedRect: exportRect });
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 17 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 19 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

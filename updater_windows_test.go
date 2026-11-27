@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/haoch1/Shell/internal/local"
+	"github.com/haoch1/Shell/internal/remote"
 )
 
 func TestCompareSemverAndTrustedURL(t *testing.T) {
@@ -124,5 +127,32 @@ func TestCheckDownloadVerifyAndAtomicSwap(t *testing.T) {
 	gotOld, err := os.ReadFile(oldPath)
 	if err != nil || string(gotOld) != "old-binary" {
 		t.Fatalf("backup old executable mismatch: %q err=%v", string(gotOld), err)
+	}
+}
+
+func TestOutboundHTTPProxyFormatsIPv6Host(t *testing.T) {
+	st := local.DefaultSettings()
+	st.ProxyMode = "socks5"
+	st.ProxyHost = "::1"
+	st.ProxyPort = 1080
+	st.ProxyUser = "ops"
+	if got := resolveSettingsProxy(st); got == nil || got.String() != "socks5://ops@[::1]:1080" {
+		t.Fatalf("unexpected settings IPv6 proxy URL: %v", got)
+	}
+
+	sp := remote.SystemProxyInfo{
+		Enabled:  true,
+		Protocol: "http",
+		Host:     "fd00::1",
+		Port:     7897,
+		User:     "alice",
+		Password: "pw",
+		Bypass:   "*.internal",
+	}
+	if got := resolveSystemProxyURL(sp, "api.github.com"); got == nil || got.String() != "http://alice:pw@[fd00::1]:7897" {
+		t.Fatalf("unexpected system IPv6 proxy URL: %v", got)
+	}
+	if got := resolveSystemProxyURL(sp, "svc.internal"); got != nil {
+		t.Fatalf("expected bypassed host to return nil proxy, got %v", got)
 	}
 }

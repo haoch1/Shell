@@ -47,15 +47,17 @@ func TestMCPStreamableHTTPAuthOriginAndStdioProxy(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 2. Forbidden cross-site Origin (DNS rebinding guard)
-	req, _ := http.NewRequest(http.MethodPost, base+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
-	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("Origin", "https://evil.example.com")
-	resp, err = client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 for remote Origin, got %v, %v", resp, err)
+	// 2. Forbidden cross-site or malformed Origins (DNS rebinding guard)
+	for _, badOrigin := range []string{"https://evil.example.com", "http://evil@localhost", "javascript://localhost/x", "http://localhost/path"} {
+		req, _ := http.NewRequest(http.MethodPost, base+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Origin", badOrigin)
+		resp, err = client.Do(req)
+		if err != nil || resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403 for origin %q, got %v, %v", badOrigin, resp, err)
+		}
+		resp.Body.Close()
 	}
-	resp.Body.Close()
 
 	// 3. MCP initialize + tools/list + tools/call via stdio proxy
 	input := strings.Join([]string{

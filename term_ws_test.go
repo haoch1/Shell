@@ -112,4 +112,10 @@ func TestTermWSServerAuthOriginAndBinaryFraming(t *testing.T) {
 	if err != nil || pongOp != 0xA {
 		t.Fatalf("expected pong (0xA), got op=%x err=%v", pongOp, err)
 	}
+
+	// Verify Enqueue returns false deterministically once closed.
+	srv.CloseSession("test-sess")
+	if ok := srv.SendOutput("test-sess", []byte("after-close")); ok {
+		t.Fatal("expected SendOutput after CloseSession to return false")
+	}
 }

@@ -66,6 +66,12 @@ func lockPins(ctx context.Context, path string) (func(), error) {
 	handle := windows.Handle(f.Fd())
 	flags := uint32(windows.LOCKFILE_EXCLUSIVE_LOCK | windows.LOCKFILE_FAIL_IMMEDIATELY)
 	var state windows.Overlapped
+	var retryTimer *time.Timer
+	defer func() {
+		if retryTimer != nil {
+			retryTimer.Stop()
+		}
+	}()
 	for {
 		err = windows.LockFileEx(handle, flags, 0, 1, 0, &state)
 		if err == nil {
@@ -78,11 +84,16 @@ func lockPins(ctx context.Context, path string) (func(), error) {
 			f.Close()
 			return nil, err
 		}
+		if retryTimer == nil {
+			retryTimer = time.NewTimer(40 * time.Millisecond)
+		} else {
+			retryTimer.Reset(40 * time.Millisecond)
+		}
 		select {
 		case <-ctx.Done():
 			f.Close()
 			return nil, ctx.Err()
-		case <-time.After(40 * time.Millisecond):
+		case <-retryTimer.C:
 		}
 	}
 }
@@ -106,4 +117,19 @@ func publishDownloadMode(temp, dest string, overwrite bool) error {
 		flags |= windows.MOVEFILE_REPLACE_EXISTING
 	}
 	return windows.MoveFileEx(oldName, newName, flags)
+}
+
+func replaceFileAtomic(temp, dest string) error {
+	var err error
+	for attempt := 0; attempt < 6; attempt++ {
+		err = publishDownloadMode(temp, dest, true)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+			return err
+		}
+		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+	}
+	return err
 }

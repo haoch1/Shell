@@ -76,6 +76,22 @@ func newApp() *App {
 	return a
 }
 
+func (a *App) baseContext() context.Context {
+	if a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
+}
+
+func (a *App) clearSessionApprovalsLocked(id string) {
+	prefix := id + "|"
+	for k := range a.sessionApprovals {
+		if strings.HasPrefix(k, prefix) {
+			delete(a.sessionApprovals, k)
+		}
+	}
+}
+
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	runtime.OnFileDrop(ctx, func(x, y int, paths []string) {
@@ -165,6 +181,7 @@ func (a *App) DisconnectAllSessions() {
 	for id, e := range a.headless {
 		headlessList = append(headlessList, e)
 		delete(a.headless, id)
+		a.clearSessionApprovalsLocked(id)
 	}
 	a.mu.Unlock()
 	for _, id := range ids {
@@ -239,6 +256,7 @@ func (a *App) shutdown(context.Context) {
 	for id, e := range a.headless {
 		headlessList = append(headlessList, e)
 		delete(a.headless, id)
+		a.clearSessionApprovalsLocked(id)
 	}
 	for tid, cancel := range a.transfers {
 		cancel()
@@ -686,7 +704,7 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(a.ctx)
+	ctx, cancel := context.WithCancel(a.baseContext())
 	entry := &liveSession{cancel: cancel, profile: p}
 	a.mu.Lock()
 	if _, found := a.live[id]; found {
@@ -701,11 +719,7 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 		if a.live[id] == entry {
 			delete(a.live, id)
 		}
-		for k := range a.sessionApprovals {
-			if strings.HasPrefix(k, id+"|") {
-				delete(a.sessionApprovals, k)
-			}
-		}
+		a.clearSessionApprovalsLocked(id)
 		a.mu.Unlock()
 		cancel()
 	}
@@ -935,7 +949,7 @@ func newTransferID() string {
 
 func (a *App) registerTransfer() (string, context.Context, func()) {
 	tid := newTransferID()
-	ctx, cancel := context.WithCancel(a.ctx)
+	ctx, cancel := context.WithCancel(a.baseContext())
 	a.mu.Lock()
 	a.transfers[tid] = cancel
 	a.mu.Unlock()
@@ -1051,8 +1065,12 @@ func (a *App) DownloadFile(id, remotePath string, overwrite bool) (string, error
 	tid, ctx, cleanup := a.registerTransfer()
 	defer cleanup()
 	a.emitTransfer(tid, id, leaf, "download", 0, 0, "running", "")
+	var lastTotal int64
 	// SaveFileDialog already asks user for confirmation when overwriting an existing file on Windows.
 	err = s.DownloadFile(ctx, remotePath, name, true, func(done, total int64) {
+		if total > 0 {
+			lastTotal = total
+		}
 		a.emitTransfer(tid, id, leaf, "download", done, total, "running", "")
 	})
 	if err != nil {
@@ -1060,10 +1078,13 @@ func (a *App) DownloadFile(id, remotePath string, overwrite bool) (string, error
 		if errors.Is(err, context.Canceled) {
 			status = "canceled"
 		}
-		a.emitTransfer(tid, id, leaf, "download", 0, 0, status, err.Error())
+		a.emitTransfer(tid, id, leaf, "download", 0, lastTotal, status, err.Error())
 		return "", err
 	}
-	a.emitTransfer(tid, id, leaf, "download", 1, 1, "done", "")
+	if lastTotal <= 0 {
+		lastTotal = 1
+	}
+	a.emitTransfer(tid, id, leaf, "download", lastTotal, lastTotal, "done", "")
 	return name, nil
 }
 
@@ -1373,7 +1394,7 @@ func (a *App) CancelAI() {
 }
 
 func (a *App) beginAI() (context.Context, func()) {
-	ctx, cancel := context.WithCancel(a.ctx)
+	ctx, cancel := context.WithCancel(a.baseContext())
 	a.mu.Lock()
 	if a.aiCancel != nil {
 		a.aiCancel()

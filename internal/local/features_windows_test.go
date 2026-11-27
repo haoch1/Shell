@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSSHConfigParserAndImport(t *testing.T) {
@@ -193,5 +195,69 @@ func TestStructuredAIStreamingAndRiskClassifier(t *testing.T) {
 	}
 	if streamed.Len() == 0 {
 		t.Fatal("expected SSE delta callbacks")
+	}
+}
+
+func TestImportPreservesJumpHostAfterSkippedInvalidProfile(t *testing.T) {
+	isolated(t)
+	// First entry has invalid host and will be skipped; third entry jumps via second entry.
+	bundle := ExportBundle{
+		Version: 2,
+		Profiles: []Profile{
+			{ID: "bad", Name: "Bad", Host: "bad host with spaces", Port: 22, User: "root", Auth: "password"},
+			{ID: "bastion", Name: "Bastion", Host: "203.0.113.10", Port: 22, User: "ops", Auth: "agent"},
+			{ID: "app", Name: "App", Host: "10.0.1.50", Port: 22, User: "ops", Auth: "agent", JumpHostID: "bastion"},
+		},
+	}
+	raw, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := ImportData(raw, "")
+	if err != nil || sum.Profiles != 2 {
+		t.Fatalf("unexpected backup import summary: %+v, %v", sum, err)
+	}
+	profs, err := Profiles()
+	if err != nil || len(profs) != 2 {
+		t.Fatalf("unexpected profiles: %+v, %v", profs, err)
+	}
+	if profs[1].JumpHostID != profs[0].ID {
+		t.Fatalf("expected App JumpHostID=%q (Bastion), got %q", profs[0].ID, profs[1].JumpHostID)
+	}
+
+	// Same check for OpenSSH config import.
+	isolated(t)
+	imported, err := ImportSSHConfigEntries([]SSHConfigHost{
+		{Alias: "invalid", HostName: "invalid host!", Port: 22, User: "ops"},
+		{Alias: "jump", HostName: "203.0.113.20", Port: 22, User: "ops"},
+		{Alias: "target", HostName: "10.0.2.20", Port: 22, User: "ops", ProxyJump: "jump"},
+	}, "Imported")
+	if err != nil || len(imported) != 2 {
+		t.Fatalf("unexpected SSH config import: %+v, %v", imported, err)
+	}
+	if imported[1].JumpHostID != imported[0].ID {
+		t.Fatalf("expected target JumpHostID=%q (jump), got %q", imported[0].ID, imported[1].JumpHostID)
+	}
+}
+
+func TestCappedBufferAndUTF8BoundaryHelpers(t *testing.T) {
+	cb := cappedBuffer{limit: 8}
+	n, err := cb.Write([]byte("0123456789abcdef"))
+	if err != nil || n != 16 || cb.buf.String() != "01234567" {
+		t.Fatalf("unexpected cappedBuffer write: n=%d err=%v got=%q", n, err, cb.buf.String())
+	}
+
+	sample := []byte("中文测试")
+	ready, carry := splitValidUTF8(sample[:4]) // splits 2nd Chinese character after 1 byte
+	if string(ready) != "中" || len(carry) != 1 {
+		t.Fatalf("unexpected splitValidUTF8: ready=%q carry=%x", string(ready), carry)
+	}
+	merged := append(append([]byte(nil), carry...), sample[4:]...)
+	ready2, carry2 := splitValidUTF8(merged)
+	if string(ready2) != "文测试" || len(carry2) != 0 {
+		t.Fatalf("unexpected merged UTF-8: ready=%q carry=%x", string(ready2), carry2)
+	}
+	if tr := truncateUTF8("中文测试数据", 7); !utf8.ValidString(tr) || tr != "中文" {
+		t.Fatalf("truncateUTF8 produced %q", tr)
 	}
 }

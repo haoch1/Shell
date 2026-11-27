@@ -13,7 +13,6 @@ import {
   Eraser,
   FolderOpen,
   Loader2,
-  RefreshCw,
   Search,
   Sparkles,
   SplitSquareHorizontal,
@@ -24,6 +23,7 @@ import type { AppSettings, SessionRecord } from '../types/shell';
 import { getTerminalTheme } from '../lib/themes';
 import { terminalBus } from '../lib/terminalBus';
 import { copyToClipboard, openExternalURL, readFromClipboard } from '../lib/bridge';
+import { formatHostDisplay } from '../lib/utils';
 
 interface TerminalPaneProps {
   paneId: string;
@@ -341,7 +341,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <span className={`tab-dot ${session.state}`} />
             <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {session.profile.name} ({session.profile.user}@{session.profile.host})
+              {session.profile.name} ({session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port, settings.hideHostIp)})
             </span>
           </div>
           <button
@@ -370,7 +370,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
         <div className="pane-connecting-bar">
           <Loader2 size={13} className="spin" />
           <span className="mono">
-            正在连接 {session.profile.user}@{session.profile.host}:{session.profile.port} …
+            正在连接 {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port, settings.hideHostIp)} …
           </span>
         </div>
       )}
@@ -379,7 +379,6 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
         <div className="pane-closed-bar">
           <span>{session.endMessage || '会话已断开'}</span>
           <button type="button" className="btn btn-primary btn-sm" onClick={onReconnect}>
-            <RefreshCw size={12} />
             重新连接
           </button>
         </div>

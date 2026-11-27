@@ -183,6 +183,7 @@ func (s *termWSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	if tcp, ok := raw.(*net.TCPConn); ok {
 		_ = tcp.SetNoDelay(true)
 	}
+	_ = raw.SetDeadline(time.Time{})
 
 	sum := sha1.Sum([]byte(wsKey + wsGUID))
 	accept := base64.StdEncoding.EncodeToString(sum[:])
@@ -226,6 +227,11 @@ func (s *termWSServer) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *termWSConn) Enqueue(data []byte) bool {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
 	cp := append([]byte(nil), data...)
 	select {
 	case <-c.done:
@@ -247,6 +253,12 @@ func (c *termWSConn) Close() {
 func (c *termWSConn) writeLoop() {
 	const maxBatch = 64 << 10
 	buf := make([]byte, 0, maxBatch)
+	var coalesceTimer *time.Timer
+	defer func() {
+		if coalesceTimer != nil {
+			coalesceTimer.Stop()
+		}
+	}()
 	for {
 		select {
 		case <-c.done:
@@ -270,7 +282,16 @@ func (c *termWSConn) writeLoop() {
 			// If traffic is still arriving right after a large burst, coalesce briefly (3ms)
 			// so WebView2 xterm.js parses larger smooth frames instead of hundreds of tiny ones.
 			if len(buf) >= 2048 && len(c.outCh) > 0 {
-				time.Sleep(3 * time.Millisecond)
+				if coalesceTimer == nil {
+					coalesceTimer = time.NewTimer(3 * time.Millisecond)
+				} else {
+					coalesceTimer.Reset(3 * time.Millisecond)
+				}
+				select {
+				case <-c.done:
+					return
+				case <-coalesceTimer.C:
+				}
 			}
 		}
 	}
@@ -280,6 +301,7 @@ func (c *termWSConn) writeFrame(opcode byte, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
+	_ = c.raw.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	var hdr [10]byte
 	hdr[0] = 0x80 | (opcode & 0x0F)
 	n := len(payload)

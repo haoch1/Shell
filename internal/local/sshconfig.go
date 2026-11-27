@@ -252,8 +252,13 @@ func ImportSSHConfigEntries(entries []SSHConfigHost, group string) ([]Profile, e
 	if group == "" {
 		group = "SSH Config"
 	}
+	type pendingJump struct {
+		idx   int
+		alias string
+	}
 	created := make([]Profile, 0, len(entries))
 	aliasToID := make(map[string]string, len(entries))
+	var pendingJumps []pendingJump
 	for _, e := range entries {
 		auth := "agent"
 		if e.PasswordAuth {
@@ -284,16 +289,16 @@ func ImportSSHConfigEntries(entries []SSHConfigHost, group string) ([]Profile, e
 		}
 		aliasToID[strings.ToLower(e.Alias)] = saved.ID
 		created = append(created, saved)
-	}
-	// Second pass: resolve ProxyJump alias references among imported entries.
-	for i, e := range entries {
-		if e.ProxyJump == "" || i >= len(created) {
-			continue
+		if e.ProxyJump != "" {
+			pendingJumps = append(pendingJumps, pendingJump{idx: len(created) - 1, alias: e.ProxyJump})
 		}
-		if jumpID, ok := aliasToID[strings.ToLower(e.ProxyJump)]; ok && jumpID != created[i].ID {
-			created[i].JumpHostID = jumpID
-			if updated, err := SaveProfile(created[i]); err == nil {
-				created[i] = updated
+	}
+	// Second pass: resolve ProxyJump alias references using exact created indices.
+	for _, pj := range pendingJumps {
+		if jumpID, ok := aliasToID[strings.ToLower(pj.alias)]; ok && jumpID != created[pj.idx].ID {
+			created[pj.idx].JumpHostID = jumpID
+			if updated, err := SaveProfile(created[pj.idx]); err == nil {
+				created[pj.idx] = updated
 			}
 		}
 	}

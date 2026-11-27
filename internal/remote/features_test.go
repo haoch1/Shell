@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -314,5 +316,61 @@ func TestTelemetryParser(t *testing.T) {
 	}
 	if !bytes.Equal([]byte(st.Load1), []byte("0.42")) || st.NetRxBytes != 1048576 {
 		t.Fatalf("unexpected load/net: %+v", st)
+	}
+}
+
+func TestSessionRingBufferWrapAndUTF8(t *testing.T) {
+	s := &Session{}
+	// Write > 64 KiB including multi-byte UTF-8 Chinese lines so the circular buffer wraps multiple times.
+	chunk := []byte("日志输出行-中文内容-0123456789\n")
+	for i := 0; i < 4000; i++ {
+		s.appendRing(chunk)
+	}
+	s.appendRing([]byte("\x1b[32mFINAL_LINE_OK\x1b[0m\r\n"))
+
+	got := s.RecentOutput(5)
+	if !utf8.ValidString(got) {
+		t.Fatalf("RecentOutput produced invalid UTF-8 after ring wrap")
+	}
+	if !strings.HasSuffix(got, "FINAL_LINE_OK") {
+		t.Fatalf("expected FINAL_LINE_OK suffix, got %q", got)
+	}
+	if len(s.ringBuf) != ringBufferLimit {
+		t.Fatalf("expected fixed ring capacity %d, got %d", ringBufferLimit, len(s.ringBuf))
+	}
+}
+
+func TestLimitedBufferAndReadUntilMarkerOversizedLine(t *testing.T) {
+	// Simulate a 96 KiB single line (no newline) followed by our sentinel marker line.
+	const marker = "__SH_MCP_END_abc123__:"
+	bigLine := strings.Repeat("A", 96<<10)
+	payload := bigLine + "\n" + marker + "42\n"
+
+	var dst limitedBuffer
+	dst.limit = 1024
+	code, err := readUntilMarker(bufio.NewReaderSize(strings.NewReader(payload), 4096), marker, &dst)
+	if err != nil {
+		t.Fatalf("readUntilMarker failed: %v", err)
+	}
+	if code != "42" {
+		t.Fatalf("expected exit code 42, got %q", code)
+	}
+	if dst.buf.Len() != 1024 || !dst.truncated {
+		t.Fatalf("expected output capped at 1024 with truncated=true, got len=%d truncated=%v", dst.buf.Len(), dst.truncated)
+	}
+}
+
+func TestTunnelTrackAfterCloseClosesLateConn(t *testing.T) {
+	at := &activeTunnel{openSet: make(map[net.Conn]struct{})}
+	at.close()
+
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	if at.track(c1) {
+		t.Fatal("expected track after close to return false")
+	}
+	// c1 must already be closed so writing to c2 fails immediately.
+	if _, err := c2.Write([]byte("x")); err == nil {
+		t.Fatal("expected late-tracked conn to be closed immediately")
 	}
 }

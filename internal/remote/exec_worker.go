@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -25,7 +26,31 @@ type sshExecWorker struct {
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 	stderr *bufio.Reader
-	closed bool
+	closed atomic.Bool
+}
+
+// limitedBuffer caps captured bytes while continuing to accept writes so SSH channels never stall on flow control.
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	limit     int64
+	truncated bool
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	if l.limit > 0 {
+		remain := l.limit - int64(l.buf.Len())
+		if remain > 0 {
+			if int64(len(p)) > remain {
+				l.buf.Write(p[:remain])
+				l.truncated = true
+			} else {
+				l.buf.Write(p)
+			}
+		} else if len(p) > 0 {
+			l.truncated = true
+		}
+	}
+	return len(p), nil
 }
 
 func startExecWorker(client *ssh.Client) (*sshExecWorker, error) {
@@ -60,17 +85,54 @@ func startExecWorker(client *ssh.Client) (*sshExecWorker, error) {
 	}, nil
 }
 
+func (w *sshExecWorker) isClosed() bool {
+	return w == nil || w.closed.Load()
+}
+
 func (w *sshExecWorker) close() {
-	if w == nil || w.closed {
+	if w == nil || !w.closed.CompareAndSwap(false, true) {
 		return
 	}
-	w.closed = true
 	_ = w.stdin.Close()
 	_ = w.sess.Close()
 }
 
+// readUntilMarker streams lines in fixed chunks so huge single-line outputs never allocate unbounded memory.
+func readUntilMarker(r *bufio.Reader, marker string, dst *limitedBuffer) (string, error) {
+	markerBytes := []byte(marker)
+	atLineStart := true
+	for {
+		frag, err := r.ReadSlice('\n')
+		if atLineStart {
+			if idx := bytes.Index(frag, markerBytes); idx >= 0 {
+				if idx > 0 {
+					_, _ = dst.Write(frag[:idx])
+				}
+				tail := strings.TrimSpace(string(frag[idx+len(markerBytes):]))
+				for errors.Is(err, bufio.ErrBufferFull) {
+					var more []byte
+					more, err = r.ReadSlice('\n')
+					tail += strings.TrimSpace(string(more))
+				}
+				return tail, nil
+			}
+		}
+		if len(frag) > 0 {
+			_, _ = dst.Write(frag)
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			atLineStart = false
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		atLineStart = true
+	}
+}
+
 func (w *sshExecWorker) run(ctx context.Context, command string, maxBytes int64) (ExecResult, error) {
-	if w == nil || w.closed {
+	if w.isClosed() {
 		return ExecResult{}, errors.New("worker closed")
 	}
 	t0 := time.Now()
@@ -96,7 +158,8 @@ func (w *sshExecWorker) run(ctx context.Context, command string, maxBytes int64)
 	if maxBytes <= 0 {
 		maxBytes = 256 << 10
 	}
-	var outBuf, errBuf bytes.Buffer
+	outBuf := limitedBuffer{limit: maxBytes}
+	errBuf := limitedBuffer{limit: max(1, maxBytes/2)}
 	var outErr, errErr error
 	exitCode := 0
 
@@ -106,67 +169,34 @@ func (w *sshExecWorker) run(ctx context.Context, command string, maxBytes int64)
 	// Read stdout until stdoutMarker line
 	go func() {
 		defer wg.Done()
-		for {
-			line, err := w.stdout.ReadString('\n')
-			if idx := strings.Index(line, stdoutMarker); idx >= 0 {
-				if idx > 0 && int64(outBuf.Len()) < maxBytes {
-					outBuf.WriteString(line[:idx])
-				}
-				codeStr := strings.TrimSpace(line[idx+len(stdoutMarker):])
-				if n, pErr := strconv.Atoi(codeStr); pErr == nil {
-					exitCode = n
-				}
-				return
-			}
-			if line != "" && int64(outBuf.Len()) < maxBytes {
-				remain := int(maxBytes) - outBuf.Len()
-				if len(line) > remain {
-					outBuf.WriteString(line[:remain])
-				} else {
-					outBuf.WriteString(line)
-				}
-			}
-			if err != nil {
-				outErr = err
-				return
-			}
+		codeStr, err := readUntilMarker(w.stdout, stdoutMarker, &outBuf)
+		if err != nil {
+			outErr = err
+			return
+		}
+		if n, pErr := strconv.Atoi(codeStr); pErr == nil {
+			exitCode = n
 		}
 	}()
 
 	// Read stderr until stderrMarker line
 	go func() {
 		defer wg.Done()
-		errLimit := maxBytes / 2
-		for {
-			line, err := w.stderr.ReadString('\n')
-			if idx := strings.Index(line, stderrMarker); idx >= 0 {
-				if idx > 0 && int64(errBuf.Len()) < errLimit {
-					errBuf.WriteString(line[:idx])
-				}
-				return
-			}
-			if line != "" && int64(errBuf.Len()) < errLimit {
-				remain := int(errLimit) - errBuf.Len()
-				if len(line) > remain {
-					errBuf.WriteString(line[:remain])
-				} else {
-					errBuf.WriteString(line)
-				}
-			}
-			if err != nil {
-				errErr = err
-				return
-			}
+		_, err := readUntilMarker(w.stderr, stderrMarker, &errBuf)
+		if err != nil {
+			errErr = err
 		}
 	}()
 
 	wg.Wait()
 
+	stdoutStr := outBuf.buf.String()
+	stderrStr := errBuf.buf.String()
 	if ctx.Err() != nil {
 		w.close()
 		return ExecResult{
-			Stdout:     strings.TrimSuffix(outBuf.String(), "\n"),
-			Stderr:     strings.TrimSuffix(errBuf.String(), "\n"),
+			Stdout:     strings.TrimSuffix(stdoutStr, "\n"),
+			Stderr:     strings.TrimSuffix(stderrStr, "\n"),
 			ExitCode:   -1,
 			DurationMs: time.Since(t0).Milliseconds(),
 		}, ctx.Err()
@@ -179,9 +209,13 @@ func (w *sshExecWorker) run(ctx context.Context, command string, maxBytes int64)
 		return ExecResult{ExitCode: -1, DurationMs: time.Since(t0).Milliseconds()}, errErr
 	}
 
-	// Trim the single sentinel leading newline we injected before the marker.
-	stdoutStr := strings.TrimSuffix(outBuf.String(), "\n")
-	stderrStr := strings.TrimSuffix(errBuf.String(), "\n")
+	// Trim the single sentinel leading newline we injected before the marker (unless truncated beforehand).
+	if !outBuf.truncated {
+		stdoutStr = strings.TrimSuffix(stdoutStr, "\n")
+	}
+	if !errBuf.truncated {
+		stderrStr = strings.TrimSuffix(stderrStr, "\n")
+	}
 	return ExecResult{
 		Stdout:     stdoutStr,
 		Stderr:     stderrStr,
@@ -200,7 +234,7 @@ func ConnectHeadless(ctx context.Context, cfg Config, cb Callbacks) (*Session, e
 	defer cancel()
 
 	t0 := time.Now()
-	client, jumps, _, stop, err := dialSSHClient(ctx, setup, cfg, cb, nil, 0)
+	client, jumps, stops, err := dialSSHClient(ctx, setup, cfg, cb, nil, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +244,7 @@ func ConnectHeadless(ctx context.Context, cfg Config, cb Callbacks) (*Session, e
 	s := &Session{
 		client:      client,
 		jumpClients: jumps,
-		stop:        stop,
+		stops:       stops,
 		stopKeep:    stopKeep,
 		tunnels:     make(map[string]*activeTunnel),
 	}
@@ -267,23 +301,24 @@ func (s *Session) execOneShot(ctx context.Context, command string, maxBytes int6
 	if maxBytes <= 0 {
 		maxBytes = 256 << 10
 	}
-	var outBuf, errBuf bytes.Buffer
+	outBuf := limitedBuffer{limit: maxBytes}
+	errBuf := limitedBuffer{limit: max(1, maxBytes/2)}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(&outBuf, io.LimitReader(stdout, maxBytes))
+		_, _ = io.Copy(&outBuf, stdout)
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(&errBuf, io.LimitReader(stderr, maxBytes/2))
+		_, _ = io.Copy(&errBuf, stderr)
 	}()
 	wg.Wait()
 
 	waitErr := sess.Wait()
 	res := ExecResult{
-		Stdout:     outBuf.String(),
-		Stderr:     errBuf.String(),
+		Stdout:     outBuf.buf.String(),
+		Stderr:     errBuf.buf.String(),
 		ExitCode:   0,
 		DurationMs: time.Since(t0).Milliseconds(),
 	}

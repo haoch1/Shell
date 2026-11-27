@@ -44,6 +44,7 @@ type Server struct {
 	lifecycle sync.Mutex // Serialize listener changes independently of request authentication.
 	mu        sync.Mutex
 	srv       *http.Server
+	listeners []net.Listener
 	port      int
 	pipeID    string
 	token     string
@@ -85,8 +86,12 @@ func (s *Server) Start(port int, token string) (int, string, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	pipe, pipeID, _ := listenDesktopPipe() // TCP remains available if local IPC is unavailable.
+	listeners := []net.Listener{ln}
+	if pipe != nil {
+		listeners = append(listeners, pipe)
+	}
 	s.mu.Lock()
-	s.srv, s.port, s.pipeID, s.token = srv, port, pipeID, token
+	s.srv, s.listeners, s.port, s.pipeID, s.token = srv, listeners, port, pipeID, token
 	s.mu.Unlock()
 	go srv.Serve(ln)
 	if pipe != nil {
@@ -116,7 +121,8 @@ func (s *Server) Stop() {
 func (s *Server) stop() {
 	s.mu.Lock()
 	srv := s.srv
-	s.srv, s.port, s.pipeID, s.token = nil, 0, "", ""
+	listeners := s.listeners
+	s.srv, s.listeners, s.port, s.pipeID, s.token = nil, nil, 0, "", ""
 	s.mu.Unlock()
 	if srv == nil {
 		return
@@ -126,17 +132,23 @@ func (s *Server) stop() {
 	if err := srv.Shutdown(ctx); err != nil {
 		_ = srv.Close()
 	}
+	for _, ln := range listeners {
+		_ = ln.Close()
+	}
 }
 
 // validateSecurity enforces MCP spec Origin validation (DNS rebinding protection) and Bearer token authentication.
 func (s *Server) validateSecurity(w http.ResponseWriter, r *http.Request) bool {
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
 		u, err := url.Parse(origin)
+		validOrigin := err == nil &&
+			(u.Scheme == "http" || u.Scheme == "https") &&
+			u.User == nil && u.Opaque == "" && u.Path == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
 		host := ""
-		if err == nil {
+		if validOrigin {
 			host = strings.ToLower(u.Hostname())
 		}
-		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		if !validOrigin || (host != "localhost" && host != "127.0.0.1" && host != "::1") {
 			http.Error(w, "Forbidden Origin", http.StatusForbidden)
 			return false
 		}

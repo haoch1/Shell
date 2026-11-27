@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Download, FileUp, FolderOpen, ScanSearch, X } from 'lucide-react';
+import { FileUp, ScanSearch, X } from 'lucide-react';
 import type { ImportedHost } from '../types/shell';
 import { errorMessage, getApi, onDesktopEvent } from '../lib/bridge';
 
@@ -233,7 +233,6 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
                         <span style={{ fontWeight: 600 }}>{h.name}</span>
                         {h.group && (
                           <span className="pill-badge neutral" style={{ fontSize: 10.5 }}>
-                            <FolderOpen size={10} />
                             {h.group}
                           </span>
                         )}
@@ -287,7 +286,6 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
             disabled={!chosen.length || importing}
             onClick={() => void doImport()}
           >
-            <Download size={13} />
             {importing ? '导入中…' : `一键导入 (${chosen.length})`}
           </button>
         </div>

@@ -53,6 +53,22 @@ func (s *Session) fileClient() (*sftp.Client, error) {
 	return s.files, nil
 }
 
+// maybeResetFileClient clears a dead SFTP subsystem client so subsequent operations reopen it cleanly.
+func (s *Session) maybeResetFileClient(c *sftp.Client, err error) {
+	if c == nil || err == nil || s.closed.Load() {
+		return
+	}
+	if !errors.Is(err, sftp.ErrSSHFxConnectionLost) {
+		return
+	}
+	s.fileMu.Lock()
+	if s.files == c {
+		s.files = nil
+	}
+	s.fileMu.Unlock()
+	_ = c.Close()
+}
+
 // RealPath resolves `.` or `~` or relative paths to the canonical remote absolute path.
 func (s *Session) RealPath(dir string) (string, error) {
 	c, err := s.fileClient()
@@ -65,6 +81,7 @@ func (s *Session) RealPath(dir string) (string, error) {
 	}
 	resolved, err := c.RealPath(dir)
 	if err != nil {
+		s.maybeResetFileClient(c, err)
 		return dir, err
 	}
 	return resolved, nil
@@ -111,6 +128,7 @@ func (s *Session) readDirectory(ctx context.Context, dir string, followLinks boo
 	}
 	items, err := c.ReadDirContext(ctx, base)
 	if err != nil {
+		s.maybeResetFileClient(c, err)
 		return DirectoryListing{}, err
 	}
 	result := make([]Entry, 0, len(items))

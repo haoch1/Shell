@@ -194,31 +194,32 @@ func sampleIcon(u, v float64) (r, g, b, a float64) {
 		return 0, 0, 0, 0
 	}
 
-	// Base vibrant sapphire-cobalt vertical gradient (#3B82F6 -> #1D4ED8) — pops on both Light & Dark taskbars.
+	// Base dark obsidian/graphite vertical gradient (#2D323E -> #14171F).
 	t := math.Max(0, math.Min(1, (v-0.06)/0.88))
-	r = lerp(0.231, 0.114, t)
-	g = lerp(0.510, 0.306, t)
-	b = lerp(0.965, 0.847, t)
+	r = lerp(0.176, 0.078, t)
+	g = lerp(0.196, 0.090, t)
+	b = lerp(0.243, 0.122, t)
 
 	// Subtle top-edge specular glass sheen.
-	if v < 0.48 {
-		sheen := (1.0 - (v-0.06)/0.42) * 0.11
+	if v < 0.46 {
+		sheen := (1.0 - (v-0.06)/0.40) * 0.065
 		if sheen > 0 {
 			r = math.Min(1.0, r+sheen)
 			g = math.Min(1.0, g+sheen)
-			b = math.Min(1.0, b+sheen*0.8)
+			b = math.Min(1.0, b+sheen*1.12)
 		}
 	}
 
-	// Crisp inner bevel rim.
-	if d > 0.945 {
-		rim := 0.22 * (1.0 - t*0.45)
+	// Crisp luminous metallic inner rim so the dark squircle stays sharply defined against dark Windows taskbars/tray.
+	if d > 0.935 {
+		edge := (d - 0.935) / 0.065
+		rim := 0.34 * math.Pow(edge, 0.6) * (1.0 - t*0.35)
 		r = math.Min(1.0, r+rim)
-		g = math.Min(1.0, g+rim)
-		b = math.Min(1.0, b+rim)
+		g = math.Min(1.0, g+rim*1.03)
+		b = math.Min(1.0, b+rim*1.12)
 	}
 
-	// Draw crisp minimalist ">" chevron (left, pure white) and "_" cursor bar (right, luminous mint #6EE7B7).
+	// Draw crisp minimalist ">" chevron (left, pure white) and "_" cursor bar (right, vibrant Apple blue #3B82F6).
 	stroke := 0.042
 	// Top leg of ">": (0.27, 0.36) -> (0.45, 0.50)
 	d1 := distSeg(u, v, 0.27, 0.36, 0.45, 0.50)
@@ -227,10 +228,10 @@ func sampleIcon(u, v float64) (r, g, b, a float64) {
 	if math.Min(d1, d2) <= stroke {
 		return 1.0, 1.0, 1.0, 1.0
 	}
-	// Cursor underscore bar: (0.53, 0.64) -> (0.72, 0.64) in luminous mint (#6EE7B7).
+	// Cursor underscore bar: (0.53, 0.64) -> (0.72, 0.64) in vibrant Apple blue (#3B82F6).
 	d3 := distSeg(u, v, 0.53, 0.64, 0.72, 0.64)
 	if d3 <= stroke*0.95 {
-		return 0.431, 0.906, 0.718, 1.0
+		return 0.231, 0.510, 0.965, 1.0
 	}
 	return r, g, b, 1.0
 }

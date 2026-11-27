@@ -216,7 +216,7 @@ func RunAgentLoop(
 			if onStep != nil {
 				preview := out
 				if len(preview) > 1200 {
-					preview = preview[:1200] + "\n…(已截断预览)"
+					preview = truncateUTF8(preview, 1200) + "\n…(已截断预览)"
 				}
 				onStep(AgentStepEvent{
 					Step:          step,
@@ -230,7 +230,7 @@ func RunAgentLoop(
 			}
 			// Keep context window compact
 			if len(out) > 16000 {
-				out = out[:16000] + "\n...[output truncated]"
+				out = truncateUTF8(out, 16000) + "\n...[output truncated]"
 			}
 			msgs = append(msgs, chatToolMsg{
 				Role:       "tool",
@@ -340,7 +340,7 @@ func runCLIAgentLoop(
 		if onStep != nil {
 			preview := out
 			if len(preview) > 1200 {
-				preview = preview[:1200] + "\n…(已截断预览)"
+				preview = truncateUTF8(preview, 1200) + "\n…(已截断预览)"
 			}
 			onStep(AgentStepEvent{
 				Step:          step,
@@ -353,7 +353,7 @@ func runCLIAgentLoop(
 			})
 		}
 		if len(out) > 12000 {
-			out = out[:12000] + "\n...[output truncated]"
+			out = truncateUTF8(out, 12000) + "\n...[output truncated]"
 		}
 		fmt.Fprintf(&transcript, "\n[步骤 %d] 调用 %s(%s) 返回：\n%s\n", step, act.Tool, string(argBytes), out)
 	}

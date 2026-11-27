@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, FolderOpen, Trash2, X } from 'lucide-react';
+import { Eye, EyeOff, X } from 'lucide-react';
 import type { AuthMode, HostAgentAccess, HostIconId, Profile, ProfileColor, ProxyType, SystemProxyInfo } from '../types/shell';
 import { PROFILE_COLORS, profileColorHex } from '../lib/themes';
 import { errorMessage, getApi } from '../lib/bridge';
@@ -307,7 +307,6 @@ export const HostModal: React.FC<HostModalProps> = ({
                       />
                     </div>
                     <button id="chooseKey" type="button" className="btn" onClick={() => void pickKey()}>
-                      <FolderOpen size={14} />
                       浏览
                     </button>
                   </div>
@@ -612,7 +611,6 @@ export const HostModal: React.FC<HostModalProps> = ({
               style={{ marginRight: 'auto' }}
               onClick={() => onDelete(profile)}
             >
-              <Trash2 size={13} />
               删除
             </button>
           )}

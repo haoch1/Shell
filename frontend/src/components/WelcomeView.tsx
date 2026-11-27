@@ -1,11 +1,11 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowRight, Download, Plus } from 'lucide-react';
 import type { Profile } from '../types/shell';
 import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 
 interface WelcomeViewProps {
   profiles: Profile[];
+  hideHostIp?: boolean;
   onConnect: (profile: Profile) => void;
   onQuickConnect: (target: { user: string; host: string; port: number }) => void;
   onNewConnection: () => void;
@@ -19,6 +19,7 @@ interface WelcomeViewProps {
 
 export const WelcomeView: React.FC<WelcomeViewProps> = ({
   profiles,
+  hideHostIp = false,
   onConnect,
   onQuickConnect,
   onNewConnection,
@@ -69,8 +70,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
             spellCheck={false}
           />
           <button type="submit" className="btn btn-primary btn-sm">
-            <span>连接</span>
-            <ArrowRight size={13} />
+            连接
           </button>
         </form>
         {quickErr && <p className="error-text" style={{ marginTop: -14 }}>{quickErr}</p>}
@@ -78,11 +78,9 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
         {profiles.length === 0 ? (
           <div className="quick-actions-row">
             <button id="firstConnect" type="button" className="btn btn-primary btn-sm" onClick={onNewConnection}>
-              <Plus size={14} />
               新建主机
             </button>
             <button type="button" className="btn btn-sm" onClick={onImportSSH}>
-              <Download size={13} />
               导入配置
             </button>
           </div>
@@ -107,14 +105,18 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                   key={p.id}
                   type="button"
                   className="recent-card"
-                  title={`${p.user}@${p.host}:${p.port}`}
+                  title={
+                    hideHostIp
+                      ? `${p.user}@${formatHostDisplay(p.host, p.port, true)}`
+                      : `${p.user}@${p.host}:${p.port}`
+                  }
                   onClick={() => onConnect(p)}
                 >
                   <HostIcon profile={p} size="lg" />
                   <div className="recent-card-meta">
                     <div className="recent-card-name">{p.name}</div>
                     <div className="recent-card-sub mono">
-                      {formatHostDisplay(p.host, p.port)}
+                      {formatHostDisplay(p.host, p.port, hideHostIp)}
                     </div>
                   </div>
                 </button>

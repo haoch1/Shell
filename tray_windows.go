@@ -149,6 +149,7 @@ type systemTray struct {
 	taskbarMsg    uint32
 	classNamePtr  *uint16
 	mu            sync.Mutex
+	stopped       bool
 	stopOnce      sync.Once
 	done          chan struct{}
 	quickHostIDs  []string
@@ -178,6 +179,7 @@ func (t *systemTray) Stop() {
 	}
 	t.stopOnce.Do(func() {
 		t.mu.Lock()
+		t.stopped = true
 		hwnd := t.hwnd
 		t.mu.Unlock()
 		if hwnd != 0 {
@@ -232,6 +234,11 @@ func (t *systemTray) runLoop() {
 		return
 	}
 	t.mu.Lock()
+	if t.stopped {
+		t.mu.Unlock()
+		_, _, _ = procDestroyWindow.Call(hwnd)
+		return
+	}
 	t.hwnd = hwnd
 	t.mu.Unlock()
 

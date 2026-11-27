@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -50,22 +51,24 @@ type ExecResult struct {
 const ringBufferLimit = 64 << 10
 
 type Session struct {
-	client       *ssh.Client
-	jumpClients  []*ssh.Client
-	pty          *ssh.Session
-	input        io.WriteCloser
-	stop         func() bool
-	stopKeep     context.CancelFunc
-	agentCleanup func()
-	closed       atomic.Bool
-	write        sync.Mutex
-	fileMu       sync.Mutex
-	files        *sftp.Client
+	client           *ssh.Client
+	jumpClients      []*ssh.Client
+	pty              *ssh.Session
+	input            io.WriteCloser
+	stops            []func() bool
+	stopKeep         context.CancelFunc
+	agentCleanup     func()
+	closed           atomic.Bool
+	write            sync.Mutex
+	fileMu           sync.Mutex
+	files            *sftp.Client
 	tunnelMu         sync.Mutex
 	tunnels          map[string]*activeTunnel
 	latencyMs        atomic.Int64
 	ringMu           sync.Mutex
 	ringBuf          []byte
+	ringPos          int
+	ringFull         bool
 	statsMu          sync.Mutex
 	prevCPU          [7]float64
 	hasPrevCPU       bool
@@ -86,12 +89,12 @@ type outputWriter struct {
 
 func (w *outputWriter) Write(b []byte) (int, error) {
 	if len(b) > 0 {
-		cp := append([]byte(nil), b...)
 		w.mu.Lock()
 		if w.capture != nil {
-			w.capture(cp)
+			w.capture(b)
 		}
 		if w.output != nil {
+			cp := append([]byte(nil), b...)
 			w.output(cp)
 		}
 		w.mu.Unlock()
@@ -100,11 +103,31 @@ func (w *outputWriter) Write(b []byte) (int, error) {
 }
 
 func (s *Session) appendRing(b []byte) {
+	if len(b) == 0 {
+		return
+	}
 	s.ringMu.Lock()
 	defer s.ringMu.Unlock()
-	s.ringBuf = append(s.ringBuf, b...)
-	if len(s.ringBuf) > ringBufferLimit {
-		s.ringBuf = append([]byte(nil), s.ringBuf[len(s.ringBuf)-ringBufferLimit:]...)
+	if s.ringBuf == nil {
+		s.ringBuf = make([]byte, ringBufferLimit)
+	}
+	if len(b) >= ringBufferLimit {
+		copy(s.ringBuf, b[len(b)-ringBufferLimit:])
+		s.ringPos = 0
+		s.ringFull = true
+		return
+	}
+	n := copy(s.ringBuf[s.ringPos:], b)
+	if n < len(b) {
+		copy(s.ringBuf, b[n:])
+		s.ringPos = len(b) - n
+		s.ringFull = true
+		return
+	}
+	s.ringPos += n
+	if s.ringPos == ringBufferLimit {
+		s.ringPos = 0
+		s.ringFull = true
 	}
 }
 
@@ -116,10 +139,21 @@ func (s *Session) RecentOutput(maxLines int) string {
 		maxLines = 120
 	}
 	s.ringMu.Lock()
-	raw := string(s.ringBuf)
+	var rawBytes []byte
+	if s.ringFull {
+		rawBytes = make([]byte, ringBufferLimit)
+		n := copy(rawBytes, s.ringBuf[s.ringPos:])
+		copy(rawBytes[n:], s.ringBuf[:s.ringPos])
+	} else if s.ringPos > 0 {
+		rawBytes = make([]byte, s.ringPos)
+		copy(rawBytes, s.ringBuf[:s.ringPos])
+	}
 	s.ringMu.Unlock()
 
-	clean := ansiEscapeRe.ReplaceAllString(raw, "")
+	for len(rawBytes) > 0 && !utf8.RuneStart(rawBytes[0]) {
+		rawBytes = rawBytes[1:]
+	}
+	clean := ansiEscapeRe.ReplaceAllString(string(rawBytes), "")
 	clean = strings.ReplaceAll(clean, "\r\n", "\n")
 	clean = strings.ReplaceAll(clean, "\r", "")
 	lines := strings.Split(clean, "\n")
@@ -276,28 +310,35 @@ func readKey(path, passphrase string) (ssh.Signer, error) {
 	return signer, nil
 }
 
-func dialSSHClient(ctx, setup context.Context, cfg Config, cb Callbacks, parent *ssh.Client, depth int) (*ssh.Client, []*ssh.Client, net.Conn, func() bool, error) {
+func dialSSHClient(ctx, setup context.Context, cfg Config, cb Callbacks, parent *ssh.Client, depth int) (*ssh.Client, []*ssh.Client, []func() bool, error) {
 	if depth > 5 {
-		return nil, nil, nil, nil, errors.New("跳板机链路过深（最多 5 级）")
+		return nil, nil, nil, errors.New("跳板机链路过深（最多 5 级）")
 	}
 	address, err := hostAddress(cfg.Host, cfg.Port)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
 	user := strings.TrimSpace(cfg.User)
 	if user == "" || strings.ContainsFunc(user, unicode.IsControl) {
-		return nil, nil, nil, nil, errors.New("请填写有效的 SSH 用户名")
+		return nil, nil, nil, errors.New("请填写有效的 SSH 用户名")
 	}
 	var jumps []*ssh.Client
+	var stops []func() bool
 	if cfg.Jump != nil {
-		jClient, deeper, _, _, err := dialSSHClient(ctx, setup, *cfg.Jump, cb, nil, depth+1)
+		jClient, deeper, jumpStops, err := dialSSHClient(ctx, setup, *cfg.Jump, cb, nil, depth+1)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("连接跳板机 %s 失败：%w", cfg.Jump.Host, err)
+			return nil, nil, nil, fmt.Errorf("连接跳板机 %s 失败：%w", cfg.Jump.Host, err)
 		}
 		jumps = append(deeper, jClient)
+		stops = append(stops, jumpStops...)
 		parent = jClient
 	}
 	closeJumps := func() {
+		for _, st := range stops {
+			if st != nil {
+				st()
+			}
+		}
 		for i := len(jumps) - 1; i >= 0; i-- {
 			jumps[i].Close()
 		}
@@ -305,44 +346,33 @@ func dialSSHClient(ctx, setup context.Context, cfg Config, cb Callbacks, parent 
 	methods, release, err := loginMethods(setup, cfg, cb.Challenge)
 	if err != nil {
 		closeJumps()
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer release()
 	callback, err := hostVerifier(ctx, cb.Verify)
 	if err != nil {
 		closeJumps()
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var raw net.Conn
 	if parent != nil {
-		type dialRes struct {
-			conn net.Conn
-			err  error
-		}
-		ch := make(chan dialRes, 1)
-		go func() {
-			c, err := parent.Dial("tcp", address)
-			ch <- dialRes{c, err}
-		}()
-		select {
-		case <-setup.Done():
-			closeJumps()
-			return nil, nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 超时：%w", address, setup.Err())
-		case r := <-ch:
-			raw, err = r.conn, r.err
-		}
+		raw, err = parent.DialContext(setup, "tcp", address)
 		if err != nil {
 			closeJumps()
-			return nil, nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 失败：%w", address, err)
+			if setup.Err() != nil {
+				return nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 超时：%w", address, setup.Err())
+			}
+			return nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 失败：%w", address, err)
 		}
 	} else {
 		raw, err = dialTCPWithProxy(setup, address, cfg.Proxy)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("连接 %s 失败：%w", address, err)
+			return nil, nil, nil, fmt.Errorf("连接 %s 失败：%w", address, err)
 		}
 	}
 	stop := context.AfterFunc(ctx, func() { raw.Close() })
+	stops = append(stops, stop)
 	deadline, _ := setup.Deadline()
 	_ = raw.SetDeadline(deadline)
 
@@ -353,13 +383,12 @@ func dialSSHClient(ctx, setup context.Context, cfg Config, cb Callbacks, parent 
 		Timeout:         15 * time.Second,
 	})
 	if err != nil {
-		stop()
 		raw.Close()
 		closeJumps()
-		return nil, nil, nil, nil, fmt.Errorf("SSH 握手失败：%w", err)
+		return nil, nil, nil, fmt.Errorf("SSH 握手失败：%w", err)
 	}
 	_ = raw.SetDeadline(time.Time{})
-	return ssh.NewClient(transport, channels, requests), jumps, raw, stop, nil
+	return ssh.NewClient(transport, channels, requests), jumps, stops, nil
 }
 
 // Connect establishes an SSH session (optionally via ProxyJump or SOCKS5/HTTP proxy) and keeps ctx associated until close.
@@ -380,14 +409,18 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 	defer cancel()
 
 	t0 := time.Now()
-	client, jumps, _, stop, err := dialSSHClient(ctx, setup, cfg, cb, nil, 0)
+	client, jumps, stops, err := dialSSHClient(ctx, setup, cfg, cb, nil, 0)
 	if err != nil {
 		return nil, err
 	}
 	initialRTT := time.Since(t0).Milliseconds()
 
 	cleanupClients := func() {
-		stop()
+		for _, st := range stops {
+			if st != nil {
+				st()
+			}
+		}
 		client.Close()
 		for i := len(jumps) - 1; i >= 0; i-- {
 			jumps[i].Close()
@@ -412,7 +445,7 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 		client:       client,
 		jumpClients:  jumps,
 		pty:          pty,
-		stop:         stop,
+		stops:        stops,
 		stopKeep:     stopKeep,
 		agentCleanup: agentCleanup,
 		tunnels:      make(map[string]*activeTunnel),
@@ -465,9 +498,15 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 
 	if cmd := strings.TrimSpace(cfg.StartupCommand); cmd != "" {
 		go func() {
-			time.Sleep(180 * time.Millisecond)
-			if !s.closed.Load() {
-				_ = s.Write([]byte(cmd + "\n"))
+			timer := time.NewTimer(180 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-keepCtx.Done():
+				return
+			case <-timer.C:
+				if !s.closed.Load() {
+					_ = s.Write([]byte(cmd + "\n"))
+				}
 			}
 		}()
 	}
@@ -498,6 +537,14 @@ func (s *Session) keepAliveLoop(ctx context.Context, interval time.Duration, onL
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	probeTimer := time.NewTimer(10 * time.Second)
+	if !probeTimer.Stop() {
+		select {
+		case <-probeTimer.C:
+		default:
+		}
+	}
+	defer probeTimer.Stop()
 	missed := 0
 	for {
 		select {
@@ -513,10 +560,17 @@ func (s *Session) keepAliveLoop(ctx context.Context, interval time.Duration, onL
 				_, _, err := s.client.SendRequest("keepalive@openssh.com", true, nil)
 				done <- err
 			}()
+			probeTimer.Reset(10 * time.Second)
 			select {
 			case <-ctx.Done():
 				return
 			case err := <-done:
+				if !probeTimer.Stop() {
+					select {
+					case <-probeTimer.C:
+					default:
+					}
+				}
 				if err != nil {
 					missed++
 					if missed >= 3 {
@@ -534,7 +588,7 @@ func (s *Session) keepAliveLoop(ctx context.Context, interval time.Duration, onL
 						onLatency(ms)
 					}
 				}
-			case <-time.After(10 * time.Second):
+			case <-probeTimer.C:
 				missed++
 				if missed >= 2 {
 					s.Close()
@@ -564,7 +618,7 @@ func (s *Session) ExecDetailed(ctx context.Context, command string, maxBytes int
 	}
 	if !s.noPersistentExec.Load() && s.execWorkerMu.TryLock() {
 		defer s.execWorkerMu.Unlock()
-		if s.execWorker == nil || s.execWorker.closed {
+		if s.execWorker == nil || s.execWorker.isClosed() {
 			w, err := startExecWorker(s.client)
 			if err != nil {
 				s.noPersistentExec.Store(true)
@@ -579,6 +633,7 @@ func (s *Session) ExecDetailed(ctx context.Context, command string, maxBytes int
 		// If the worker died unexpectedly (e.g. restricted/non-POSIX shell) and context wasn't canceled,
 		// mark persistent mode unavailable and retry once over standard exec channel.
 		if ctx.Err() == nil && !s.closed.Load() {
+			s.execWorker.close()
 			s.execWorker = nil
 			s.noPersistentExec.Store(true)
 			return s.execOneShot(ctx, command, maxBytes)
@@ -649,8 +704,10 @@ func (s *Session) Close() {
 		s.execWorkerMu.Unlock()
 	}
 	s.CloseAllTunnels()
-	if s.stop != nil {
-		s.stop()
+	for _, st := range s.stops {
+		if st != nil {
+			st()
+		}
 	}
 	if s.agentCleanup != nil {
 		s.agentCleanup()

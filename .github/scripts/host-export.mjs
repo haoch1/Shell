@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-export async function verifyHostExport({ call, evaluate, until, click }) {
+export async function verifyHostExport({ call, evaluate, until, click, shot }) {
   await call('Page.navigate', { url: await evaluate("location.origin + '/?host-export'") });
   await until(() => evaluate("location.search === '?host-export' && document.querySelectorAll('.host-row').length === 3"), 'export fixture');
   const layout = () => evaluate(`(() => {
@@ -30,9 +30,26 @@ export async function verifyHostExport({ call, evaluate, until, click }) {
         warnings: format === 'putty' ? ['测试字段未映射'] : [] };
     };
   })()`);
+  const dialogRect = () => evaluate(`(() => {
+    const r = document.querySelector('#hostExportDialog')?.getBoundingClientRect();
+    return r ? { width: r.width, height: r.height } : null;
+  })()`);
+  const assertSameSize = async (expected, label) => {
+    const actual = await dialogRect();
+    assert.ok(
+      actual && Math.abs(actual.width - expected.width) <= 1 && Math.abs(actual.height - expected.height) <= 1,
+      `Expected fixed export dialog size (${label}): got ${JSON.stringify(actual)} vs ${JSON.stringify(expected)}`,
+    );
+  };
+
   await click('#exportHostsBtn');
   assert.equal(await evaluate("document.querySelector('#hostExportFormat').value"), 'openssh');
   assert.equal(await evaluate("document.querySelector('#hostExportDialog').matches(':modal')"), true);
+  assert.equal(await evaluate("document.querySelectorAll('#hostExportDialog .host-export-list input[type=checkbox]:checked').length"), 3, 'All hosts must be selected by default');
+  assert.equal(await evaluate("document.querySelector('#toggleExportSelectAll')?.textContent.trim()"), '取消全选');
+  const baseRect = await dialogRect();
+  assert.ok(baseRect && Math.abs(baseRect.width - 440) <= 2 && Math.abs(baseRect.height - 472) <= 2, 'Expected fixed 440x472 export dialog, got ' + JSON.stringify(baseRect));
+  await shot?.('19-HostExport');
   assert.equal(await evaluate(`(() => {
     const modal = document.querySelector('#hostExportDialog');
     document.querySelector('#importSshBtn').focus();
@@ -41,39 +58,54 @@ export async function verifyHostExport({ call, evaluate, until, click }) {
   })()`), true, 'Export must contain focus and leave background shortcuts inactive');
   await click('#saveHostExport');
   await until(() => evaluate("document.querySelector('#hostExportDialog [role=status]')?.textContent === '已取消保存'"), 'cancel from save dialog');
+  await assertSameSize(baseRect, 'after cancel');
   await evaluate("window.exportResponse = 'error'");
   await click('#saveHostExport');
   await until(() => evaluate("document.querySelector('#hostExportDialog [role=alert]')?.textContent === 'Test save failed'"), 'native save error');
+  await assertSameSize(baseRect, 'after error');
   await evaluate("window.exportResponse = 'save'");
   await click('#saveHostExport');
   await until(() => evaluate("document.querySelector('.host-export-path')?.textContent === 'config'"), 'OpenSSH export result');
   assert.deepEqual(await evaluate('window.exportRequests.at(-1)'), { ids: [], format: 'openssh' });
+  await assertSameSize(baseRect, 'after OpenSSH save result');
   await click('#saveHostExport');
+
   await click('#exportHostsBtn');
-  await click('#hostExportDialog [data-scope=selected]');
+  await assertSameSize(baseRect, 'reopen default');
+  await click('#toggleExportSelectAll');
+  assert.equal(await evaluate("document.querySelectorAll('#hostExportDialog .host-export-list input[type=checkbox]:checked').length"), 0, 'Toggle select-all should unselect all hosts');
+  assert.equal(await evaluate("document.querySelector('#toggleExportSelectAll')?.textContent.trim()"), '全选');
   assert.equal(await evaluate("document.querySelector('#saveHostExport').disabled"), true, 'An empty selection must not export every host');
+  await assertSameSize(baseRect, 'all unselected');
   await click('#hostExportDialog input[value="p2"]');
+  assert.equal(await evaluate("document.querySelector('#saveHostExport').disabled"), false);
   assert.ok(await evaluate("!!document.querySelector('#exportJumpNotice')"), 'The user must see that OpenSSH includes the extra jump host before saving');
+  await assertSameSize(baseRect, 'single host with jump notice');
   await evaluate(`(() => {
     const format = document.querySelector('#hostExportFormat');
     format.value = 'putty'; format.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
   assert.equal(await evaluate("!!document.querySelector('#exportJumpNotice')"), false);
+  await assertSameSize(baseRect, 'putty without jump notice');
   await click('#saveHostExport');
   await until(() => evaluate("document.querySelector('.host-export-path')?.textContent === 'hosts.reg'"), 'PuTTY export result');
   assert.deepEqual(await evaluate('window.exportRequests.at(-1)'), { ids: ['p2'], format: 'putty' });
   assert.equal(await evaluate("document.querySelector('.host-export-notes')?.textContent"), '测试字段未映射');
+  await assertSameSize(baseRect, 'after PuTTY save result');
   await click('#saveHostExport');
+
   await click('.sidebar-footer button[aria-label="批量管理"]');
   await click('.host-row');
   await click('.sidebar-footer button[aria-label="导出已选主机"]');
-  assert.equal(await evaluate("document.querySelector('#hostExportDialog [data-scope=selected]').getAttribute('aria-pressed')"), 'true');
-  assert.equal(await evaluate("document.querySelectorAll('#hostExportDialog input:checked').length"), 1);
+  assert.equal(await evaluate("document.querySelectorAll('#hostExportDialog .host-export-list input[type=checkbox]:checked').length"), 1, 'Batch export must pre-select strictly the 1 chosen host');
+  assert.equal(await evaluate("document.querySelector('#toggleExportSelectAll')?.textContent.trim()"), '全选');
+  await assertSameSize(baseRect, 'batch mode pre-selection');
   await click('#hostExportDialog button[aria-label="关闭导出"]');
   await click('.sidebar-footer.batch-bar > div > button:last-child');
+  return baseRect;
 }
 
-export async function verifyEmptyHostExport({ call, evaluate, until, click }) {
+export async function verifyEmptyHostExport({ call, evaluate, until, click, expectedRect }) {
   // A fresh fixture page keeps the existing profiles and split sessions intact throughout the other smoke checks.
   const url = await evaluate("location.origin + '/?empty-hosts'");
   await call('Page.navigate', { url });
@@ -81,4 +113,13 @@ export async function verifyEmptyHostExport({ call, evaluate, until, click }) {
   await click('#exportHostsBtn');
   assert.equal(await evaluate("document.querySelector('.host-export-empty')?.textContent"), '暂无可导出的主机');
   assert.equal(await evaluate("document.querySelector('#saveHostExport').disabled"), true);
+  const emptyRect = await evaluate(`(() => {
+    const r = document.querySelector('#hostExportDialog')?.getBoundingClientRect();
+    return r ? { width: r.width, height: r.height } : null;
+  })()`);
+  const target = expectedRect || { width: 440, height: 472 };
+  assert.ok(
+    emptyRect && Math.abs(emptyRect.width - target.width) <= 2 && Math.abs(emptyRect.height - target.height) <= 2,
+    'Expected empty export modal to keep fixed size ' + JSON.stringify(target) + ', got ' + JSON.stringify(emptyRect),
+  );
 }

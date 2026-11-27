@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -55,6 +56,41 @@ type UpdateProgress struct {
 	Message    string `json:"message"`
 }
 
+func resolveSettingsProxy(st local.AppSettings) *url.URL {
+	switch strings.ToLower(strings.TrimSpace(st.ProxyMode)) {
+	case "socks5", "http":
+		if st.ProxyHost != "" && st.ProxyPort > 0 {
+			u := &url.URL{
+				Scheme: strings.ToLower(strings.TrimSpace(st.ProxyMode)),
+				Host:   net.JoinHostPort(st.ProxyHost, strconv.Itoa(st.ProxyPort)),
+			}
+			if st.ProxyUser != "" {
+				u.User = url.User(st.ProxyUser)
+			}
+			return u
+		}
+	}
+	return nil
+}
+
+func resolveSystemProxyURL(sp remote.SystemProxyInfo, host string) *url.URL {
+	if !sp.Enabled || sp.ShouldBypass(host) {
+		return nil
+	}
+	scheme := strings.ToLower(strings.TrimSpace(sp.Protocol))
+	if scheme == "" {
+		scheme = "http"
+	}
+	u := &url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(sp.Host, strconv.Itoa(sp.Port)),
+	}
+	if sp.User != "" || sp.Password != "" {
+		u.User = url.UserPassword(sp.User, sp.Password)
+	}
+	return u
+}
+
 // outboundHTTPProxy resolves an HTTP/SOCKS5 proxy URL for outbound app requests (AI API & auto-update).
 // It honors environment variables first, then configured Shell global proxy, then Windows system proxy.
 func outboundHTTPProxy(req *http.Request) (*url.URL, error) {
@@ -69,43 +105,26 @@ func outboundHTTPProxy(req *http.Request) (*url.URL, error) {
 		return envURL, nil
 	}
 	if st, err := local.LoadSettings(); err == nil {
-		switch strings.ToLower(strings.TrimSpace(st.ProxyMode)) {
-		case "socks5", "http":
-			if st.ProxyHost != "" && st.ProxyPort > 0 {
-				scheme := strings.ToLower(strings.TrimSpace(st.ProxyMode))
-				u := &url.URL{
-					Scheme: scheme,
-					Host:   fmt.Sprintf("%s:%d", st.ProxyHost, st.ProxyPort),
-				}
-				if st.ProxyUser != "" {
-					u.User = url.User(st.ProxyUser)
-				}
-				return u, nil
-			}
-		case "direct":
-			// For SSH direct mode, still allow Windows system proxy for HTTPS API / GitHub update calls
-			// unless bypassed by ProxyOverride.
+		if u := resolveSettingsProxy(st); u != nil {
+			return u, nil
 		}
 	}
-	if sp := remote.DetectSystemProxy(); sp.Enabled && !sp.ShouldBypass(host) {
-		scheme := strings.ToLower(strings.TrimSpace(sp.Protocol))
-		if scheme == "" {
-			scheme = "http"
-		}
-		return &url.URL{
-			Scheme: scheme,
-			Host:   fmt.Sprintf("%s:%d", sp.Host, sp.Port),
-		}, nil
+	if u := resolveSystemProxyURL(remote.DetectSystemProxy(), host); u != nil {
+		return u, nil
 	}
 	return nil, nil
 }
 
+var updaterTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = outboundHTTPProxy
+	return t
+}()
+
 func newUpdaterHTTPClient(timeout time.Duration) *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = outboundHTTPProxy
 	return &http.Client{
-		Timeout: timeout,
-		Transport: transport,
+		Timeout:   timeout,
+		Transport: updaterTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 6 {
 				return errors.New("更新下载重定向次数过多")
@@ -463,6 +482,9 @@ func cleanupPreviousExecutable() {
 	if err != nil || exePath == "" {
 		return
 	}
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && resolved != "" {
+		exePath = resolved
+	}
 	oldPath := exePath + ".old"
 	if _, err := os.Stat(oldPath); err != nil {
 		return
@@ -479,7 +501,7 @@ func cleanupPreviousExecutable() {
 
 // CheckForUpdate queries GitHub Releases for a newer version of Shell.
 func (a *App) CheckForUpdate() (UpdateInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(a.baseContext(), 15*time.Second)
 	defer cancel()
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", githubRepoOwner, githubRepoName)
 	return checkReleaseFromAPI(ctx, newUpdaterHTTPClient(15*time.Second), apiURL, appVersion)
@@ -525,7 +547,7 @@ func (a *App) DownloadAndApplyUpdate() error {
 	}
 
 	newPath := exePath + ".new"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(a.baseContext(), 5*time.Minute)
 	defer cancel()
 
 	if err := downloadVerifiedExecutable(ctx, newUpdaterHTTPClient(5*time.Minute), info, newPath, emit); err != nil {

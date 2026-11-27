@@ -207,6 +207,16 @@ const BRIDGE_MOCK_SCRIPT = `
     }),
     CommitImportedHosts: async () => [],
     Connect: async (id, p) => {
+      if (p.id === 'fail-test') {
+        emit('ssh:status', id, 'jump', '正在连接跳板机 Tokyo Production…');
+        await new Promise(r => setTimeout(r, 40));
+        emit('ssh:status', id, 'dial', '正在连接 10.24.0.99:22…');
+        await new Promise(r => setTimeout(r, 40));
+        throw new Error('dial tcp 10.24.0.99:22: connectex: No connection could be made because the target machine actively refused it.');
+      }
+      setTimeout(() => emit('ssh:status', id, 'dial', '正在连接 ' + p.host + ':' + p.port + '…'), 20);
+      setTimeout(() => emit('ssh:status', id, 'auth', '正在校验指纹与认证…'), 55);
+      setTimeout(() => emit('ssh:status', id, 'shell', '正在打开远程终端…'), 90);
       setTimeout(() => {
         const promptPrefix = p.user + '@' + p.name.toLowerCase().replace(/\\s+/g,'-') + ':~/app$ ';
         const banner = '\\r\\n\\x1b[32mWelcome to Ubuntu 24.04.1 LTS (GNU/Linux 6.8.0-45-generic x86_64)\\x1b[0m\\r\\n\\r\\n'
@@ -251,22 +261,99 @@ const BRIDGE_MOCK_SCRIPT = `
     ListFiles: async () => [
       { name: 'docker', path: '/home/deploy/app/docker', isDir: true, isSymlink: false, size: 4096, mode: 0o755, perm: 'drwxr-xr-x', modTime: Math.floor(Date.now()/1000) - 3600 },
       { name: 'logs', path: '/home/deploy/app/logs', isDir: true, isSymlink: false, size: 4096, mode: 0o755, perm: 'drwxr-xr-x', modTime: Math.floor(Date.now()/1000) - 900 },
+      { name: 'current', path: '/home/deploy/app/current', isDir: false, isSymlink: true, size: 32, mode: 0o777, perm: 'lrwxrwxrwx', modTime: Math.floor(Date.now()/1000) - 1200 },
       { name: 'docker-compose.yml', path: '/home/deploy/app/docker-compose.yml', isDir: false, isSymlink: false, size: 2480, mode: 0o644, perm: '-rw-r--r--', modTime: Math.floor(Date.now()/1000) - 7200 },
       { name: 'nginx.conf', path: '/home/deploy/app/nginx.conf', isDir: false, isSymlink: false, size: 4120, mode: 0o644, perm: '-rw-r--r--', modTime: Math.floor(Date.now()/1000) - 86400 },
-      { name: '.env.production', path: '/home/deploy/app/.env.production', isDir: false, isSymlink: false, size: 612, mode: 0o600, perm: '-rw-------', modTime: Math.floor(Date.now()/1000) - 43200 },
-      { name: 'deploy.sh', path: '/home/deploy/app/deploy.sh', isDir: false, isSymlink: false, size: 1890, mode: 0o755, perm: '-rwxr-xr-x', modTime: Math.floor(Date.now()/1000) - 1800 }
+      { name: 'deploy.sh', path: '/home/deploy/app/deploy.sh', isDir: false, isSymlink: false, size: 1890, mode: 0o755, perm: '-rwxr-xr-x', modTime: Math.floor(Date.now()/1000) - 1800 },
+      { name: 'release-1.5.3.tar.gz', path: '/home/deploy/app/release-1.5.3.tar.gz', isDir: false, isSymlink: false, size: 14820400, mode: 0o644, perm: '-rw-r--r--', modTime: Math.floor(Date.now()/1000) - 21600 },
+      { name: '.env.production', path: '/home/deploy/app/.env.production', isDir: false, isSymlink: false, size: 612, mode: 0o600, perm: '-rw-------', modTime: Math.floor(Date.now()/1000) - 43200 }
     ],
     PickUploadFiles: async () => [],
+    PickUploadFolder: async () => '',
     UploadLocalPaths: async () => [],
     UploadFile: async () => '',
     DownloadFile: async () => '',
+    DownloadDirectory: async () => '',
+    BatchDownloadRemote: async () => '',
     CancelTransfer: async () => {},
     MakeDir: async () => {},
     CreateRemoteFile: async () => {},
     RenameRemote: async () => {},
     DeleteRemote: async () => {},
+    DeleteRemoteBatch: async (_id, paths) => (paths || []).length,
     ChmodRemote: async () => {},
-    ReadRemoteText: async () => 'worker_processes auto;\\n',
+    ChmodRemoteRecursive: async () => {},
+    CopyRemote: async () => {},
+    StatRemote: async (_id, remotePath) => ({
+      name: remotePath.split('/').pop() || remotePath,
+      path: remotePath,
+      size: remotePath.endsWith('nginx.conf') ? 4120 : 2480,
+      mode: 0o644,
+      octal: '0644',
+      perm: '-rw-r--r--',
+      modTime: Math.floor(Date.now()/1000) - 7200,
+      accessTime: Math.floor(Date.now()/1000) - 600,
+      isDir: false,
+      isSymlink: remotePath.endsWith('/current'),
+      linkTarget: remotePath.endsWith('/current') ? '/home/deploy/releases/20261127' : '',
+      uid: 1000,
+      gid: 1000,
+      itemCount: 0
+    }),
+    RevealLocalPath: async () => {},
+    ReadRemoteText: async (_id, remotePath) => {
+      if (String(remotePath).endsWith('.yml')) {
+        return [
+          '# Production API Gateway & Database Stack',
+          'services:',
+          '  api-gateway:',
+          '    image: ghcr.io/acme/gateway:1.5.3',
+          '    restart: unless-stopped',
+          '    ports:',
+          '      - "443:8443"',
+          '    environment:',
+          '      NODE_ENV: production',
+          '      LOG_LEVEL: info',
+          '      UPSTREAM_TIMEOUT_MS: 5000',
+          '    healthcheck:',
+          '      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8443/health"]',
+          '      interval: 15s',
+          '      retries: 3',
+          '  postgres:',
+          '    image: postgres:16-alpine',
+          '    volumes:',
+          '      - pgdata:/var/lib/postgresql/data',
+          'volumes:',
+          '  pgdata: {}',
+          '',
+        ].join('\\n');
+      }
+      return [
+        '# Nginx Production Reverse Proxy',
+        'worker_processes auto;',
+        'events {',
+        '    worker_connections 4096;',
+        '}',
+        'http {',
+        '    include /etc/nginx/mime.types;',
+        '    sendfile on;',
+        '    keepalive_timeout 65;',
+        '    upstream api_backend {',
+        '        server 10.24.0.10:8080 max_fails=3 fail_timeout=15s;',
+        '        server 10.24.0.11:8080 backup;',
+        '    }',
+        '    server {',
+        '        listen 443 ssl http2;',
+        '        server_name api.example.com;',
+        '        location / {',
+        '            proxy_pass http://api_backend;',
+        '            proxy_set_header Host $host;',
+        '        }',
+        '    }',
+        '}',
+        '',
+      ].join('\\n');
+    },
     WriteRemoteText: async () => {},
     StartTunnel: async (_id, spec) => ({ ...spec, active: true, connections: 2, bytesIn: 245760, bytesOut: 98304 }),
     StopTunnel: async () => {},
@@ -384,6 +471,7 @@ async function verifyFrontendUI() {
   let socket;
   const outstanding = new Map();
   const exceptions = [];
+  const consoleErrors = [];
   let nextId = 0;
 
   function call(method, params = {}) {
@@ -453,6 +541,10 @@ async function verifyFrontendUI() {
       const msg = JSON.parse(ev.data);
       if (msg.method === 'Runtime.exceptionThrown') {
         exceptions.push(msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text);
+      }
+      if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
+        const text = (msg.params.args || []).map((a) => a.value ?? a.description ?? '').join(' ');
+        consoleErrors.push(text);
       }
       const task = outstanding.get(msg.id);
       if (!task) return;
@@ -531,11 +623,53 @@ async function verifyFrontendUI() {
       'Expected real host addresses restored when hideHostIp is disabled, got ' + JSON.stringify(restoredSubs),
     );
 
-    // Verify batch host grouping (#batchGroupBtn popover: existing group + new group, restoring fixture cleanly)
+    // Verify refactored sidebar batch management (top checkbox header, zero jump, custom checkboxes, equal-width bottom bar, Esc exit, batch grouping)
+    const beforeBatchHeaderRect = await evaluate(`(() => {
+      const r = document.querySelector('.sidebar-action-row')?.getBoundingClientRect();
+      return r ? { top: r.top, height: r.height } : null;
+    })()`);
     await click('.sidebar-footer button[aria-label="批量管理"]');
+    await until(() => evaluate("!!document.querySelector('.sidebar-select-header')"), 'sidebar batch select header');
+    const batchMetrics = await evaluate(`(() => {
+      const hdr = document.querySelector('.sidebar-select-header')?.getBoundingClientRect();
+      const rowCbs = [...document.querySelectorAll('.host-row input[type="checkbox"]')].filter(
+        el => getComputedStyle(el).appearance === 'none',
+      ).length;
+      const btns = [...document.querySelectorAll('.sidebar-footer.batch-bar .batch-action-btn')].map(el => ({
+        text: el.textContent.trim(),
+        width: el.getBoundingClientRect().width,
+        disabled: el.disabled,
+      }));
+      return { hdr: hdr ? { top: hdr.top, height: hdr.height } : null, rowCbs, btns };
+    })()`);
+    assert.ok(
+      beforeBatchHeaderRect && batchMetrics.hdr && Math.abs(beforeBatchHeaderRect.height - batchMetrics.hdr.height) <= 2,
+      'Expected zero vertical jump entering batch select mode: ' + JSON.stringify({ beforeBatchHeaderRect, after: batchMetrics.hdr }),
+    );
+    assert.equal(batchMetrics.rowCbs, 3, 'Expected custom <Checkbox> on all 3 host rows, got ' + batchMetrics.rowCbs);
+    assert.equal(batchMetrics.btns.length, 2, 'Expected 2 equal-width bottom batch buttons, got ' + JSON.stringify(batchMetrics.btns));
+    assert.ok(
+      Math.abs(batchMetrics.btns[0].width - batchMetrics.btns[1].width) <= 2,
+      'Expected equal-width bottom batch buttons, got ' + JSON.stringify(batchMetrics.btns),
+    );
     assert.equal(await evaluate("document.querySelector('#batchGroupBtn')?.disabled"), true, 'Batch group button must start disabled with 0 selected');
     await click('.host-row[data-profile-id="p3"]');
     assert.equal(await evaluate("document.querySelector('#batchGroupBtn')?.disabled"), false, 'Batch group button must enable when a host is selected');
+    const batchIndeterminate = await evaluate(`(() => {
+      const master = document.querySelector('.sidebar-select-header input[type="checkbox"]');
+      const txt = document.querySelector('.sidebar-select-header')?.textContent || '';
+      return { indeterminate: Boolean(master?.indeterminate), hasCount: txt.includes('已选 1/3') };
+    })()`);
+    assert.deepEqual(batchIndeterminate, { indeterminate: true, hasCount: true }, 'Expected indeterminate master checkbox with 1/3 selected');
+    await shot('21-Sidebar-BatchSelect');
+    // Verify Escape cleanly exits batch select mode
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('.sidebar-select-header')"), 'Esc exits batch select mode');
+
+    // Verify batch host grouping (#batchGroupBtn popover: existing group + new group, restoring fixture cleanly)
+    await click('.sidebar-footer button[aria-label="批量管理"]');
+    await click('.host-row[data-profile-id="p3"]');
     await click('#batchGroupBtn');
     const groupPopRect = await evaluate(`(() => { const el = document.querySelector('#batchGroupPopover'); if (!el) return null; const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width }; })()`);
     assert.ok(groupPopRect && groupPopRect.top > 0 && groupPopRect.bottom < 820 && groupPopRect.width >= 180, 'Expected visible batch group popover inside viewport, got ' + JSON.stringify(groupPopRect));
@@ -611,7 +745,7 @@ async function verifyFrontendUI() {
     assert.deepEqual(await evaluate('window.canceledProfileIds'), ['needs-password']);
     await evaluate('window.restoreTestProfiles()');
 
-    // Spotlight Command Palette
+    // Command Palette
     await click('#paletteBtn');
     await until(() => evaluate("!!document.querySelector('#commandPalette')"), 'command palette');
     await shot('03-CommandPalette');
@@ -620,9 +754,27 @@ async function verifyFrontendUI() {
     // Connect to first host & double-click regression guard (must only create 1 tab!)
     await click('.host-row');
     await click('.host-row');
-    await until(() => evaluate("!!document.querySelector('.xterm-screen') && !document.querySelector('#sftpBtn').disabled"), 'active terminal session');
+    await until(() => evaluate("!!document.querySelector('.xterm-screen') && !document.querySelector('#sftpBtn').disabled && !document.querySelector('.pane-connect-trace')"), 'active terminal session');
     const tabCountAfterDbl = await evaluate(`document.querySelectorAll('.tab-item').length`);
     assert.equal(tabCountAfterDbl, 1, 'Expected double-clicking a host to open strictly 1 tab');
+    // Verify uniform icon-only right titlebar toolbar & removal of statusbar cols x rows readout
+    const chromeAudit = await evaluate(`(() => {
+      const ids = ['#sftpBtn', '#tunnelsBtn', '#snippetsBtn', '#aiOpen', '#paletteBtn'];
+      const buttons = ids.map(sel => {
+        const el = document.querySelector(sel);
+        const r = el?.getBoundingClientRect();
+        return { sel, text: el?.textContent?.trim() ?? null, w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0 };
+      });
+      const statusRight = document.querySelector('.statusbar-right')?.textContent || '';
+      const legacyOverlay = document.querySelectorAll('.pane-connecting-center, .pane-loading-track').length;
+      return { buttons, statusHasGridSize: /\\d+×\\d+/.test(statusRight), legacyOverlay };
+    })()`);
+    assert.ok(
+      chromeAudit.buttons.every(b => b.text === '' && Math.abs(b.w - 28) <= 1 && Math.abs(b.h - 28) <= 1),
+      'Expected uniform 28x28 icon-only titlebar buttons, got ' + JSON.stringify(chromeAudit.buttons),
+    );
+    assert.equal(chromeAudit.statusHasGridSize, false, 'Expected statusbar cols×rows readout removed');
+    assert.equal(chromeAudit.legacyOverlay, 0, 'Expected legacy connecting overlays removed');
     // Verify ultra-quiet online indicator (no tab green bar / no "在线" pill; single quiet right-edge dot in sidebar)
     const statusIndicatorCheck = await evaluate(`(() => ({
       legacyLoud: document.querySelectorAll('.tab-status-bar, .host-live-pill').length,
@@ -636,7 +788,68 @@ async function verifyFrontendUI() {
     await sleep(900); // let telemetry poll populate
     await click('#sftpBtn');
     await until(() => evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'SFTP drawer files');
+    const sftpProCheck = await evaluate(`(() => ({
+      hasResizeHandle: !!document.querySelector('#filesPane .sftp-resize-handle'),
+      hasBookmarksBtn: !!document.querySelector('#filesPane button[aria-label="目录书签"]'),
+      hasSortSelect: !!document.querySelector('#filesPane button[aria-label="排序方式"]'),
+      hasFooter: !!document.querySelector('#filesPane .sftp-footer'),
+    }))()`);
+    assert.deepEqual(sftpProCheck, { hasResizeHandle: true, hasBookmarksBtn: true, hasSortSelect: true, hasFooter: true }, 'Expected upgraded SFTP drawer chrome');
     await shot('04-Terminal-SFTP-Light');
+
+    // Exercise SFTP bookmarks popover
+    await click('#filesPane button[aria-label="目录书签"]');
+    await until(() => evaluate("!!document.querySelector('.sftp-bookmark-popover')"), 'SFTP bookmarks popover');
+    await click('#filesPane button[aria-label="目录书签"]');
+    await until(() => evaluate("!document.querySelector('.sftp-bookmark-popover')"), 'closed SFTP bookmarks popover');
+
+    // Exercise SFTP context menu -> 3x3 visual chmod matrix
+    await evaluate(`(() => {
+      const row = [...document.querySelectorAll('.sftp-row')].find(r => r.querySelector('.sftp-row-name')?.title === 'docker-compose.yml');
+      row?.querySelector('button[aria-label="更多操作"]')?.click();
+    })()`);
+    await until(() => evaluate("!!document.querySelector('.sftp-ctx-menu')"), 'SFTP row context menu');
+    await evaluate(`[...document.querySelectorAll('.sftp-ctx-menu [role="menuitem"]')].find(el => el.textContent.includes('修改权限'))?.click()`);
+    await until(() => evaluate("document.querySelectorAll('.sftp-chmod-matrix input[type=\"checkbox\"]').length === 9"), 'SFTP 3x3 chmod matrix');
+    assert.equal(await evaluate("document.querySelector('.sftp-chmod-octal')?.value"), '644');
+    await click('.sftp-chmod-matrix input[aria-label="所有者 (Owner) 执行"]');
+    assert.equal(await evaluate("document.querySelector('.sftp-chmod-octal')?.value"), '744', 'Toggling owner execute must update octal to 744');
+    await shot('22-SFTP-Chmod-Matrix');
+    await click('.sftp-modal-sheet button[aria-label="关闭"]');
+    await until(() => evaluate("!document.querySelector('.sftp-modal-sheet')"), 'closed chmod modal');
+
+    // Exercise SFTP context menu -> Properties detail modal
+    await evaluate(`(() => {
+      const row = [...document.querySelectorAll('.sftp-row')].find(r => r.querySelector('.sftp-row-name')?.title === 'current');
+      row?.querySelector('button[aria-label="更多操作"]')?.click();
+    })()`);
+    await until(() => evaluate("!!document.querySelector('.sftp-ctx-menu')"), 'SFTP symlink context menu');
+    await evaluate(`[...document.querySelectorAll('.sftp-ctx-menu [role="menuitem"]')].find(el => el.textContent.includes('属性详情'))?.click()`);
+    await until(() => evaluate("(document.querySelector('.sftp-prop-grid')?.textContent || '').includes('/home/deploy/releases/20261127')"), 'SFTP properties detail');
+    await shot('23-SFTP-Properties');
+    await click('.sftp-modal-sheet button[aria-label="关闭"]');
+    await until(() => evaluate("!document.querySelector('.sftp-modal-sheet')"), 'closed properties modal');
+
+    // Exercise CodeMirror 6 Remote Editor (Light theme + YAML syntax highlighting)
+    await evaluate(`(() => {
+      const row = [...document.querySelectorAll('.sftp-row')].find(r => r.querySelector('.sftp-row-name')?.title === 'docker-compose.yml');
+      row?.querySelector('button[title="在线编辑"]')?.click();
+    })()`);
+    await until(() => evaluate("!!document.querySelector('.remote-editor-cm-host .cm-editor .cm-content') && document.querySelectorAll('.cm-lineNumbers .cm-gutterElement').length >= 10"), 'CodeMirror 6 editor mounted');
+    const cmLightCheck = await evaluate(`(() => ({
+      filename: document.querySelector('.remote-editor-filename')?.textContent?.trim(),
+      lang: document.querySelector('.remote-editor-lang-select')?.textContent?.trim(),
+      footer: document.querySelector('.remote-editor-footer')?.textContent || '',
+      lineCount: document.querySelectorAll('.cm-line').length,
+      styledSpans: document.querySelectorAll('.cm-content span[class]').length,
+    }))()`);
+    assert.equal(cmLightCheck.filename, 'docker-compose.yml');
+    assert.equal(cmLightCheck.lang, 'YAML', 'Expected YAML auto-detection, got ' + JSON.stringify(cmLightCheck));
+    assert.ok(cmLightCheck.footer.includes('行 1, 列 1') && cmLightCheck.footer.includes('LF') && cmLightCheck.footer.includes('UTF-8'), 'Expected CodeMirror 6 footer metadata, got ' + cmLightCheck.footer);
+    assert.ok(cmLightCheck.styledSpans > 5, 'Expected CodeMirror 6 syntax highlighting spans, got ' + cmLightCheck.styledSpans);
+    await shot('24-Remote-Editor-Light');
+    await click('.modal-sheet.editor button[aria-label="关闭"]');
+    await until(() => evaluate("!document.querySelector('.modal-sheet.editor')"), 'closed CodeMirror 6 light editor');
 
     // A failed read must never turn the save shortcut into an empty file write.
     await evaluate(`(() => {
@@ -648,12 +861,13 @@ async function verifyFrontendUI() {
       };
       window.editorWrites = 0;
       api.WriteRemoteText = async () => { window.editorWrites++; };
-      document.querySelector('.sftp-row button[title="在线编辑"]').click();
+      const row = [...document.querySelectorAll('.sftp-row')].find(r => r.querySelector('.sftp-row-name')?.title === 'nginx.conf');
+      row?.querySelector('button[title="在线编辑"]')?.click();
     })()`);
     await until(() => evaluate("!!document.querySelector('.modal-sheet.editor .error-text')"), 'editor read error');
     await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }))`);
     assert.equal(await evaluate('window.editorWrites'), 0, 'Saving after a failed read must preserve the remote file');
-    await click('.modal-sheet.editor .icon-btn');
+    await click('.modal-sheet.editor button[aria-label="关闭"]');
 
     // Complete an old refresh after the user has already navigated to the parent.
     await evaluate(`(() => {
@@ -664,10 +878,10 @@ async function verifyFrontendUI() {
         return new Promise(resolve => { window.finishOldListing = () => resolve([]); });
       };
     })()`);
-    await click('.sftp-toolbar button[title="刷新"]');
+    await click('#filesPane button[aria-label="刷新"]');
     await until(() => evaluate("typeof window.finishOldListing === 'function'"), 'deferred SFTP refresh');
-    await click('.sftp-toolbar button[title="上一级"]');
-    const pathSelector = '.sftp-toolbar input[aria-label="远程路径"]';
+    await click('#filesPane button[aria-label="上一级"]');
+    const pathSelector = '#filesPane input[aria-label="远程路径"]';
     await until(() => evaluate(`document.querySelector('${pathSelector}').value === '/home/deploy'`), 'parent SFTP directory');
     await evaluate(`(async () => {
       window.finishOldListing();
@@ -675,8 +889,8 @@ async function verifyFrontendUI() {
     })()`);
     assert.equal(await evaluate(`document.querySelector('${pathSelector}').value`), '/home/deploy', 'Late results must preserve the current directory');
     assert.ok(await evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'Late results must preserve the current file list');
-    await click('.sftp-toolbar button[title="主目录"]');
-    await verifyLargeDirectory(evaluate, until);
+    await click('#filesPane button[aria-label="主目录"]');
+    await verifyLargeDirectory(evaluate, until, { click });
 
     // Tunnels Drawer
     await click('#tunnelsBtn');
@@ -770,6 +984,19 @@ async function verifyFrontendUI() {
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(7)').click()`);
     await until(() => evaluate(`document.querySelector('#settingsDialog').textContent.includes(${JSON.stringify('v' + expectedVersion)})`), 'about version');
     await sleep(200);
+    const aboutAlign = await evaluate(`(() => {
+      const btns = [...document.querySelectorAll('#settingsDialog .btn-pref-action')].map(el => ({
+        text: el.textContent.trim(),
+        width: el.getBoundingClientRect().width,
+        right: el.getBoundingClientRect().right,
+      }));
+      return btns;
+    })()`);
+    assert.ok(
+      aboutAlign.length >= 3 &&
+        aboutAlign.every(b => Math.abs(b.width - aboutAlign[0].width) <= 1.5 && Math.abs(b.right - aboutAlign[0].right) <= 1.5),
+      'Expected About tab vertical action buttons aligned in width and right edge, got ' + JSON.stringify(aboutAlign),
+    );
     await shot('14-Settings-About');
 
     // Open Agent & Security tab -> screenshot MCP + Unified Security/Redaction view
@@ -824,7 +1051,64 @@ async function verifyFrontendUI() {
     await shot('08-Settings-Dark');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await sleep(250);
+    // Verify restored #1C2028 dark terminal background blending cleanly with chrome
+    const darkTermBg = await evaluate(`getComputedStyle(document.querySelector('.pane-xterm-wrap')).backgroundColor`);
+    assert.equal(darkTermBg, 'rgb(28, 32, 40)', 'Expected Termius Dark canvas background restored to #1C2028, got ' + darkTermBg);
     await shot('09-Terminal-Dark');
+
+    // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #1C2028 canvas)
+    await click('#sftpBtn');
+    await until(() => evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'SFTP drawer in dark theme');
+    await evaluate(`(() => {
+      const row = [...document.querySelectorAll('.sftp-row')].find(r => r.querySelector('.sftp-row-name')?.title === 'nginx.conf');
+      row?.querySelector('button[title="在线编辑"]')?.click();
+    })()`);
+    await until(() => evaluate("!!document.querySelector('.remote-editor-cm-host .cm-editor .cm-content') && document.querySelectorAll('.cm-lineNumbers .cm-gutterElement').length >= 10"), 'CodeMirror 6 dark editor');
+    const cmDarkCheck = await evaluate(`(() => ({
+      lang: document.querySelector('.remote-editor-lang-select')?.textContent?.trim(),
+      bg: getComputedStyle(document.querySelector('.remote-editor-cm-host .cm-editor')).backgroundColor,
+    }))()`);
+    assert.equal(cmDarkCheck.lang, 'Nginx', 'Expected Nginx auto-detection, got ' + JSON.stringify(cmDarkCheck));
+    assert.equal(cmDarkCheck.bg, 'rgb(28, 32, 40)', 'Expected Dark CodeMirror 6 editor canvas #1C2028, got ' + cmDarkCheck.bg);
+    await shot('25-Remote-Editor-Dark');
+    await click('.modal-sheet.editor button[aria-label="关闭"]');
+    await until(() => evaluate("!document.querySelector('.modal-sheet.editor')"), 'closed dark editor');
+    await click('#sftpBtn');
+    await until(() => evaluate("!document.querySelector('#filesPane')"), 'closed dark SFTP drawer');
+
+    // Verify inline SSH connection trace & error diagnosis UI (zero top-left corner cursor on initial failure)
+    await evaluate(`(() => {
+      const api = window.go.main.App;
+      const origProfiles = api.Profiles;
+      window.restoreFailProfile = () => { api.Profiles = origProfiles; };
+      api.Profiles = async () => [
+        ...(await origProfiles()),
+        { id: 'fail-test', name: 'Staging DB', host: '10.24.0.99', port: 22, user: 'ops', auth: 'agent', keepAliveSec: 30 }
+      ];
+      window.runtime.EventsEmit('agent:connect_profile', 'fail-test');
+    })()`);
+    await until(() => evaluate("!!document.querySelector('.pane-connect-trace .pane-connect-error-title')"), 'connect error trace overlay');
+    const traceAudit = await evaluate(`(() => {
+      const host = document.querySelector('.pane-box.focused .pane-xterm-host');
+      const title = document.querySelector('.pane-connect-error-title')?.textContent?.trim() || '';
+      const raw = document.querySelector('.pane-connect-raw')?.textContent?.trim() || '';
+      const btns = [...document.querySelectorAll('.pane-connect-actions button')].map(b => b.textContent.trim());
+      const errSteps = document.querySelectorAll('.pane-connect-step.is-error').length;
+      return {
+        xtermHidden: Boolean(host?.classList.contains('is-hidden')),
+        title,
+        hasRaw: raw.includes('10.24.0.99:22'),
+        btns,
+        errSteps,
+      };
+    })()`);
+    assert.equal(traceAudit.xtermHidden, true, 'Expected xterm host hidden before first connection (no green corner cursor)');
+    assert.ok(traceAudit.title.includes('连接被拒绝'), 'Expected clear Chinese error diagnosis, got ' + JSON.stringify(traceAudit));
+    assert.equal(traceAudit.hasRaw, true, 'Expected raw error detail shown');
+    assert.ok(traceAudit.btns.includes('重新连接') && traceAudit.btns.includes('编辑配置'), 'Expected Reconnect + Edit Profile buttons, got ' + JSON.stringify(traceAudit.btns));
+    assert.ok(traceAudit.errSteps >= 1, 'Expected at least 1 failed connection step');
+    await shot('26-Connect-Error-Trace');
+    await evaluate('window.restoreFailProfile()');
 
     const { verifySplitWorkspace } = await import('./split-workspace.mjs');
     await verifySplitWorkspace({ call, evaluate, until, click });
@@ -832,7 +1116,8 @@ async function verifyFrontendUI() {
     await verifyEmptyHostExport({ call, evaluate, until, click, expectedRect: exportRect });
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 20 Retina screenshots.');
+    assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 26 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

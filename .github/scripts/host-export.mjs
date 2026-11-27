@@ -99,7 +99,8 @@ export async function verifyHostExport({ call, evaluate, until, click, shot }) {
     false,
     'Batch manage must not render duplicate export button',
   );
-  await click('.sidebar-footer.batch-bar > div > button:last-child');
+  await click('.sidebar-select-header .sidebar-select-done');
+  await until(() => evaluate("!document.querySelector('.sidebar-select-header')"), 'exit sidebar batch select mode');
   return baseRect;
 }
 

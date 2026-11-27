@@ -20,7 +20,7 @@ export async function verifySplitWorkspace({ call, evaluate, until, click }) {
     const last = calls.at(-1);
     if (calls.length !== total || last?.profile !== name) return false;
     const pane = document.querySelector('[data-session-id="' + last.id + '"]');
-    return !!pane?.querySelector('.xterm') && !pane.querySelector('.pane-connecting-bar, .pane-closed-bar');
+    return !!pane?.querySelector('.xterm') && !pane.querySelector('.pane-connect-trace, .pane-connecting-bar, .pane-closed-bar');
   }, profile, count);
 
   await call('Page.reload');

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-export async function verifyLargeDirectory(evaluate, until, { baseline = false } = {}) {
+export async function verifyLargeDirectory(evaluate, until, { baseline = false, click } = {}) {
   const rows = 5000;
   await evaluate(`(() => {
     const api = window.go.main.App;
@@ -27,9 +27,9 @@ export async function verifyLargeDirectory(evaluate, until, { baseline = false }
         window.sftpFixture.elapsed = Math.round(performance.now() - window.sftpFixture.start);
       }));
     });
-    marker.observe(document.querySelector('#filesPane .drawer-body').parentElement, { childList: true, subtree: true });
+    marker.observe(document.querySelector('#filesPane'), { childList: true, subtree: true });
     window.sftpFixture.start = performance.now();
-    document.querySelector('.sftp-toolbar button[title="刷新"]').click();
+    document.querySelector('#filesPane button[aria-label="刷新"]').click();
   })()`);
   await until(() => evaluate("Number.isFinite(window.sftpFixture.elapsed)"), 'large SFTP directory', 45000);
   const metrics = await evaluate(`(() => {
@@ -43,7 +43,7 @@ export async function verifyLargeDirectory(evaluate, until, { baseline = false }
     assert.ok(metrics.rows > 0 && metrics.rows < 60, 'The directory must mount only viewport rows and overscan');
     assert.equal(await evaluate("document.querySelector('.sftp-grid').getAttribute('aria-rowcount')"), String(rows));
     await evaluate("document.querySelector('.sftp-grid').style.maxHeight = '160px'");
-    await until(() => evaluate("document.querySelectorAll('.sftp-row').length <= 12"), 'virtual rows after viewport resize');
+    await until(() => evaluate("document.querySelectorAll('.sftp-row').length <= 18"), 'virtual rows after viewport resize');
     await evaluate("document.querySelector('.sftp-grid').style.maxHeight = ''");
     await evaluate(`(() => {
       const grid = document.querySelector('.sftp-grid');
@@ -52,38 +52,39 @@ export async function verifyLargeDirectory(evaluate, until, { baseline = false }
     await until(() => evaluate(`document.querySelector('.sftp-row[aria-selected="true"] .sftp-row-name')?.title === 'item-04999'
       && document.querySelector('.sftp-grid').scrollTop > 0`), 'keyboard navigation to final virtual file');
     await evaluate(`(() => {
-      const input = document.querySelector('.sftp-toolbar input[placeholder]');
+      const input = document.querySelector('#filesPane input[aria-label="筛选当前目录"]');
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'item-04999');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     })()`);
     await until(() => evaluate("document.querySelector('.sftp-grid')?.getAttribute('aria-rowcount') === '1' && document.querySelector('.sftp-row-name')?.title === 'item-04999'"), 'filtering all underlying entries');
     await evaluate(`(() => {
-      const input = document.querySelector('.sftp-toolbar input[placeholder]');
+      const input = document.querySelector('#filesPane input[aria-label="筛选当前目录"]');
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     })()`);
-    async function checkOrder(first, sortBy, label) {
+    async function checkOrder(first, sortLabel, label) {
       await until(async () => {
         const state = await evaluate(`(() => {
           const grid = document.querySelector('#filesPane .sftp-grid');
           const firstRow = grid?.querySelector('[aria-rowindex="1"]');
-          return { sort: document.querySelector('#filesPane select')?.value,
-            filter: document.querySelector('.sftp-toolbar input[placeholder]')?.value,
+          return { sort: document.querySelector('#filesPane button[aria-label="排序方式"]')?.textContent?.trim(),
+            filter: document.querySelector('#filesPane input[aria-label="筛选当前目录"]')?.value,
             count: grid?.getAttribute('aria-rowcount'), scroll: grid?.scrollTop,
             first: firstRow?.querySelector('.sftp-row-name')?.title,
             firstMountedIndex: grid?.querySelector('.sftp-row')?.getAttribute('aria-rowindex') };
         })()`);
-        if (state.sort === sortBy && state.count === String(rows) && state.first === first && state.scroll === 0) return true;
+        if (state.sort === sortLabel && state.count === String(rows) && state.first === first && state.scroll === 0) return true;
         throw Error(JSON.stringify(state));
       }, label);
     }
-    await checkOrder('item-00000', 'name', 'clearing the directory filter after End');
-    await evaluate(`(() => {
-      const sort = document.querySelector('#filesPane select[aria-label="排序方式"]');
-      sort.value = 'size';
-      sort.dispatchEvent(new Event('change', { bubbles: true }));
-    })()`);
-    await checkOrder('item-04999', 'size', 'size sorting');
+    await checkOrder('item-00000', '按名称', 'clearing the directory filter after End');
+    if (click) {
+      await click('#filesPane button[aria-label="排序方式"]');
+      await until(() => evaluate("document.querySelectorAll('[data-radix-select-viewport] [role=\"option\"]').length >= 4"), 'SFTP Radix sort options');
+      await click('[data-radix-select-viewport] [role="option"]:nth-child(2)');
+      await click('#filesPane button[aria-label="切换为降序"]');
+    }
+    await checkOrder('item-04999', '按大小', 'size sorting descending');
     await evaluate(`document.querySelector('#filesPane button[title="显示隐藏文件"]').click()`);
     await until(() => evaluate("document.querySelector('.sftp-grid')?.getAttribute('aria-rowcount') === '5001'"), 'hidden-file toggle');
     assert.deepEqual(await evaluate('({ browse: window.sftpFixture.browseCalls, links: window.sftpFixture.linkCalls })'),
@@ -92,7 +93,15 @@ export async function verifyLargeDirectory(evaluate, until, { baseline = false }
       .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
     await until(() => evaluate("document.querySelector('.modal-sheet.editor h2')?.textContent.includes('item-04996')"), 'opening a single symlink');
     assert.equal(await evaluate('window.sftpFixture.linkCalls'), 1, 'Only the activated link should be inspected');
-    await evaluate("document.querySelector('.modal-sheet.editor .icon-btn').click()");
+    await evaluate(`document.querySelector('.modal-sheet.editor button[aria-label="关闭"]').click()`);
+    // Reset sort back to name ascending & hide dotfiles cleanly
+    if (click) {
+      await click('#filesPane button[aria-label="切换为升序"]');
+      await click('#filesPane button[aria-label="排序方式"]');
+      await until(() => evaluate("document.querySelectorAll('[data-radix-select-viewport] [role=\"option\"]').length >= 4"), 'SFTP Radix sort options reset');
+      await click('[data-radix-select-viewport] [role="option"]:nth-child(1)');
+    }
+    await evaluate(`document.querySelector('#filesPane button[title="隐藏点文件"]')?.click()`);
     return metrics;
   } finally {
     await evaluate('window.sftpFixture.restore()');

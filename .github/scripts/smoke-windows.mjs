@@ -25,9 +25,12 @@ async function verifyNativeBinary() {
   assert.ok(existsSync(exePath), 'Expected compiled Shell.exe at ' + exePath);
 
   const testProfile = await mkdtemp(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'shell-native-'));
-  const client = spawn(exePath, [], {
-    env: { ...process.env, LOCALAPPDATA: testProfile, APPDATA: testProfile, SHELL_EXIT_ON_CLOSE: '1' },
-  });
+  const store = path.join(testProfile, 'Shell');
+  await mkdir(store);
+  await writeFile(path.join(store, 'agent.json'), JSON.stringify({ enabled: true, port: await freePort() }));
+  const env = { ...process.env, LOCALAPPDATA: testProfile, APPDATA: testProfile, SHELL_EXIT_ON_CLOSE: '1' };
+  const runtimeFile = path.join(store, 'bridge-runtime.json');
+  const client = spawn(exePath, [], { env });
   const exited = once(client, 'exit');
 
   try {
@@ -44,7 +47,7 @@ async function verifyNativeBinary() {
       `;
       const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', ps]);
       const state = JSON.parse(stdout.trim());
-      if (state.alive && state.hwnd !== 0 && state.renderers >= 1) {
+      if (state.alive && state.hwnd !== 0 && state.renderers >= 1 && existsSync(runtimeFile)) {
         wvReady = true;
         assert.equal(state.title, 'Shell', 'Expected native Win32 window title "Shell"');
         break;
@@ -52,7 +55,23 @@ async function verifyNativeBinary() {
       await sleep(300);
     }
     assert.ok(wvReady, 'Timed out waiting for Shell.exe window and WebView2 renderer process');
-    await sleep(1200);
+    const advertised = JSON.parse(await readFile(runtimeFile, 'utf8'));
+    assert.equal(advertised.pid, client.pid);
+    assert.ok(advertised.pipeID, 'Expected the desktop to publish its local named pipe');
+    const requests = [
+      { id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'smoke', version: '1' } } },
+      { method: 'notifications/initialized' },
+      { id: 2, method: 'tools/list' },
+    ];
+    const discovery = execFileAsync(exePath, ['--mcp'], { env, timeout: 8000, windowsHide: true });
+    for (const req of requests) discovery.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...req }) + '\n');
+    discovery.child.stdin.end();
+    const { stdout } = await discovery;
+    const replies = stdout.trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.deepEqual(replies.map(reply => reply.id), [1, 2]);
+    assert.equal(replies[0].result.protocolVersion, '2025-03-26');
+    assert.ok(replies[1].result.tools.some(tool => tool.name === 'shell_connect'));
+    console.log('[Stage 1] Packaged MCP client initialized and discovered the desktop tools.');
 
     // Send WM_CLOSE cleanly via MainWindow and verify exit code 0
     await execFileAsync('powershell.exe', [

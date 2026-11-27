@@ -37,7 +37,7 @@ func TestStdioDiscoveryReturnsCorrelatedErrors(t *testing.T) {
 			}))
 			defer srv.Close()
 			var out bytes.Buffer
-			err := ProxyStdioToHTTP(strings.NewReader(initializeRequest+"\n"), &out, func() (string, string, error) { return srv.URL, "unchanged", nil })
+			err := ProxyStdioToHTTP(strings.NewReader(initializeRequest+"\n"), &out, func() (Endpoint, error) { return Endpoint{URL: srv.URL, Token: "unchanged"}, nil })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -65,12 +65,12 @@ func TestDiscoveryRotationAndWireFormat(t *testing.T) {
 	defer srv.Close()
 	resolveCount := 0
 	var out bytes.Buffer
-	err := ProxyStdioToHTTP(strings.NewReader(initializeRequest+"\n"), &out, func() (string, string, error) {
+	err := ProxyStdioToHTTP(strings.NewReader(initializeRequest+"\n"), &out, func() (Endpoint, error) {
 		resolveCount++
 		if resolveCount == 1 {
-			return srv.URL, "old", nil
+			return Endpoint{URL: srv.URL, Token: "old"}, nil
 		}
-		return srv.URL, "new", nil
+		return Endpoint{URL: srv.URL, Token: "new"}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestDiscoveryDeadlineDoesNotReplayTimedOutRequest(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 	var out bytes.Buffer
-	err := proxyStdio(strings.NewReader(initializeRequest+"\n"), &out, func() (string, string, error) { return srv.URL, "test", nil }, srv.Client(), 200*time.Millisecond)
+	err := proxyStdio(strings.NewReader(initializeRequest+"\n"), &out, func() (Endpoint, error) { return Endpoint{URL: srv.URL, Token: "test"}, nil }, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestStdioDoesNotReplayAnAmbiguousToolRequest(t *testing.T) {
 	defer srv.Close()
 	const request = `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fixture"}}`
 	var out bytes.Buffer
-	err := ProxyStdioToHTTP(strings.NewReader(request+"\n"), &out, func() (string, string, error) { return srv.URL, "fixture", nil })
+	err := ProxyStdioToHTTP(strings.NewReader(request+"\n"), &out, func() (Endpoint, error) { return Endpoint{URL: srv.URL, Token: "fixture"}, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func BenchmarkStdioDiscovery(b *testing.B) {
 	bridge.SetToken("fixture")
 	srv := httptest.NewServer(http.HandlerFunc(bridge.handleMCP))
 	defer srv.Close()
-	resolve := func() (string, string, error) { return srv.URL, "fixture", nil }
+	resolve := func() (Endpoint, error) { return Endpoint{URL: srv.URL, Token: "fixture"}, nil }
 	b.ReportAllocs()
 	for b.Loop() {
 		if err := ProxyStdioToHTTP(strings.NewReader(discoveryMessages), io.Discard, resolve); err != nil {
@@ -177,7 +177,7 @@ func TestRealBridgeDiscoveryPreservesLargeID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(bridge.handleMCP))
 	defer srv.Close()
 	var out bytes.Buffer
-	err := ProxyStdioToHTTP(strings.NewReader(discoveryMessages), &out, func() (string, string, error) { return srv.URL, "fixture", nil })
+	err := ProxyStdioToHTTP(strings.NewReader(discoveryMessages), &out, func() (Endpoint, error) { return Endpoint{URL: srv.URL, Token: "fixture"}, nil })
 	if err != nil {
 		t.Fatal(err)
 	}

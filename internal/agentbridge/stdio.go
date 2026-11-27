@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"time"
 )
@@ -14,24 +13,45 @@ import (
 const discoveryTimeout = 5 * time.Second
 const maxRPCResponse = 4 << 20
 
-// ProxyStdioToHTTP forwards newline-delimited JSON-RPC to Shell's loopback HTTP listener.
-func ProxyStdioToHTTP(in io.Reader, out io.Writer, resolveEndpoint func() (string, string, error)) error {
-	client := &http.Client{
+// Endpoint is a snapshot of the authenticated local desktop bridge.
+type Endpoint struct {
+	URL, Token, PipeID string
+	PID                int
+}
+
+func (e Endpoint) client() *http.Client {
+	return &http.Client{
 		Transport: &http.Transport{
-			DialContext:     (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+			DialContext:     e.dial,
 			IdleConnTimeout: 90 * time.Second,
 		},
 		// The credentials belong to one local desktop endpoint.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	defer client.CloseIdleConnections()
-	return proxyStdio(in, out, resolveEndpoint, client, discoveryTimeout)
 }
 
-func proxyStdio(in io.Reader, out io.Writer, resolve func() (string, string, error), client *http.Client, discoveryLimit time.Duration) error {
+// ProxyStdioToHTTP forwards newline-delimited JSON-RPC over the desktop's local HTTP transport.
+func ProxyStdioToHTTP(in io.Reader, out io.Writer, resolve func() (Endpoint, error)) error {
+	return proxyStdio(in, out, resolve, discoveryTimeout)
+}
+
+func proxyStdio(in io.Reader, out io.Writer, resolve func() (Endpoint, error), discoveryLimit time.Duration) error {
 	scanner := bufioNewScanner(in)
 	enc := json.NewEncoder(out)
-	var endpoint, token string
+	var endpoint Endpoint
+	var client *http.Client
+	setEndpoint := func(e Endpoint) {
+		if client != nil {
+			client.CloseIdleConnections()
+		}
+		endpoint = e
+		client = e.client()
+	}
+	defer func() {
+		if client != nil {
+			client.CloseIdleConnections()
+		}
+	}()
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -50,8 +70,12 @@ func proxyStdio(in io.Reader, out io.Writer, resolve func() (string, string, err
 		}
 		var response json.RawMessage
 		var err error
-		if endpoint == "" {
-			endpoint, token, err = resolve()
+		if endpoint.URL == "" {
+			var next Endpoint
+			next, err = resolve()
+			if err == nil {
+				setEndpoint(next)
+			}
 		}
 		if err == nil {
 			isDiscovery := req.Method == "initialize" || req.Method == "notifications/initialized" || req.Method == "ping" || req.Method == "tools/list"
@@ -62,23 +86,22 @@ func proxyStdio(in io.Reader, out io.Writer, resolve func() (string, string, err
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			var status int
-			response, status, err = postRPC(ctx, client, endpoint, token, line, req.ID)
+			response, status, err = postRPC(ctx, client, endpoint.URL, endpoint.Token, line, req.ID)
 			// A rejected token has not reached the dispatcher. For ambiguous transport
 			// failures only discovery is replayable: a tool could have already run.
 			if err != nil && ctx.Err() == nil && (status == http.StatusUnauthorized || (status == 0 && isDiscovery)) {
-				oldEndpoint, oldToken := endpoint, token
-				var resolveErr error
-				endpoint, token, resolveErr = resolve()
+				next, resolveErr := resolve()
 				if resolveErr != nil {
 					err = resolveErr
-				} else if endpoint != oldEndpoint || token != oldToken {
-					response, _, err = postRPC(ctx, client, endpoint, token, line, req.ID)
+				} else if next != endpoint {
+					setEndpoint(next)
+					response, _, err = postRPC(ctx, client, endpoint.URL, endpoint.Token, line, req.ID)
 				}
 			}
 			cancel()
 		}
 		if err != nil {
-			endpoint, token = "", ""
+			endpoint = Endpoint{}
 		}
 		if req.ID == nil {
 			continue

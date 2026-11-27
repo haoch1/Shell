@@ -78,7 +78,7 @@ jobs:
         run: |
           go test -count=1 -timeout=3m -tags desktop,production,wv2runtime.download ./...
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          go test -run '^$' -bench '^BenchmarkStdioDiscovery$' -benchmem -benchtime=1s ./internal/agentbridge
+          go test -run '^$' -bench '^BenchmarkStdioDiscovery' -benchmem -benchtime=1s ./internal/agentbridge
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Determine release version

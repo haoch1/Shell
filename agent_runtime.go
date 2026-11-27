@@ -73,9 +73,9 @@ func (a *App) initAgentBridge() {
 	if err != nil {
 		return
 	}
-	port, err := a.bridge.Start(cfg.Port, token)
+	port, pipeID, err := a.bridge.Start(cfg.Port, token)
 	if err == nil {
-		_ = local.WriteBridgeRuntime(port)
+		_ = local.WriteBridgeRuntime(port, pipeID)
 	}
 }
 
@@ -117,11 +117,11 @@ func (a *App) SaveAgentConfig(cfg local.AgentConfig) (AgentStatusView, error) {
 		return AgentStatusView{}, err
 	}
 	if saved.Enabled {
-		port, err := a.bridge.Start(saved.Port, token)
+		port, pipeID, err := a.bridge.Start(saved.Port, token)
 		if err != nil {
 			return AgentStatusView{}, err
 		}
-		_ = local.WriteBridgeRuntime(port)
+		_ = local.WriteBridgeRuntime(port, pipeID)
 	} else {
 		a.bridge.Stop()
 		local.ClearBridgeRuntime()

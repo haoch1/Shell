@@ -31,7 +31,7 @@ func TestMCPStreamableHTTPAuthOriginAndStdioProxy(t *testing.T) {
 
 	srv := New(stubHandler{})
 	const tok = "sh_unit_test_secret_token_0123456789"
-	port, err := srv.Start(freePort, tok)
+	port, _, err := srv.Start(freePort, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +66,8 @@ func TestMCPStreamableHTTPAuthOriginAndStdioProxy(t *testing.T) {
 	}, "\n") + "\n"
 
 	var out bytes.Buffer
-	err = ProxyStdioToHTTP(strings.NewReader(input), &out, func() (string, string, error) {
-		return base + "/mcp", tok, nil
+	err = ProxyStdioToHTTP(strings.NewReader(input), &out, func() (Endpoint, error) {
+		return Endpoint{URL: base + "/mcp", Token: tok}, nil
 	})
 	if err != nil {
 		t.Fatal(err)

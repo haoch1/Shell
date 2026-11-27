@@ -17,7 +17,7 @@ func TestBridgeDiscoveryIsReadOnly(t *testing.T) {
 	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("discovery created a settings directory: %v", err)
 	}
-	if err := WriteBridgeRuntime(17822); err != nil {
+	if err := WriteBridgeRuntime(17822, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := ReadBridgeCredentials(); !errors.Is(err, os.ErrNotExist) {
@@ -42,14 +42,14 @@ func TestBridgeDiscoveryIsReadOnly(t *testing.T) {
 func TestBridgeDiscoveryDuringSettingsWrite(t *testing.T) {
 	isolated(t)
 	const port = 17822
-	if err := WriteBridgeRuntime(port); err != nil {
+	if err := WriteBridgeRuntime(port, ""); err != nil {
 		t.Fatal(err)
 	}
 	check := func(wantToken string) {
 		t.Helper()
-		gotPort, gotToken, err := ReadBridgeCredentials()
-		if err != nil || gotPort != port || gotToken != wantToken {
-			t.Fatalf("wrong bridge or token: port=%d err=%v", gotPort, err)
+		info, gotToken, err := ReadBridgeCredentials()
+		if err != nil || info.Port != port || gotToken != wantToken {
+			t.Fatalf("wrong bridge or token: port=%d err=%v", info.Port, err)
 		}
 	}
 	old, err := EnsureAgentToken()
@@ -90,7 +90,7 @@ func TestBridgeDiscoveryDuringSettingsWrite(t *testing.T) {
 	read := make(chan result, 1)
 	go func() {
 		p, token, err := ReadBridgeCredentials()
-		read <- result{p, token, err}
+		read <- result{p.Port, token, err}
 	}()
 	select {
 	case r := <-read:

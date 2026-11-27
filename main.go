@@ -29,12 +29,15 @@ func hasFlag(flag string) bool {
 }
 
 func runStdioMCPProxy() {
-	err := agentbridge.ProxyStdioToHTTP(os.Stdin, os.Stdout, func() (string, string, error) {
-		port, token, err := local.ReadBridgeCredentials()
+	err := agentbridge.ProxyStdioToHTTP(os.Stdin, os.Stdout, func() (agentbridge.Endpoint, error) {
+		info, token, err := local.ReadBridgeCredentials()
 		if err != nil {
-			return "", "", err
+			return agentbridge.Endpoint{}, err
 		}
-		return fmt.Sprintf("http://127.0.0.1:%d/mcp", port), token, nil
+		return agentbridge.Endpoint{
+			URL:   fmt.Sprintf("http://127.0.0.1:%d/mcp", info.Port),
+			Token: token, PipeID: info.PipeID, PID: info.PID,
+		}, nil
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -45,6 +45,7 @@ type Server struct {
 	mu        sync.Mutex
 	srv       *http.Server
 	port      int
+	pipeID    string
 	token     string
 	handler   Handler
 }
@@ -53,7 +54,7 @@ func New(handler Handler) *Server {
 	return &Server{handler: handler}
 }
 
-func (s *Server) Start(port int, token string) (int, error) {
+func (s *Server) Start(port int, token string) (int, string, error) {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
 	if port < 1024 || port > 65535 {
@@ -62,14 +63,15 @@ func (s *Server) Start(port int, token string) (int, error) {
 	s.mu.Lock()
 	if s.srv != nil && s.port == port {
 		s.token = token
+		pipeID := s.pipeID
 		s.mu.Unlock()
-		return port, nil
+		return port, pipeID, nil
 	}
 	s.mu.Unlock()
 	s.stop()
 	ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		return 0, fmt.Errorf("无法在 127.0.0.1:%d 启动本地 MCP 服务：%w", port, err)
+		return 0, "", fmt.Errorf("无法在 127.0.0.1:%d 启动本地 MCP 服务：%w", port, err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", s.handleMCP)
@@ -81,13 +83,15 @@ func (s *Server) Start(port int, token string) (int, error) {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	pipe, pipeID, _ := listenDesktopPipe() // TCP remains available if local IPC is unavailable.
 	s.mu.Lock()
-	s.srv, s.port, s.token = srv, port, token
+	s.srv, s.port, s.pipeID, s.token = srv, port, pipeID, token
 	s.mu.Unlock()
-	go func(srv *http.Server, l net.Listener) {
-		_ = srv.Serve(l)
-	}(srv, ln)
-	return port, nil
+	go srv.Serve(ln)
+	if pipe != nil {
+		go srv.Serve(pipe)
+	}
+	return port, pipeID, nil
 }
 
 func (s *Server) SetToken(token string) {
@@ -111,7 +115,7 @@ func (s *Server) Stop() {
 func (s *Server) stop() {
 	s.mu.Lock()
 	srv := s.srv
-	s.srv, s.port, s.token = nil, 0, ""
+	s.srv, s.port, s.pipeID, s.token = nil, 0, "", ""
 	s.mu.Unlock()
 	if srv == nil {
 		return

@@ -127,13 +127,14 @@ func RotateAgentToken() (string, error) {
 // BridgeRuntimeInfo is written to %LOCALAPPDATA%\Shell\bridge-runtime.json while the GUI MCP bridge is running
 // so `Shell.exe --mcp` stdio proxy can auto-discover the live local port cleanly.
 type BridgeRuntimeInfo struct {
-	Port int `json:"port"`
-	PID  int `json:"pid"`
+	Port   int    `json:"port"`
+	PID    int    `json:"pid"`
+	PipeID string `json:"pipeID,omitempty"`
 }
 
-func WriteBridgeRuntime(port int) error {
+func WriteBridgeRuntime(port int, pipeID string) error {
 	return withStore(func(dir string) error {
-		data, err := json.Marshal(BridgeRuntimeInfo{Port: port, PID: os.Getpid()})
+		data, err := json.Marshal(BridgeRuntimeInfo{Port: port, PID: os.Getpid(), PipeID: pipeID})
 		if err != nil {
 			return err
 		}
@@ -153,32 +154,32 @@ func ClearBridgeRuntime() {
 
 // ReadBridgeCredentials discovers the running GUI without taking the settings writer lock.
 // Both files are published by atomic replacement; the HTTP bridge authenticates the pair.
-func ReadBridgeCredentials() (int, string, error) {
+func ReadBridgeCredentials() (BridgeRuntimeInfo, string, error) {
 	root, err := os.UserCacheDir()
 	if err != nil {
-		return 0, "", err
+		return BridgeRuntimeInfo{}, "", err
 	}
 	dir := filepath.Join(root, "Shell")
 	data, err := readBridgeFile(filepath.Join(dir, "bridge-runtime.json"), 4096)
 	if err != nil {
-		return 0, "", fmt.Errorf("未检测到运行中的 Shell MCP 桥接服务：%w", err)
+		return BridgeRuntimeInfo{}, "", fmt.Errorf("未检测到运行中的 Shell MCP 桥接服务：%w", err)
 	}
 	var info BridgeRuntimeInfo
 	if json.Unmarshal(data, &info) != nil || info.Port < 1024 || info.Port > 65535 {
-		return 0, "", errors.New("Shell MCP 桥接端口无效")
+		return BridgeRuntimeInfo{}, "", errors.New("Shell MCP 桥接端口无效")
 	}
 	sealed, err := readBridgeFile(filepath.Join(dir, "agent-token.dpapi"), 128<<10)
 	if err != nil {
-		return 0, "", fmt.Errorf("无法读取 Shell MCP 桥接令牌：%w", err)
+		return BridgeRuntimeInfo{}, "", fmt.Errorf("无法读取 Shell MCP 桥接令牌：%w", err)
 	}
 	var blob agentTokenBlob
 	if err := decodeProtected(sealed, &blob); err != nil {
-		return 0, "", err
+		return BridgeRuntimeInfo{}, "", err
 	}
 	if len(blob.Token) < 32 {
-		return 0, "", errors.New("Shell MCP 桥接令牌无效")
+		return BridgeRuntimeInfo{}, "", errors.New("Shell MCP 桥接令牌无效")
 	}
-	return info.Port, blob.Token, nil
+	return info, blob.Token, nil
 }
 
 // FILE_SHARE_DELETE lets the GUI replace or clear a file while discovery reads its snapshot.

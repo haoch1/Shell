@@ -75,7 +75,7 @@ export function HostExportModal({ profiles, initialIds, onClose }: {
             <>
               <p className="host-export-path mono">{result.path}</p>
               {Boolean(result.warnings?.length) && (
-                <ul className="host-export-notes">{result.warnings?.map(note => <li key={note}>{note}</li>)}</ul>
+                <ul className="host-export-notes">{Array.from(new Set(result.warnings)).map(note => <li key={note}>{note}</li>)}</ul>
               )}
             </>
           ) : profiles.length === 0 ? (

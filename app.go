@@ -1209,11 +1209,14 @@ func (a *App) ExportHosts(ids []string, format string) (HostExportResult, error)
 	}
 	dest, err := runtime.SaveFileDialog(a.ctx, options)
 	if err != nil || dest == "" {
-		return HostExportResult{}, err
+		return HostExportResult{Warnings: []string{}}, err
 	}
 	count, warnings, err := local.ExportHostFile(dest, ids, format)
 	if err != nil {
 		return HostExportResult{}, err
+	}
+	if warnings == nil {
+		warnings = []string{}
 	}
 	return HostExportResult{Path: dest, Count: count, Warnings: warnings}, nil
 }

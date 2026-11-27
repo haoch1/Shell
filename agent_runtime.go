@@ -466,26 +466,50 @@ func findSavedProfile(target string) (*local.Profile, error) {
 	if err != nil {
 		return nil, err
 	}
+	return matchSavedProfile(profs, target)
+}
+
+func matchSavedProfile(profs []local.Profile, target string) (*local.Profile, error) {
+	var match *local.Profile
+	ambiguous := false
 	for i := range profs {
 		p := &profs[i]
-		if p.ID == target || strings.EqualFold(p.Name, target) || strings.EqualFold(p.Host, target) {
+		if p.ID == target {
 			return p, nil
 		}
+		if strings.EqualFold(p.Name, target) || strings.EqualFold(p.Host, target) {
+			ambiguous = match != nil
+			match = p
+		}
+	}
+	if ambiguous {
+		return nil, errors.New("多个连接资料匹配这个目标，请使用已保存的主机 ID")
+	}
+	if match != nil {
+		return match, nil
 	}
 	return nil, fmt.Errorf("未找到匹配的已保存主机：%s", target)
 }
 
-func (a *App) findExistingSessionForProfile(profileID, host string) (sid string, entry *liveSession, isGUI bool) {
+func sameSessionTarget(p, q local.Profile) bool {
+	return p.ID != "" && p.ID == q.ID && strings.EqualFold(p.Host, q.Host) && p.Port == q.Port &&
+		p.User == q.User && p.Auth == q.Auth && p.KeyPath == q.KeyPath && p.JumpHostID == q.JumpHostID &&
+		p.ProxyType == q.ProxyType && p.ProxyHost == q.ProxyHost && p.ProxyPort == q.ProxyPort &&
+		p.ProxyUser == q.ProxyUser && p.ForwardAgent == q.ForwardAgent && p.AgentAccess == q.AgentAccess &&
+		p.StartupCommand == q.StartupCommand
+}
+
+func (a *App) findExistingSessionForProfile(p local.Profile) (sid string, entry *liveSession, isGUI bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	// Prefer live GUI tab first
 	for id, e := range a.live {
-		if e != nil && e.session != nil && ((profileID != "" && e.profile.ID == profileID) || (host != "" && (strings.EqualFold(e.profile.Name, host) || strings.EqualFold(e.profile.Host, host)))) {
+		if e != nil && e.session != nil && sameSessionTarget(p, e.profile) {
 			return id, e, true
 		}
 	}
 	for id, e := range a.headless {
-		if e != nil && e.session != nil && ((profileID != "" && e.profile.ID == profileID) || (host != "" && (strings.EqualFold(e.profile.Name, host) || strings.EqualFold(e.profile.Host, host)))) {
+		if e != nil && e.session != nil && sameSessionTarget(p, e.profile) {
 			return id, e, false
 		}
 	}
@@ -494,12 +518,17 @@ func (a *App) findExistingSessionForProfile(profileID, host string) (sid string,
 
 // connectHeadlessProfile dials a pooled background SSH transport without touching the GUI (works even in tray).
 func (a *App) connectHeadlessProfile(ctx context.Context, p local.Profile) (string, *liveSession, error) {
-	if sid, existing, _ := a.findExistingSessionForProfile(p.ID, p.Host); existing != nil {
-		return sid, existing, nil
-	}
+	return a.connectHeadlessOnce(ctx, p, a.dialHeadlessProfile)
+}
+
+func (a *App) dialHeadlessProfile(ctx context.Context, p local.Profile) (string, *liveSession, error) {
 	var secret string
 	if p.ID != "" && (p.Auth == "password" || p.Auth == "key") {
-		secret, _ = local.LoadSecret(p)
+		var err error
+		secret, err = local.LoadSecret(p)
+		if err != nil {
+			return "", nil, fmt.Errorf("读取已保存的凭据失败：%w", err)
+		}
 	}
 	settings, _ := local.LoadSettings()
 	keepAlive := p.KeepAliveSec
@@ -524,6 +553,12 @@ func (a *App) connectHeadlessProfile(ctx context.Context, p local.Profile) (stri
 		baseCtx = context.Background()
 	}
 	sessCtx, cancel := context.WithCancel(baseCtx)
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return "", nil, err
+	}
+	stopRequestCancel := context.AfterFunc(ctx, cancel)
+	defer stopRequestCancel()
 	cfg := remote.Config{
 		Host:         p.Host,
 		User:         p.User,
@@ -557,10 +592,10 @@ func (a *App) connectHeadlessProfile(ctx context.Context, p local.Profile) (stri
 			return a.challenge(sessCtx, sid, p.Host, user, instruction, questions, echo)
 		},
 		End: func(error) {
+			cancel()
 			a.mu.Lock()
 			delete(a.headless, sid)
 			a.mu.Unlock()
-			cancel()
 		},
 	})
 	if err != nil {
@@ -569,6 +604,12 @@ func (a *App) connectHeadlessProfile(ctx context.Context, p local.Profile) (stri
 	}
 	entry := &liveSession{cancel: cancel, session: s, profile: p}
 	a.mu.Lock()
+	if !stopRequestCancel() || ctx.Err() != nil || sessCtx.Err() != nil {
+		a.mu.Unlock()
+		cancel()
+		s.Close()
+		return "", nil, context.Canceled
+	}
 	a.headless[sid] = entry
 	a.mu.Unlock()
 	return sid, entry, nil
@@ -577,35 +618,19 @@ func (a *App) connectHeadlessProfile(ctx context.Context, p local.Profile) (stri
 // connectVisibleProfile brings the GUI window up, opens/focuses the host tab, and waits until connected.
 func (a *App) connectVisibleProfile(ctx context.Context, p local.Profile) (string, *liveSession, error) {
 	a.ShowMainWindow()
-	if sid, existing, isGUI := a.findExistingSessionForProfile(p.ID, p.Host); existing != nil && isGUI {
-		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
-		}
-		return sid, existing, nil
-	}
 	if a.ctx == nil {
-		return a.connectHeadlessProfile(ctx, p)
+		return "", nil, errors.New("前台窗口尚未就绪")
 	}
-	runtime.EventsEmit(a.ctx, "agent:connect_profile", p.ID)
-
-	deadline := time.NewTimer(25 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return "", nil, ctx.Err()
-		case <-deadline.C:
-			return "", nil, fmt.Errorf("等待前台打开「%s」终端超时，请检查主机凭据或网络", p.Name)
-		case <-ticker.C:
-			if sid, existing, isGUI := a.findExistingSessionForProfile(p.ID, p.Host); existing != nil && isGUI {
-				runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
-				return sid, existing, nil
-			}
-		}
+	waitCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	sid, entry, err := a.waitVisibleConnect(waitCtx, p, func() { runtime.EventsEmit(a.ctx, "agent:connect_profile", p.ID, true) })
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "", nil, fmt.Errorf("等待前台打开「%s」超时：%w", p.Name, err)
 	}
+	if err == nil {
+		runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
+	}
+	return sid, entry, err
 }
 
 func (a *App) resolveLiveSession(requestedID string) (string, *liveSession, error) {
@@ -665,18 +690,7 @@ func (a *App) resolveOrConnectSession(ctx context.Context, reqSessionID, reqHost
 	if reqSessionID != "" {
 		sid, entry, isGUI, err := a.resolveSessionByIDOrSingle(reqSessionID)
 		if err == nil {
-			if visible && isGUI && a.ctx != nil {
-				a.ShowMainWindow()
-				runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
-			} else if visible && !isGUI {
-				// Upgrade to visible GUI tab when visible mode or PTY is requested.
-				if p, pErr := findSavedProfile(entry.profile.ID); pErr == nil {
-					if gsid, gentry, gErr := a.connectVisibleProfile(ctx, *p); gErr == nil {
-						return gsid, gentry, true, nil
-					}
-				}
-			}
-			return sid, entry, isGUI, nil
+			return a.useLiveAgentSession(ctx, sid, entry, isGUI, visible)
 		}
 		// Allow caller passing a host name into sessionId gracefully
 		if reqHost == "" {
@@ -687,7 +701,14 @@ func (a *App) resolveOrConnectSession(ctx context.Context, reqSessionID, reqHost
 	}
 
 	if reqHost != "" {
-		if sid, entry, isGUI := a.findExistingSessionForProfile(reqHost, reqHost); entry != nil {
+		prof, err := findSavedProfile(reqHost)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if prof.AgentAccess == "deny" {
+			return "", nil, false, errors.New("该主机已禁止 Agent 访问")
+		}
+		if sid, entry, isGUI := a.findExistingSessionForProfile(*prof); entry != nil {
 			if visible && isGUI && a.ctx != nil {
 				a.ShowMainWindow()
 				runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
@@ -696,13 +717,6 @@ func (a *App) resolveOrConnectSession(ctx context.Context, reqSessionID, reqHost
 			if !visible {
 				return sid, entry, isGUI, nil
 			}
-		}
-		prof, err := findSavedProfile(reqHost)
-		if err != nil {
-			return "", nil, false, err
-		}
-		if prof.AgentAccess == "deny" {
-			return "", nil, false, errors.New("该主机已禁止 Agent 访问")
 		}
 		if visible {
 			sid, entry, err := a.connectVisibleProfile(ctx, *prof)
@@ -715,6 +729,30 @@ func (a *App) resolveOrConnectSession(ctx context.Context, reqSessionID, reqHost
 	sid, entry, isGUI, err := a.resolveSessionByIDOrSingle("")
 	if err != nil {
 		return "", nil, false, err
+	}
+	return a.useLiveAgentSession(ctx, sid, entry, isGUI, visible)
+}
+
+func (a *App) useLiveAgentSession(ctx context.Context, sid string, entry *liveSession, isGUI, visible bool) (string, *liveSession, bool, error) {
+	p := entry.profile
+	if p.AgentAccess == "deny" {
+		return "", nil, false, errors.New("该主机已禁止 Agent 访问")
+	}
+	if p.ID != "" {
+		current, ok, err := local.GetProfile(p.ID)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if !ok || !sameSessionTarget(p, current) {
+			return "", nil, false, errors.New("主机资料或 Agent 权限已更改，请使用最新资料重新连接")
+		}
+	}
+	if visible && !isGUI {
+		if p.ID == "" {
+			return "", nil, false, errors.New("后台会话缺少前台连接所需的主机资料")
+		}
+		guiID, gui, err := a.connectVisibleProfile(ctx, p)
+		return guiID, gui, true, err
 	}
 	if visible && isGUI && a.ctx != nil {
 		a.ShowMainWindow()
@@ -759,6 +797,11 @@ func boolArg(args map[string]any, key string, def bool) bool {
 func mustJSONText(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func elapsedMs(start time.Time) *int64 {
+	ms := time.Since(start).Milliseconds()
+	return &ms
 }
 
 func (a *App) CallTool(ctx context.Context, source, clientName, toolName string, args map[string]any) agentbridge.ToolCallOutcome {
@@ -877,6 +920,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		return finish(agentbridge.ToolCallOutcome{Text: mustJSONText(list)})
 
 	case "shell_connect":
+		audit.Phases = &security.AuditPhases{}
 		target := strings.TrimSpace(strArg(args, "host"))
 		audit.Summary = "connect " + target
 		matched, err := findSavedProfile(target)
@@ -890,13 +934,16 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		}
 		decLabel := "auto-allow"
 		if eval.Decision == security.DecisionAsk {
+			approvalStart := time.Now()
 			d, ok := a.requestApproval(ctx, source, clientName, matched.Name, "", toolName, "连接主机 "+matched.User+"@"+matched.Host, eval, "")
+			audit.Phases.ApprovalMs = elapsedMs(approvalStart)
 			decLabel = d
 			if !ok {
 				return finish(agentbridge.ToolCallOutcome{Text: "用户已拒绝连接请求", IsError: true, Risk: eval.Risk, Decision: decLabel})
 			}
 		}
-		_, existingBefore, _ := a.findExistingSessionForProfile(matched.ID, matched.Host)
+		sessionStart := time.Now()
+		existingID, _, _ := a.findExistingSessionForProfile(*matched)
 		var sid string
 		var connErr error
 		mode := cfg.ExecMode
@@ -908,6 +955,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		} else {
 			sid, _, connErr = a.connectHeadlessProfile(ctx, *matched)
 		}
+		audit.Phases.SessionMs = elapsedMs(sessionStart)
 		if connErr != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: connErr.Error(), IsError: true, Risk: eval.Risk, Decision: decLabel})
 		}
@@ -920,16 +968,19 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 				"port":      matched.Port,
 				"user":      matched.User,
 				"mode":      mode,
-				"reused":    existingBefore != nil,
+				"reused":    existingID == sid,
 			}),
 			Risk:     eval.Risk,
 			Decision: decLabel,
 		})
 
 	case "shell_exec":
+		audit.Phases = &security.AuditPhases{}
 		cmd := strings.TrimSpace(strArg(args, "command"))
 		audit.Summary = cmd
+		sessionStart := time.Now()
 		sid, entry, isGUI, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
+		audit.Phases.SessionMs = elapsedMs(sessionStart)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -945,7 +996,9 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			if len(eval.Segments) > 0 {
 				sig = sid + "|exec|" + eval.Segments[0].Program
 			}
+			approvalStart := time.Now()
 			d, ok := a.requestApproval(ctx, source, clientName, entry.profile.Name, sid, toolName, cmd, eval, sig)
+			audit.Phases.ApprovalMs = elapsedMs(approvalStart)
 			decLabel = d
 			if !ok {
 				return finish(agentbridge.ToolCallOutcome{Text: "用户已拒绝执行命令：" + cmd, IsError: true, Risk: eval.Risk, Decision: decLabel})
@@ -961,7 +1014,9 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		}
 		execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 		defer cancel()
+		remoteStart := time.Now()
 		res, execErr := entry.session.ExecDetailed(execCtx, cmd, 256<<10)
+		audit.Phases.RemoteMs = elapsedMs(remoteStart)
 		rOut := security.Redact(res.Stdout, cfg.Redaction)
 		rErr := security.Redact(res.Stderr, cfg.Redaction)
 		if mirrorVisible {

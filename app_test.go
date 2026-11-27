@@ -48,4 +48,12 @@ func TestSaveProfileWithSecretRetainsPasswordOnEdit(t *testing.T) {
 	if err != nil || gotSec != "super-secret-pass" {
 		t.Fatalf("password lost after IP edit: %q, err=%v", gotSec, err)
 	}
+	saved, ok, err := local.GetProfile(updated.ID)
+	if err != nil || !ok {
+		t.Fatal("missing saved profile", err)
+	}
+	cleared, err := app.SaveProfileWithSecret(saved, "", true, false)
+	if err != nil || cleared.Remembered {
+		t.Fatal("explicitly cleared password was retained", err)
+	}
 }

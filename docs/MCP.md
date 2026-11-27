@@ -109,6 +109,8 @@ curl -X POST http://127.0.0.1:17822/api/v1/call \
 
 ## 4. 自动文本脱敏与审计记录
 
+在「操作记录」里展开新连接或执行记录的总耗时，可以区分会话准备、工具审批和远端命令往返。会话准备包含连接选择、拨号，以及可能的主机指纹或登录确认。远端命令往返包含通道等待、网络和服务器处理。旧记录只显示总耗时。同一个地址有多份连接资料时，请使用主机 ID 明确指定用户名和端口所对应的资料。
+
 所有返回给外部 Agent 或 AI 模型的内容均先经过本地脱敏引擎清洗：
 
 - **密钥与凭据**：PEM 私钥块、AWS（`AKIA...`）、GitHub（`ghp_` / `github_pat_`）、GitLab、Slack、OpenAI / Anthropic（`sk-...`）、Stripe、Google API、阿里云（`LTAI...`）、腾讯云（`AKID...`）、HuggingFace、JWT、HTTP `Authorization` / `Cookie` 头、数据库连接串密码、`.env` 敏感键值及命令行密码参数（自动保留 `ssh -p 2222` 等正常端口参数）。

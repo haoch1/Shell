@@ -35,6 +35,8 @@ type App struct {
 	mu               sync.Mutex
 	live             map[string]*liveSession
 	headless         map[string]*liveSession
+	headlessAttempts map[*headlessAttempt]struct{}
+	visibleWaiters   map[chan visibleResult]local.Profile
 	verify           map[string]chan bool
 	challenges       map[string]chan challengeReply
 	approvals        map[string]chan string
@@ -63,6 +65,8 @@ func newApp() *App {
 	a := &App{
 		live:             make(map[string]*liveSession),
 		headless:         make(map[string]*liveSession),
+		headlessAttempts: make(map[*headlessAttempt]struct{}),
+		visibleWaiters:   make(map[chan visibleResult]local.Profile),
 		verify:           make(map[string]chan bool),
 		challenges:       make(map[string]chan challengeReply),
 		approvals:        make(map[string]chan string),
@@ -419,9 +423,14 @@ func (a *App) GetProfileSecret(id string) (string, error) {
 func (a *App) SaveProfileWithSecret(p local.Profile, secret string, remember bool, keepExisting bool) (ProfileView, error) {
 	carriedSecret := secret
 	if carriedSecret == "" && keepExisting && remember && p.ID != "" && (p.Auth == "password" || p.Auth == "key") {
-		if old, ok, err := local.GetProfile(p.ID); err == nil && ok {
-			if oldSec, err := local.LoadSecret(old); err == nil && oldSec != "" {
-				carriedSecret = oldSec
+		old, ok, err := local.GetProfile(p.ID)
+		if err != nil {
+			return ProfileView{}, err
+		}
+		if ok {
+			carriedSecret, err = local.LoadSecret(old)
+			if err != nil {
+				return ProfileView{}, err
 			}
 		}
 	}
@@ -429,14 +438,13 @@ func (a *App) SaveProfileWithSecret(p local.Profile, secret string, remember boo
 	if err != nil {
 		return ProfileView{}, err
 	}
-	if remember && (saved.Auth == "password" || saved.Auth == "key") {
-		if carriedSecret != "" {
-			if err := local.RememberSecret(saved, carriedSecret); err != nil {
-				return ProfileView{}, err
-			}
-		}
+	if remember && (saved.Auth == "password" || saved.Auth == "key") && carriedSecret != "" {
+		err = local.RememberSecret(saved, carriedSecret)
 	} else {
-		_ = local.ForgetSecret(saved.ID)
+		err = local.ForgetProfileSecret(saved)
+	}
+	if err != nil {
+		return ProfileView{}, err
 	}
 	return view(saved)
 }
@@ -635,7 +643,10 @@ func resolveJumpChain(jumpID string, settings local.AppSettings, visited map[str
 	}
 	var secret string
 	if jp.Auth == "password" || jp.Auth == "key" {
-		secret, _ = local.LoadSecret(jp)
+		secret, err = local.LoadSecret(jp)
+		if err != nil {
+			return nil, fmt.Errorf("读取跳板机凭据失败：%w", err)
+		}
 	}
 	parent, err := resolveJumpChain(jp.JumpHostID, settings, visited, depth+1)
 	if err != nil {
@@ -658,7 +669,8 @@ func resolveJumpChain(jumpID string, settings local.AppSettings, visited map[str
 	return rc, nil
 }
 
-func (a *App) Connect(id string, p local.Profile, secret string, remember bool, cols, rows int) error {
+func (a *App) Connect(id string, p local.Profile, secret string, remember bool, cols, rows int) (connectErr error) {
+	defer func() { a.finishVisibleConnect(p, id, connectErr) }()
 	if len(id) < 1 || len(id) > 80 {
 		return errors.New("无效的会话标识")
 	}
@@ -1132,12 +1144,14 @@ func (a *App) ListTunnels(id string) ([]remote.TunnelStatus, error) {
 
 // --- Snippets, Settings, Known Hosts, SSH Keys, Backup ---
 
-func (a *App) Snippets() ([]local.Snippet, error)              { return local.Snippets() }
+func (a *App) Snippets() ([]local.Snippet, error)                 { return local.Snippets() }
 func (a *App) SaveSnippet(s local.Snippet) (local.Snippet, error) { return local.SaveSnippet(s) }
-func (a *App) DeleteSnippet(id string) error                   { return local.DeleteSnippet(id) }
+func (a *App) DeleteSnippet(id string) error                      { return local.DeleteSnippet(id) }
 
-func (a *App) GetSettings() (local.AppSettings, error)                { return local.LoadSettings() }
-func (a *App) SaveSettings(s local.AppSettings) (local.AppSettings, error) { return local.SaveSettings(s) }
+func (a *App) GetSettings() (local.AppSettings, error) { return local.LoadSettings() }
+func (a *App) SaveSettings(s local.AppSettings) (local.AppSettings, error) {
+	return local.SaveSettings(s)
+}
 
 func (a *App) KnownHosts() ([]local.KnownHostEntry, error) { return local.ListKnownHosts() }
 func (a *App) RemoveKnownHost(line int) error              { return local.RemoveKnownHost(line) }

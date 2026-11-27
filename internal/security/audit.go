@@ -15,20 +15,28 @@ import (
 
 // AuditEntry records a single Agent or MCP tool invocation for compliance & traceability.
 type AuditEntry struct {
-	ID            string `json:"id"`
-	Timestamp     int64  `json:"timestamp"`
-	Source        string `json:"source"`     // "mcp", "http", "builtin-ai"
-	ClientName    string `json:"clientName"` // e.g. "Antigravity", "Claude Code", "Shell AI"
-	Host          string `json:"host"`
-	SessionID     string `json:"sessionId,omitempty"`
-	Tool          string `json:"tool"`
-	Summary       string `json:"summary"`
-	Risk          string `json:"risk"`     // "safe", "caution", "danger"
-	Decision      string `json:"decision"` // "auto-allow", "user-allow", "session-allow", "user-deny", "policy-deny"
-	RedactedCount int    `json:"redactedCount"`
-	DurationMs    int64  `json:"durationMs"`
-	OK            bool   `json:"ok"`
-	Error         string `json:"error,omitempty"`
+	ID            string       `json:"id"`
+	Timestamp     int64        `json:"timestamp"`
+	Source        string       `json:"source"`     // "mcp", "http", "builtin-ai"
+	ClientName    string       `json:"clientName"` // e.g. "Antigravity", "Claude Code", "Shell AI"
+	Host          string       `json:"host"`
+	SessionID     string       `json:"sessionId,omitempty"`
+	Tool          string       `json:"tool"`
+	Summary       string       `json:"summary"`
+	Risk          string       `json:"risk"`     // "safe", "caution", "danger"
+	Decision      string       `json:"decision"` // "auto-allow", "user-allow", "session-allow", "user-deny", "policy-deny"
+	RedactedCount int          `json:"redactedCount"`
+	DurationMs    int64        `json:"durationMs"`
+	Phases        *AuditPhases `json:"phases,omitempty"`
+	OK            bool         `json:"ok"`
+	Error         string       `json:"error,omitempty"`
+}
+
+// Nil marks a phase that was never entered. Zero means a measured phase below one millisecond.
+type AuditPhases struct {
+	SessionMs  *int64 `json:"sessionMs,omitempty"`
+	ApprovalMs *int64 `json:"approvalMs,omitempty"`
+	RemoteMs   *int64 `json:"remoteMs,omitempty"`
 }
 
 const (

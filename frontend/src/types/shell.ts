@@ -304,6 +304,7 @@ export interface AuditEntry {
   decision: string;
   redactedCount: number;
   durationMs: number;
+  phases?: { sessionMs?: number; approvalMs?: number; remoteMs?: number };
   ok: boolean;
   error?: string;
 }

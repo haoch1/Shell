@@ -102,6 +102,20 @@ func ForgetSecret(id string) error {
 	return withStore(func(dir string) error { return removeSecret(dir, id) })
 }
 
+// ForgetProfileSecret clears only credentials still bound to the edited profile.
+func ForgetProfileSecret(p Profile) error {
+	return withStore(func(dir string) error {
+		match, err := matchesStored(dir, p)
+		if err != nil {
+			return err
+		}
+		if !match {
+			return errors.New("连接资料已变化，请重新打开后再修改凭据")
+		}
+		return removeSecret(dir, p.ID)
+	})
+}
+
 // HasSecret supplies the profile list's indicator without decrypting credentials.
 func HasSecret(id string) (bool, error) {
 	var saved bool

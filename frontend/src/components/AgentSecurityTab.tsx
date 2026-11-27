@@ -696,7 +696,12 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--ink-tertiary)' }}>
                     <span>{new Date(entry.timestamp * 1000).toLocaleString()}</span>
-                    <span className="mono">{entry.durationMs} ms</span>
+                    {entry.phases ? <details>
+                      <summary className="mono">总计 {entry.durationMs} ms</summary>
+                      {entry.phases.sessionMs != null && <div>会话准备 {entry.phases.sessionMs} ms</div>}
+                      {entry.phases.approvalMs != null && <div>工具审批 {entry.phases.approvalMs} ms</div>}
+                      {entry.phases.remoteMs != null && <div>远端命令往返 {entry.phases.remoteMs} ms</div>}
+                    </details> : <span className="mono">{entry.durationMs} ms</span>}
                   </div>
                 </div>
               ))}

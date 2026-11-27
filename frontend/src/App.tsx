@@ -43,6 +43,7 @@ import { AIDrawer } from './components/AIDrawer';
 import { HostModal } from './components/HostModal';
 import { CommandPalette } from './components/CommandPalette';
 import { SSHConfigImportModal } from './components/SSHConfigImportModal';
+import { HostExportModal } from './components/HostExportModal';
 import { SettingsModal, type SettingsTab } from './components/SettingsModal';
 import { RemoteEditorModal } from './components/RemoteEditorModal';
 import { TerminalSearchBar } from './components/TerminalSearchBar';
@@ -107,6 +108,7 @@ export const App: React.FC = () => {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [splitPicker, setSplitPicker] = useState<{ target: SplitTarget; source: Profile } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [exportIds, setExportIds] = useState<string[] | null>(null);
   const [settingsModal, setSettingsModal] = useState<{ open: boolean; tab: SettingsTab }>({
     open: false,
     tab: 'appearance',
@@ -1119,6 +1121,7 @@ export const App: React.FC = () => {
             await reloadData();
           }}
           onOpenImportSSH={() => setImportOpen(true)}
+          onOpenExportHosts={setExportIds}
           onOpenSettings={(tab = 'appearance') => setSettingsModal({ open: true, tab })}
           isDark={isDark}
           onToggleTheme={() => {
@@ -1347,6 +1350,10 @@ export const App: React.FC = () => {
             toast(`成功导入 ${count} 台主机`);
           }}
         />
+      )}
+
+      {exportIds !== null && (
+        <HostExportModal profiles={profiles} initialIds={exportIds} onClose={() => setExportIds(null)} />
       )}
 
       {settingsModal.open && (

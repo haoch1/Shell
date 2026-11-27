@@ -8,6 +8,8 @@ import type {
   AppSettings,
   AuditEntry,
   DetectedAICLI,
+  HostExportFormat,
+  HostExportResult,
   ImportedHost,
   ImportPreviewResult,
   ImportSummary,
@@ -49,6 +51,7 @@ interface GoAppBindings {
   ParseImportFilePaths(paths: string[]): Promise<ImportPreviewResult>;
   DiscoverLocalSSHConfigImport(): Promise<ImportPreviewResult>;
   CommitImportedHosts(entries: ImportedHost[], overrideGroup: string): Promise<Profile[]>;
+  ExportHosts(ids: string[], format: HostExportFormat): Promise<HostExportResult>;
 
   Connect(id: string, p: Profile, secret: string, remember: boolean, cols: number, rows: number): Promise<void>;
   Disconnect(id: string): Promise<void>;

@@ -3,6 +3,7 @@
 // 2. Renders the exact built frontend/dist bundle in headless Edge (1280x820 @2x) via CDP, asserts zero errors, exercises all views, and captures UI screenshots.
 import assert from 'node:assert/strict';
 import { verifyLargeDirectory } from './sftp-large-directory.mjs';
+import { verifyHostExport, verifyEmptyHostExport } from './host-export.mjs';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
@@ -139,11 +140,12 @@ const BRIDGE_MOCK_SCRIPT = `
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
     showTelemetry: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true
   };
-  let profiles = [
+  let profiles = new URLSearchParams(location.search).has('empty-hosts') ? [] : [
     { id: 'p1', name: 'Tokyo Production', group: '生产集群', icon: 'ubuntu', pinned: true, host: '10.24.0.10', port: 22, user: 'deploy', auth: 'agent', keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 300 },
     { id: 'p2', name: 'SG - AWS', group: '生产集群', icon: 'debian', host: '2406:da18:b15:8000:4839:f12a:9c3b:4e21', port: 58222, user: 'root', auth: 'password', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 7200 },
     { id: 'p3', name: 'Local GPU Box', group: '开发测试', icon: 'rocky', host: '192.168.1.88', port: 22, user: 'haochi', auth: 'key', keyPath: 'C:\\\\Users\\\\haochi\\\\.ssh\\\\id_ed25519', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 86400 }
   ];
+  if (location.search === '?host-export') profiles.find(host => host.id === 'p2').jumpHostId = 'p1';
   let snippets = [
     { id: 's1', name: '系统负载与内存', category: '系统', command: 'uname -a && uptime && free -h', description: '快速查看内核、运行时间与内存使用', pinned: true },
     { id: 's2', name: '磁盘占用 Top 15', category: '磁盘', command: 'df -h && du -xh --max-depth=1 {{path}} | sort -hr | head -n 15', description: '定位大目录占用', pinned: true },
@@ -647,6 +649,8 @@ async function verifyFrontendUI() {
 
     const { verifySplitWorkspace } = await import('./split-workspace.mjs');
     await verifySplitWorkspace({ call, evaluate, until, click });
+    await verifyHostExport({ call, evaluate, until, click });
+    await verifyEmptyHostExport({ call, evaluate, until, click });
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 17 Retina screenshots.');

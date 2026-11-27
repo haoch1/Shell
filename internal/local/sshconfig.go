@@ -10,15 +10,16 @@ import (
 
 // SSHConfigHost represents a parsed host stanza from ~/.ssh/config.
 type SSHConfigHost struct {
-	Alias          string `json:"alias"`
-	HostName       string `json:"hostName"`
-	User           string `json:"user"`
-	Port           int    `json:"port"`
-	IdentityFile   string `json:"identityFile"`
-	ProxyJump      string `json:"proxyJump"`
-	ForwardAgent   bool   `json:"forwardAgent"`
-	KeepAliveSec   int    `json:"keepAliveSec"`
-	AlreadySaved   bool   `json:"alreadySaved"`
+	Alias        string `json:"alias"`
+	HostName     string `json:"hostName"`
+	User         string `json:"user"`
+	Port         int    `json:"port"`
+	IdentityFile string `json:"identityFile"`
+	PasswordAuth bool   `json:"passwordAuth,omitempty"`
+	ProxyJump    string `json:"proxyJump"`
+	ForwardAgent bool   `json:"forwardAgent"`
+	KeepAliveSec int    `json:"keepAliveSec"`
+	AlreadySaved bool   `json:"alreadySaved"`
 }
 
 func expandHome(p string) string {
@@ -32,6 +33,45 @@ func expandHome(p string) string {
 		}
 	}
 	return filepath.Clean(p)
+}
+
+// sshConfigArgs follows OpenSSH's quoting and comment rules for directive arguments.
+func sshConfigArgs(s string) ([]string, bool) {
+	var args []string
+	for i := 0; i < len(s); {
+		if s[i] == ' ' || s[i] == '\t' {
+			i++
+			continue
+		}
+		if s[i] == '#' {
+			break
+		}
+		var token strings.Builder
+		var quote byte
+	tokenLoop:
+		for i < len(s) {
+			c := s[i]
+			i++
+			switch {
+			case c == '\\' && i < len(s) && (strings.ContainsRune(`\'"`, rune(s[i])) || quote == 0 && s[i] == ' '):
+				token.WriteByte(s[i])
+				i++
+			case quote == 0 && (c == ' ' || c == '\t'):
+				break tokenLoop
+			case quote == 0 && (c == '"' || c == '\''):
+				quote = c
+			case quote != 0 && c == quote:
+				quote = 0
+			default:
+				token.WriteByte(c)
+			}
+		}
+		if quote != 0 {
+			return nil, false
+		}
+		args = append(args, token.String())
+	}
+	return args, true
 }
 
 // ParseSSHConfig parses an OpenSSH client config file into concrete host entries.
@@ -59,10 +99,6 @@ func ParseSSHConfig(configPath string) ([]SSHConfigHost, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Strip inline comments (outside quotes).
-		if idx := strings.Index(line, " #"); idx >= 0 {
-			line = strings.TrimSpace(line[:idx])
-		}
 		var key, val string
 		if eqIdx := strings.IndexAny(line, " \t="); eqIdx > 0 {
 			key = strings.ToLower(strings.TrimSpace(line[:eqIdx]))
@@ -70,12 +106,12 @@ func ParseSSHConfig(configPath string) ([]SSHConfigHost, error) {
 		} else {
 			continue
 		}
-		if key == "" || val == "" {
+		args, valid := sshConfigArgs(val)
+		if key == "" || !valid || len(args) == 0 {
 			continue
 		}
 		if key == "host" {
-			patterns := strings.Fields(val)
-			stanzas = append(stanzas, stanza{patterns: patterns, props: make(map[string]string)})
+			stanzas = append(stanzas, stanza{patterns: args, props: make(map[string]string)})
 			current = &stanzas[len(stanzas)-1]
 			continue
 		}
@@ -84,6 +120,7 @@ func ParseSSHConfig(configPath string) ([]SSHConfigHost, error) {
 			current = nil
 			continue
 		}
+		val = strings.Join(args, " ")
 		if current == nil {
 			if _, exists := globalDefaults[key]; !exists {
 				globalDefaults[key] = val
@@ -140,7 +177,7 @@ func ParseSSHConfig(configPath string) ([]SSHConfigHost, error) {
 				}
 				return wildcard[k]
 			}
-			hostName := get("hostname")
+			hostName := strings.ReplaceAll(get("hostname"), "%%", "%")
 			if hostName == "" {
 				hostName = pat
 			}
@@ -154,7 +191,14 @@ func ParseSSHConfig(configPath string) ([]SSHConfigHost, error) {
 					port = p
 				}
 			}
-			ident := expandHome(get("identityfile"))
+			ident := expandHome(strings.ReplaceAll(get("identityfile"), "%%", "%"))
+			preferred := strings.ToLower(get("preferredauthentications"))
+			passwordAuth := preferred != ""
+			for _, method := range strings.Split(preferred, ",") {
+				if method != "password" && method != "keyboard-interactive" {
+					passwordAuth = false
+				}
+			}
 			fwd := strings.EqualFold(get("forwardagent"), "yes")
 			ka := 30
 			if kas := get("serveraliveinterval"); kas != "" {
@@ -168,6 +212,7 @@ func ParseSSHConfig(configPath string) ([]SSHConfigHost, error) {
 				User:         user,
 				Port:         port,
 				IdentityFile: ident,
+				PasswordAuth: passwordAuth,
 				ProxyJump:    strings.TrimSpace(get("proxyjump")),
 				ForwardAgent: fwd,
 				KeepAliveSec: ka,
@@ -211,6 +256,9 @@ func ImportSSHConfigEntries(entries []SSHConfigHost, group string) ([]Profile, e
 	aliasToID := make(map[string]string, len(entries))
 	for _, e := range entries {
 		auth := "agent"
+		if e.PasswordAuth {
+			auth = "password"
+		}
 		keyPath := ""
 		if e.IdentityFile != "" {
 			if _, err := os.Stat(e.IdentityFile); err == nil {

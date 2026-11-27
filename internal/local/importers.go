@@ -689,11 +689,14 @@ func parseMobaXterm(text string) []ImportedHost {
 }
 
 // --- 4. PuTTY / KiTTY .reg ---
+var puttyRegUnescape = strings.NewReplacer("\\\\", "\\", "\\\"", "\"")
+
 func parsePuttyReg(text string) []ImportedHost {
 	var out []ImportedHost
 	var curName, host, user, proto, keyPath, proxyHost, proxyUser string
 	port := 22
 	proxyMethod, proxyPort := 0, 0
+	pingMin, pingSec, forwardAgent := 0, 0, false
 	inSession := false
 
 	flush := func() {
@@ -714,9 +717,9 @@ func parsePuttyReg(text string) []ImportedHost {
 			}
 			pType := ""
 			if proxyHost != "" && proxyPort > 0 {
-				if proxyMethod == 1 {
+				if proxyMethod == 3 {
 					pType = "http"
-				} else if proxyMethod == 3 || proxyMethod == 2 {
+				} else if proxyMethod == 2 {
 					pType = "socks5"
 				}
 			}
@@ -731,12 +734,15 @@ func parsePuttyReg(text string) []ImportedHost {
 				ProxyHost:    proxyHost,
 				ProxyPort:    proxyPort,
 				ProxyUser:    proxyUser,
+				KeepAliveSec: pingMin*60 + pingSec,
+				ForwardAgent: forwardAgent,
 				SourceFormat: "PuTTY",
 			})
 		}
 		inSession = false
 		curName, host, user, proto, keyPath, proxyHost, proxyUser = "", "", "", "", "", "", ""
 		port, proxyMethod, proxyPort = 22, 0, 0
+		pingMin, pingSec, forwardAgent = 0, 0, false
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(text))
@@ -750,7 +756,7 @@ func parsePuttyReg(text string) []ImportedHost {
 				rawName := sec[idx+len(marker):]
 				if rawName != "" && !strings.EqualFold(rawName, "Default%20Settings") {
 					if decoded, err := url.PathUnescape(rawName); err == nil {
-						curName = decoded
+						curName = decodePuTTYName(decoded)
 					} else {
 						curName = rawName
 					}
@@ -769,8 +775,10 @@ func parsePuttyReg(text string) []ImportedHost {
 		k = strings.Trim(strings.TrimSpace(k), `"`)
 		v = strings.TrimSpace(v)
 		unq := func(s string) string {
-			s = strings.Trim(s, `"`)
-			return strings.ReplaceAll(s, `\\`, `\`)
+			if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+				return puttyRegUnescape.Replace(s[1 : len(s)-1])
+			}
+			return s
 		}
 		parseHexDword := func(s string) (int, bool) {
 			if strings.HasPrefix(strings.ToLower(s), "dword:") {
@@ -805,6 +813,17 @@ func parsePuttyReg(text string) []ImportedHost {
 			}
 		case "proxyusername":
 			proxyUser = unq(v)
+		case "pinginterval":
+			if n, ok := parseHexDword(v); ok && n <= 60 {
+				pingMin = n
+			}
+		case "pingintervalsecs":
+			if n, ok := parseHexDword(v); ok && n < 60 {
+				pingSec = n
+			}
+		case "agentfwd":
+			n, _ := parseHexDword(v)
+			forwardAgent = n == 1
 		}
 	}
 	flush()
@@ -1551,6 +1570,9 @@ func parseOpenSSHConfigText(text string) []ImportedHost {
 	out := make([]ImportedHost, 0, len(entries))
 	for _, e := range entries {
 		auth := "agent"
+		if e.PasswordAuth {
+			auth = "password"
+		}
 		if e.IdentityFile != "" {
 			auth = "key"
 		}

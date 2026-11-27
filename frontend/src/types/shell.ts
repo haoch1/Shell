@@ -101,6 +101,14 @@ export interface ImportPreviewResult {
   warnings?: string[];
 }
 
+export type HostExportFormat = 'openssh' | 'putty';
+
+export interface HostExportResult {
+  path: string;
+  count: number;
+  warnings?: string[];
+}
+
 export interface RemoteEntry {
   name: string;
   path: string;

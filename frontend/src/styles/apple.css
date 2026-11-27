@@ -1024,6 +1024,17 @@ html, body, #root {
   border-radius: 6px;
 }
 
+.sidebar-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+.sidebar-file-actions .icon-btn {
+  padding-inline: 4px;
+  gap: 3px;
+  white-space: nowrap;
+}
+
 .sidebar-empty {
   padding: 24px 12px;
   text-align: center;
@@ -1890,6 +1901,45 @@ html, body, #root {
   max-width: 790px;
 }
 .modal-sheet.editor { max-width: 860px; height: 80vh; }
+
+.modal-sheet.host-export {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  padding: 0;
+  width: min(400px, calc(100vw - 40px));
+  height: fit-content;
+  color: var(--ink-primary);
+}
+.host-export:not([open]) { display: none; }
+.host-export::backdrop { background: var(--bg-backdrop); backdrop-filter: blur(8px); }
+.host-export > form { display: flex; flex-direction: column; min-height: 0; }
+#exportJumpNotice { display: block; }
+.host-export-note, .host-export-empty, .host-export-path, .host-export-notes { margin: 0; }
+.host-export-note, .host-export-notes { color: var(--ink-secondary); font-size: 12px; }
+.host-export-path { overflow-wrap: anywhere; }
+.host-export-notes { padding-inline-start: 18px; }
+.host-export-list {
+  max-height: min(32vh, 230px);
+  overflow: auto;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+}
+.host-export-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.host-export-list label:hover { background: var(--bg-hover); }
+.host-export-list label span, .host-export-list label small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.host-export-list label span { flex: 1; min-width: 0; }
+.host-export-list label small { max-width: 52%; color: var(--ink-secondary); }
 
 .modal-header {
   display: flex;

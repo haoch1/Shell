@@ -155,7 +155,7 @@ func TestUniversalSSHImporters(t *testing.T) {
 	}
 
 	// 11. PuTTY .reg with SOCKS5 proxy
-	puttyProxy := "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\ProxyBox]\r\n\"HostName\"=\"203.0.113.5\"\r\n\"PortNumber\"=dword:00000016\r\n\"Protocol\"=\"ssh\"\r\n\"ProxyMethod\"=dword:00000003\r\n\"ProxyHost\"=\"127.0.0.1\"\r\n\"ProxyPort\"=dword:00001ed2\r\n"
+	puttyProxy := "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\SimonTatham\\PuTTY\\Sessions\\ProxyBox]\r\n\"HostName\"=\"203.0.113.5\"\r\n\"PortNumber\"=dword:00000016\r\n\"Protocol\"=\"ssh\"\r\n\"ProxyMethod\"=dword:00000002\r\n\"ProxyHost\"=\"127.0.0.1\"\r\n\"ProxyPort\"=dword:00001ed2\r\n"
 	resPutty, err := ParseImportBytes("putty_proxy.reg", []byte(puttyProxy))
 	if err != nil || len(resPutty.Hosts) != 1 || resPutty.Hosts[0].ProxyType != "socks5" || resPutty.Hosts[0].ProxyPort != 7890 {
 		t.Fatalf("PuTTY SOCKS5 proxy parse failed: %+v, %v", resPutty, err)

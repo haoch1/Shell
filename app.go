@@ -1189,6 +1189,35 @@ func (a *App) GenerateSSHKey(name, algo, passphrase, comment string) (local.Loca
 	return local.GenerateKey(name, algo, passphrase, comment)
 }
 
+type HostExportResult struct {
+	Path     string   `json:"path"`
+	Count    int      `json:"count"`
+	Warnings []string `json:"warnings"`
+}
+
+func (a *App) ExportHosts(ids []string, format string) (HostExportResult, error) {
+	options := runtime.SaveDialogOptions{Title: "导出服务器"}
+	switch format {
+	case "openssh":
+		options.DefaultFilename = "ssh_config"
+		options.Filters = []runtime.FileFilter{{DisplayName: "OpenSSH 配置", Pattern: "*"}}
+	case "putty":
+		options.DefaultFilename = "Shell-hosts.reg"
+		options.Filters = []runtime.FileFilter{{DisplayName: "PuTTY 会话 (*.reg)", Pattern: "*.reg"}}
+	default:
+		return HostExportResult{}, errors.New("未知的服务器导出格式")
+	}
+	dest, err := runtime.SaveFileDialog(a.ctx, options)
+	if err != nil || dest == "" {
+		return HostExportResult{}, err
+	}
+	count, warnings, err := local.ExportHostFile(dest, ids, format)
+	if err != nil {
+		return HostExportResult{}, err
+	}
+	return HostExportResult{Path: dest, Count: count, Warnings: warnings}, nil
+}
+
 func (a *App) ExportBackup(includeSecrets bool, passphrase string) (string, error) {
 	defaultName := "shell-backup.json"
 	if passphrase != "" {

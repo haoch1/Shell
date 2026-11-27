@@ -18,6 +18,7 @@ import {
   Sun,
   Terminal,
   Trash2,
+  Upload,
 } from 'lucide-react';
 import type { Profile, SessionRecord, WorkspaceTab } from '../types/shell';
 import { connectedProfilePanes, type PaneSource } from '../lib/paneLayout';
@@ -65,6 +66,7 @@ interface SidebarProps {
   onBatchDeleteHosts: (ids: string[]) => Promise<void>;
   onTogglePin: (profile: Profile) => void;
   onOpenImportSSH: () => void;
+  onOpenExportHosts: (ids: string[]) => void;
   onOpenSettings: (tab?: 'appearance' | 'ssh' | 'keys' | 'ai' | 'agent' | 'backup' | 'about') => void;
   onToggleTheme?: () => void;
   onToast?: (msg: string) => void;
@@ -90,6 +92,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   onBatchDeleteHosts,
   onTogglePin,
   onOpenImportSSH,
+  onOpenExportHosts,
   onOpenSettings,
   onToggleTheme,
   onToast,
@@ -192,6 +195,10 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   const chosenIds = useMemo(
     () => filtered.filter((p) => selectedIds[p.id]).map((p) => p.id),
     [filtered, selectedIds],
+  );
+  const exportIds = useMemo(
+    () => profiles.filter((p) => selectedIds[p.id]).map((p) => p.id),
+    [profiles, selectedIds],
   );
 
   const exitSelectMode = () => {
@@ -419,6 +426,10 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             {chosenIds.length === filtered.length && filtered.length > 0 ? '取消全选' : '全选'}
           </button>
           <div style={{ display: 'flex', gap: 4 }}>
+            <button type="button" className="btn btn-sm" title="导出已选主机" aria-label="导出已选主机"
+              disabled={!exportIds.length} onClick={() => onOpenExportHosts(exportIds)}>
+              <Upload size={13} />
+            </button>
             <button
               type="button"
               className="btn btn-sm btn-danger"
@@ -435,16 +446,16 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
         </div>
       ) : (
         <div className="sidebar-footer">
-          <button
-            id="importSshBtn"
-            type="button"
-            className="icon-btn"
-            title="导入 SSH 配置"
-            onClick={onOpenImportSSH}
-          >
-            <Download size={14} strokeWidth={1.7} />
-            <span>导入</span>
-          </button>
+          <div className="sidebar-file-actions">
+            <button id="importSshBtn" type="button" className="icon-btn"
+              title="导入 SSH 配置" onClick={onOpenImportSSH}>
+              <Download size={14} strokeWidth={1.7} /><span>导入</span>
+            </button>
+            <button id="exportHostsBtn" type="button" className="icon-btn" title="导出主机配置"
+              aria-label="导出主机配置" onClick={() => onOpenExportHosts([])}>
+              <Upload size={14} strokeWidth={1.7} /><span>导出</span>
+            </button>
+          </div>
           <div style={{ display: 'flex', gap: 2 }}>
             {profiles.length > 0 && (
               <button

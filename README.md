@@ -82,6 +82,18 @@
 | **OpenSSH** | `~/.ssh/config`（一键扫描） | `Host`、`HostName`、`Port`、`User`、`IdentityFile`、`ProxyJump`、`ForwardAgent` |
 | **通用格式** | `.csv`、`.json`、纯文本 `user@host:port` | 自动字段映射 |
 
+### 导出服务器
+
+点击左下角 **导入** 右侧的 **导出**，选择服务器和目标格式，再选择保存位置。
+
+| 目标客户端 | 导出格式 | 如何使用 |
+| --- | --- | --- |
+| OpenSSH、VS Code Remote - SSH | OpenSSH 配置文件 | OpenSSH 可用 `ssh -F "文件路径" 主机别名` 直接连接。VS Code 可在 `remote.SSH.configFile` 中指定文件。 |
+| WinSCP | OpenSSH 配置文件 | 将需要的主机条目加入 `%USERPROFILE%\.ssh\config`，在「工具 → 导入站点」选择 OpenSSH。WinSCP 支持单级 `ProxyJump`。[WinSCP 导入说明](https://winscp.net/eng/docs/ui_import) |
+| PuTTY | Windows 注册表文件 `.reg` | 检查文件后，将它合并到目标 Windows 用户的注册表。重新打开 PuTTY，可在 Saved Sessions 中选择会话。合并前请核对同名会话。 |
+
+导出包含连接地址、端口、用户名及目标格式支持的连接设置。OpenSSH 格式会一并写入连接所需的跳板机。密码、私钥口令和私钥内容保留在本机。若使用私钥，迁移到另一台电脑后需确认密钥路径。
+
 ---
 
 ## AI 与 MCP 集成

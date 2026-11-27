@@ -1684,7 +1684,18 @@ html, body, #root {
   font-weight: 600;
 }
 
+.sftp-grid { display: block; }
+.sftp-rows { position: relative; width: 100%; }
+.sftp-empty { padding: 26px; text-align: center; color: var(--ink-tertiary); font-size: 12.5px; }
+.sftp-folder-icon { color: var(--accent); flex-shrink: 0; }
+.sftp-file-icon { color: var(--ink-secondary); flex-shrink: 0; }
+.sftp-permissions { font-size: 10.5px; color: var(--ink-tertiary); white-space: nowrap; }
+
 .sftp-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1723,10 +1734,12 @@ html, body, #root {
   gap: 2px;
 }
 
-.sftp-row:hover .sftp-row-actions {
+.sftp-row:hover .sftp-row-actions,
+.sftp-grid:focus-within .sftp-row.selected .sftp-row-actions {
   display: flex;
 }
-.sftp-row:hover .sftp-row-meta {
+.sftp-row:hover .sftp-row-meta,
+.sftp-grid:focus-within .sftp-row.selected .sftp-row-meta {
   display: none;
 }
 

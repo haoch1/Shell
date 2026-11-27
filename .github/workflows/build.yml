@@ -80,6 +80,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           go test -run '^$' -bench '^BenchmarkStdioDiscovery' -benchmem -benchtime=1s ./internal/agentbridge
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          go test -run '^$' -bench '^(BenchmarkSFTPDirectoryBrowse|BenchmarkSFTPTransfer)$' -benchmem -benchtime=3x ./internal/remote
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Determine release version
         id: meta

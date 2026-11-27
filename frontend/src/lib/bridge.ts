@@ -61,6 +61,8 @@ interface GoAppBindings {
   SaveTranscript(defaultName: string, content: string): Promise<string>;
 
   RealPath(id: string, dir: string): Promise<string>;
+  BrowseDirectory(id: string, dir: string): Promise<{ path: string; entries: RemoteEntry[] }>;
+  ResolveFileLink(id: string, path: string): Promise<RemoteEntry>;
   ListFiles(id: string, dir: string): Promise<RemoteEntry[]>;
   PickUploadFiles(): Promise<string[]>;
   UploadLocalPaths(id: string, dir: string, paths: string[], overwrite: boolean): Promise<string[]>;

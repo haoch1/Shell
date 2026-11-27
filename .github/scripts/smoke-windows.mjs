@@ -2,6 +2,7 @@
 // 1. Launches the real compiled Shell.exe with an isolated profile and verifies Win32 window + WebView2 renderer startup & clean exit.
 // 2. Renders the exact built frontend/dist bundle in headless Edge (1280x820 @2x) via CDP, asserts zero errors, exercises all views, and captures UI screenshots.
 import assert from 'node:assert/strict';
+import { verifyLargeDirectory } from './sftp-large-directory.mjs';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
@@ -228,6 +229,12 @@ const BRIDGE_MOCK_SCRIPT = `
     InstallPublicKey: async () => {},
     SaveTranscript: async () => '',
     RealPath: async (_id, d) => d === '.' ? '/home/deploy/app' : d,
+    BrowseDirectory: async (id, dir) => {
+      const api = window.go.main.App;
+      const path = await api.RealPath(id, dir);
+      return { path, entries: await api.ListFiles(id, path) };
+    },
+    ResolveFileLink: async () => { throw new Error('Unexpected link lookup'); },
     ListFiles: async () => [
       { name: 'docker', path: '/home/deploy/app/docker', isDir: true, isSymlink: false, size: 4096, mode: 0o755, perm: 'drwxr-xr-x', modTime: Math.floor(Date.now()/1000) - 3600 },
       { name: 'logs', path: '/home/deploy/app/logs', isDir: true, isSymlink: false, size: 4096, mode: 0o755, perm: 'drwxr-xr-x', modTime: Math.floor(Date.now()/1000) - 900 },
@@ -570,6 +577,7 @@ async function verifyFrontendUI() {
     assert.equal(await evaluate(`document.querySelector('${pathSelector}').value`), '/home/deploy', 'Late results must preserve the current directory');
     assert.ok(await evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'Late results must preserve the current file list');
     await click('.sftp-toolbar button[title="主目录"]');
+    await verifyLargeDirectory(evaluate, until);
 
     // Tunnels Drawer
     await click('#tunnelsBtn');

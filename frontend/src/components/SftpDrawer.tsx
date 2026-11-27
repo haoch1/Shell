@@ -1,29 +1,22 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp,
   ChevronRight,
-  Copy,
-  Download,
   Eye,
   EyeOff,
-  FileCode2,
   FilePlus,
-  FileText,
   Folder,
   FolderPlus,
   Home,
-  Pencil,
   RefreshCw,
   Search,
-  Shield,
   Terminal,
-  Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import type { RemoteEntry, SessionRecord, TransferProgress } from '../types/shell';
 import { copyToClipboard, errorMessage, getApi, onDesktopEvent } from '../lib/bridge';
-import { formatBytes, formatModTime } from '../lib/utils';
+import { SftpEntryList, type SftpRowAction } from './SftpEntryList';
 
 interface SftpDrawerProps {
   session: SessionRecord;
@@ -36,6 +29,7 @@ interface SftpDrawerProps {
 }
 
 type SortKey = 'name' | 'size' | 'modTime';
+const names = new Intl.Collator();
 
 export const SftpDrawer: React.FC<SftpDrawerProps> = ({
   session,
@@ -54,9 +48,11 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
   const [filter, setFilter] = useState('');
   const [showHidden, setShowHidden] = useState(false);
   const [sortBy, setSortBy] = useState<SortKey>('name');
-  const [selected, setSelected] = useState<string | null>(null);
+  const deferredFilter = useDeferredValue(filter);
   const [dropActive, setDropActive] = useState(false);
   const directoryRequest = useRef(0);
+  const pendingDirectory = useRef('');
+  const activationRequest = useRef(0);
 
   // Inline modal prompt for mkdir / new file / rename / chmod
   const [actionModal, setActionModal] = useState<
@@ -68,30 +64,32 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
   >(null);
 
   const loadDir = async (target: string) => {
+    target = target || '.';
+    if (pendingDirectory.current === target) return;
+    pendingDirectory.current = target;
     const request = ++directoryRequest.current;
     setLoading(true);
     setErr('');
     try {
-      const api = getApi();
-      const canonical = await api.RealPath(session.id, target || '.').catch(() => target || '.');
-      if (request !== directoryRequest.current) return;
-      const list = await api.ListFiles(session.id, canonical);
+      const { path: canonical, entries: list } = await getApi().BrowseDirectory(session.id, target);
       if (request !== directoryRequest.current) return;
       setDir(canonical);
       setPathInput(canonical);
       onUpdateDir(canonical);
       setEntries(list || []);
-      setSelected(null);
     } catch (e) {
       if (request === directoryRequest.current) setErr(errorMessage(e));
     } finally {
-      if (request === directoryRequest.current) setLoading(false);
+      if (request === directoryRequest.current) {
+        pendingDirectory.current = '';
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     void loadDir(session.dir || '.');
-    return () => { directoryRequest.current++; };
+    return () => { directoryRequest.current++; pendingDirectory.current = ''; };
   }, [session.id]);
 
   // Listen to native Windows file drops from Wails OnFileDrop
@@ -126,17 +124,16 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
     return out;
   }, [dir]);
 
+  const sortedEntries = useMemo(() => [...entries].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    if (sortBy === 'size') return b.size - a.size;
+    if (sortBy === 'modTime') return b.modTime - a.modTime;
+    return names.compare(a.name, b.name);
+  }), [entries, sortBy]);
   const visibleEntries = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return entries
-      .filter((e) => (showHidden || !e.name.startsWith('.')) && (!q || e.name.toLowerCase().includes(q)))
-      .sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        if (sortBy === 'size') return b.size - a.size;
-        if (sortBy === 'modTime') return b.modTime - a.modTime;
-        return a.name.localeCompare(b.name);
-      });
-  }, [entries, filter, showHidden, sortBy]);
+    const q = deferredFilter.trim().toLowerCase();
+    return sortedEntries.filter((e) => (showHidden || !e.name.startsWith('.')) && (!q || e.name.toLowerCase().includes(q)));
+  }, [sortedEntries, deferredFilter, showHidden]);
 
   const parentDir = () => {
     if (dir === '/' || dir === '') return '/';
@@ -161,14 +158,33 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
     }
   };
 
-  const handleDownload = async (entry: RemoteEntry) => {
+  const rowAction = useRef<(kind: SftpRowAction, entry: RemoteEntry) => void>(() => {});
+  rowAction.current = async (kind, entry) => {
     try {
-      const saved = await getApi().DownloadFile(session.id, entry.path, true);
-      if (saved) onToast(`已下载：${entry.name}`);
+      switch (kind) {
+        case 'copy': await copyToClipboard(entry.path); onToast('已复制远端路径'); return;
+        case 'rename': setActionModal({ kind, entry, value: entry.name }); return;
+        case 'chmod': setActionModal({ kind, entry, value: entry.mode.toString(8).padStart(3, '0') }); return;
+        case 'delete': setActionModal({ kind, entry }); return;
+      }
+      const request = directoryRequest.current;
+      const activation = ++activationRequest.current;
+      const target = entry.isSymlink ? await getApi().ResolveFileLink(session.id, entry.path) : entry;
+      if (request !== directoryRequest.current || activation !== activationRequest.current) return;
+      if (target.isDir) {
+        if (kind === 'download') onToast('此链接指向目录');
+        else void loadDir(entry.path);
+      } else if (kind === 'download') {
+        const saved = await getApi().DownloadFile(session.id, entry.path, true);
+        if (saved) onToast(`已下载：${entry.name}`);
+      } else {
+        onEditFile(entry.path);
+      }
     } catch (e) {
       setErr(errorMessage(e));
     }
   };
+  const handleRowAction = useCallback((kind: SftpRowAction, entry: RemoteEntry) => rowAction.current(kind, entry), []);
 
   const submitAction = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -349,125 +365,8 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
         {err && <p className="error-text">{err}</p>}
       </div>
 
-      <div className="drawer-body">
-        {loading && entries.length === 0 ? (
-          <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink-tertiary)' }}>正在读取目录…</div>
-        ) : visibleEntries.length === 0 ? (
-          <div style={{ padding: 28, textAlign: 'center', color: 'var(--ink-tertiary)', fontSize: 12.5 }}>
-            目录为空，可拖放本地文件到此处上传
-          </div>
-        ) : (
-          visibleEntries.map((entry) => {
-            const isSel = selected === entry.path;
-            return (
-              <div
-                key={entry.path}
-                className={`sftp-row ${isSel ? 'selected' : ''}`}
-                onClick={() => setSelected(entry.path)}
-                onDoubleClick={() => {
-                  if (entry.isDir) void loadDir(entry.path);
-                  else onEditFile(entry.path);
-                }}
-              >
-                {entry.isDir ? (
-                  <Folder size={15} strokeWidth={1.7} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                ) : (
-                  <FileText size={15} strokeWidth={1.6} style={{ color: 'var(--ink-secondary)', flexShrink: 0 }} />
-                )}
-
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="sftp-row-name" title={entry.name}>
-                    {entry.name}
-                    {entry.isSymlink ? ' ↗' : ''}
-                  </div>
-                  <div style={{ fontSize: 10.5, color: 'var(--ink-tertiary)' }} className="mono">
-                    {entry.perm} · {formatModTime(entry.modTime)}
-                  </div>
-                </div>
-
-                <span className="sftp-row-meta mono">
-                  {entry.isDir ? '目录' : formatBytes(entry.size)}
-                </span>
-
-                <div className="sftp-row-actions">
-                  {!entry.isDir && (
-                    <>
-                      <button
-                        type="button"
-                        className="host-action-btn"
-                        title="在线编辑"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onEditFile(entry.path);
-                        }}
-                      >
-                        <FileCode2 size={13} />
-                      </button>
-                      <button
-                        type="button"
-                        className="host-action-btn"
-                        title="下载"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleDownload(entry);
-                        }}
-                      >
-                        <Download size={13} />
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    className="host-action-btn"
-                    title="复制路径"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void copyToClipboard(entry.path);
-                      onToast('已复制远端路径');
-                    }}
-                  >
-                    <Copy size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    className="host-action-btn"
-                    title="重命名"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActionModal({ kind: 'rename', entry, value: entry.name });
-                    }}
-                  >
-                    <Pencil size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    className="host-action-btn"
-                    title="修改权限 (chmod)"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActionModal({ kind: 'chmod', entry, value: entry.mode.toString(8).padStart(3, '0') });
-                    }}
-                  >
-                    <Shield size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    className="host-action-btn"
-                    title="删除"
-                    style={{ color: 'var(--red)' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActionModal({ kind: 'delete', entry });
-                    }}
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
+      <SftpEntryList key={dir} entries={visibleEntries} busy={loading && entries.length === 0}
+        filtered={Boolean(deferredFilter.trim())} onAction={handleRowAction} />
 
       {sessionTransfers.length > 0 && (
         <div className="transfer-dock">

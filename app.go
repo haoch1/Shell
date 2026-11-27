@@ -913,6 +913,22 @@ func (a *App) ListFiles(id, dir string) ([]remote.Entry, error) {
 	return s.List(dir)
 }
 
+func (a *App) BrowseDirectory(id, dir string) (remote.DirectoryListing, error) {
+	s, err := a.get(id)
+	if err != nil {
+		return remote.DirectoryListing{}, err
+	}
+	return s.BrowseDirectory(a.ctx, dir)
+}
+
+func (a *App) ResolveFileLink(id, filePath string) (remote.Entry, error) {
+	s, err := a.get(id)
+	if err != nil {
+		return remote.Entry{}, err
+	}
+	return s.ResolveFileLink(filePath)
+}
+
 func newTransferID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])

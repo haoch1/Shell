@@ -30,6 +30,11 @@ type Entry struct {
 	ModTime   int64  `json:"modTime"`
 }
 
+type DirectoryListing struct {
+	Path    string  `json:"path"`
+	Entries []Entry `json:"entries"`
+}
+
 type ProgressFunc func(transferred, total int64)
 
 func (s *Session) fileClient() (*sftp.Client, error) {
@@ -39,7 +44,7 @@ func (s *Session) fileClient() (*sftp.Client, error) {
 		return nil, net.ErrClosed
 	}
 	if s.files == nil {
-		c, err := sftp.NewClient(s.client)
+		c, err := sftp.NewClient(s.client, sftp.UseFstat(true))
 		if err != nil {
 			return nil, fmt.Errorf("启动 SFTP 子系统失败：%w", err)
 		}
@@ -66,48 +71,11 @@ func (s *Session) RealPath(dir string) (string, error) {
 }
 
 func (s *Session) List(dir string) ([]Entry, error) {
-	c, err := s.fileClient()
+	listing, err := s.readDirectory(context.Background(), dir, true)
 	if err != nil {
 		return nil, err
 	}
-	if dir == "" || dir == "~" {
-		dir = "."
-	}
-	base := dir
-	if resolved, err := c.RealPath(dir); err == nil && resolved != "" {
-		base = resolved
-	}
-	items, err := c.ReadDir(base)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]Entry, 0, len(items))
-	for _, item := range items {
-		name := item.Name()
-		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
-			continue
-		}
-		fullPath := path.Join(base, name)
-		isSymlink := item.Mode()&os.ModeSymlink != 0
-		isDir := item.IsDir()
-		size := item.Size()
-		if isSymlink {
-			if targetInfo, err := c.Stat(fullPath); err == nil {
-				isDir = targetInfo.IsDir()
-				size = targetInfo.Size()
-			}
-		}
-		result = append(result, Entry{
-			Name:      name,
-			Path:      fullPath,
-			IsDir:     isDir,
-			IsSymlink: isSymlink,
-			Size:      size,
-			Mode:      uint32(item.Mode().Perm()),
-			Perm:      item.Mode().String(),
-			ModTime:   item.ModTime().Unix(),
-		})
-	}
+	result := listing.Entries
 	sort.SliceStable(result, func(i, j int) bool {
 		a, b := result[i], result[j]
 		if a.IsDir != b.IsDir {
@@ -116,6 +84,79 @@ func (s *Session) List(dir string) ([]Entry, error) {
 		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
 	})
 	return result, nil
+}
+
+// BrowseDirectory returns READDIR attributes. The GUI sorts them and resolves a link only when opened.
+func (s *Session) BrowseDirectory(ctx context.Context, dir string) (DirectoryListing, error) {
+	return s.readDirectory(ctx, dir, false)
+}
+
+func (s *Session) readDirectory(ctx context.Context, dir string, followLinks bool) (DirectoryListing, error) {
+	if err := ctx.Err(); err != nil {
+		return DirectoryListing{}, err
+	}
+	c, err := s.fileClient()
+	if err != nil {
+		return DirectoryListing{}, err
+	}
+	if dir == "" || dir == "~" {
+		dir = "."
+	}
+	base := dir
+	if resolved, err := c.RealPath(dir); err == nil && resolved != "" {
+		base = resolved
+	}
+	if err := ctx.Err(); err != nil {
+		return DirectoryListing{}, err
+	}
+	items, err := c.ReadDirContext(ctx, base)
+	if err != nil {
+		return DirectoryListing{}, err
+	}
+	result := make([]Entry, 0, len(items))
+	for _, item := range items {
+		name := item.Name()
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
+			continue
+		}
+		fullPath := path.Join(base, name)
+		entry := directoryEntry(fullPath, item)
+		if followLinks && entry.IsSymlink {
+			if targetInfo, err := c.Stat(fullPath); err == nil {
+				entry.IsDir = targetInfo.IsDir()
+				entry.Size = targetInfo.Size()
+			}
+		}
+		result = append(result, entry)
+	}
+	return DirectoryListing{Path: base, Entries: result}, nil
+}
+
+func directoryEntry(fullPath string, item os.FileInfo) Entry {
+	return Entry{
+		Name:      path.Base(fullPath),
+		Path:      fullPath,
+		IsDir:     item.IsDir(),
+		IsSymlink: item.Mode()&os.ModeSymlink != 0,
+		Size:      item.Size(),
+		Mode:      uint32(item.Mode().Perm()),
+		Perm:      item.Mode().String(),
+		ModTime:   item.ModTime().Unix(),
+	}
+}
+
+func (s *Session) ResolveFileLink(fullPath string) (Entry, error) {
+	c, err := s.fileClient()
+	if err != nil {
+		return Entry{}, err
+	}
+	target, err := c.Stat(fullPath)
+	if err != nil {
+		return Entry{}, err
+	}
+	entry := directoryEntry(fullPath, target)
+	entry.IsSymlink = true
+	return entry, nil
 }
 
 func checkDestination(_ os.FileInfo, err error) error {
@@ -165,28 +206,71 @@ func replaceRemote(c *sftp.Client, tmp, target string) error {
 	return nil
 }
 
+// pkg/sftp's default packet payload is 32 KiB. One packet never needs a pipeline.
+const sftpPacketSize = 32 << 10
+
+type transferProgress struct {
+	ctx      context.Context
+	total    int64
+	done     int64
+	lastEmit time.Time
+	onProg   ProgressFunc
+}
+
+func (p *transferProgress) advance(n int) {
+	p.done += int64(n)
+	// Only the caller can report completion after closing and publishing the temporary file.
+	if n > 0 && p.onProg != nil && p.done < p.total && time.Since(p.lastEmit) >= 80*time.Millisecond {
+		p.lastEmit = time.Now()
+		p.onProg(p.done, p.total)
+	}
+}
+
 type progressReader struct {
-	ctx       context.Context
-	r         io.Reader
-	total     int64
-	done      int64
-	lastEmit  time.Time
-	onProg    ProgressFunc
+	*transferProgress
+	r io.Reader
 }
 
 func (p *progressReader) Read(buf []byte) (int, error) {
-	if p.ctx != nil && p.ctx.Err() != nil {
-		return 0, p.ctx.Err()
+	if err := p.ctx.Err(); err != nil {
+		return 0, err
 	}
 	n, err := p.r.Read(buf)
-	if n > 0 {
-		p.done += int64(n)
-		if p.onProg != nil && (time.Since(p.lastEmit) >= 80*time.Millisecond || p.done >= p.total) {
-			p.lastEmit = time.Now()
-			p.onProg(p.done, p.total)
-		}
-	}
+	p.advance(n)
 	return n, err
+}
+
+type progressWriter struct {
+	*transferProgress
+	w io.Writer
+}
+
+func (p *progressWriter) Write(buf []byte) (int, error) {
+	if err := p.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := p.w.Write(buf)
+	p.advance(n)
+	return n, err
+}
+
+func (p *transferProgress) upload(dst *sftp.File, src io.Reader) (int64, error) {
+	reader := &progressReader{p, src}
+	if p.total <= sftpPacketSize {
+		return dst.ReadFrom(reader)
+	}
+	// Limit in-flight writes on this exclusive temporary file. Other SFTP writes stay sequential.
+	workers := min(int64(64), 1+(p.total-1)/sftpPacketSize)
+	return dst.ReadFromWithConcurrency(reader, int(workers))
+}
+
+func (p *transferProgress) download(dst io.Writer, src *sftp.File) (int64, error) {
+	writer := &progressWriter{p, dst}
+	if p.total <= sftpPacketSize {
+		// Avoid an extra FSTAT to estimate worker count. Also detect growth of the source.
+		return io.Copy(writer, io.LimitReader(src, p.total+1))
+	}
+	return src.WriteTo(writer)
 }
 
 // Upload uploads a local regular file without overwriting existing remote targets (backward-compatible signature).
@@ -196,6 +280,12 @@ func (s *Session) Upload(local, remote string) error {
 
 // UploadFile uploads a local regular file to remote path with progress reporting and optional overwrite.
 func (s *Session) UploadFile(ctx context.Context, localPath, remotePath string, overwrite bool, onProgress ProgressFunc) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	src, err := os.Open(localPath)
 	if err != nil {
 		return err
@@ -237,8 +327,8 @@ func (s *Session) UploadFile(ctx context.Context, localPath, remotePath string, 
 	if onProgress != nil {
 		onProgress(0, info.Size())
 	}
-	reader := &progressReader{ctx: ctx, r: src, total: info.Size(), onProg: onProgress}
-	n, copyErr := io.Copy(dst, reader)
+	progress := &transferProgress{ctx: ctx, total: info.Size(), onProg: onProgress}
+	n, copyErr := progress.upload(dst, src)
 	closeErr := dst.Close()
 	if copyErr != nil {
 		return copyErr
@@ -249,7 +339,7 @@ func (s *Session) UploadFile(ctx context.Context, localPath, remotePath string, 
 	if n != info.Size() {
 		return errors.New("上传期间本地文件的大小发生变化")
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if overwrite {
@@ -270,6 +360,12 @@ func (s *Session) Download(remote, local string) error {
 
 // DownloadFile downloads a remote regular file with progress reporting and optional overwrite.
 func (s *Session) DownloadFile(ctx context.Context, remotePath, localPath string, overwrite bool, onProgress ProgressFunc) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !overwrite {
 		if err := checkDestination(os.Lstat(localPath)); err != nil {
 			return err
@@ -299,8 +395,8 @@ func (s *Session) DownloadFile(ctx context.Context, remotePath, localPath string
 	if onProgress != nil {
 		onProgress(0, info.Size())
 	}
-	reader := &progressReader{ctx: ctx, r: src, total: info.Size(), onProg: onProgress}
-	n, err := io.Copy(temp, reader)
+	progress := &transferProgress{ctx: ctx, total: info.Size(), onProg: onProgress}
+	n, err := progress.download(temp, src)
 	if err == nil && n != info.Size() {
 		err = errors.New("传输未完成，远端文件大小可能已变化")
 	}
@@ -314,7 +410,7 @@ func (s *Session) DownloadFile(ctx context.Context, remotePath, localPath string
 	if closeErr != nil {
 		return closeErr
 	}
-	if ctx != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if err := publishDownloadMode(temp.Name(), localPath, overwrite); err != nil {

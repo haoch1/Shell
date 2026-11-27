@@ -1,10 +1,31 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/haoch1/Shell/internal/local"
 )
+
+func TestExplainTerminalStopsOnInvalidRedactionSettings(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LOCALAPPDATA", root)
+	dir := filepath.Join(root, "Shell")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app := newApp()
+	app.ctx = t.Context()
+	text, err := app.ExplainTerminal("sample terminal output", "explain")
+	if text != "" || err == nil || !strings.Contains(err.Error(), "脱敏设置") {
+		t.Fatalf("expected redaction settings error, got %q, %v", text, err)
+	}
+}
 
 func TestSaveProfileWithSecretRetainsPasswordOnEdit(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())

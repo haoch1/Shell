@@ -1359,12 +1359,14 @@ func (a *App) SuggestCommand(request, osHint string) (local.AIResult, error) {
 func (a *App) ExplainTerminal(selectedText, question string) (string, error) {
 	ctx, done := a.beginAI()
 	defer done()
-	if cfg, err := local.LoadAgentConfig(); err == nil {
-		red := security.Redact(selectedText, cfg.Redaction)
-		selectedText = red.Text
-		if red.Count > 0 {
-			runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("发送至 AI 前已自动脱敏 %d 处敏感信息", red.Count))
-		}
+	cfg, err := local.LoadAgentConfig()
+	if err != nil {
+		return "", fmt.Errorf("无法读取终端内容脱敏设置：%w", err)
+	}
+	red := security.Redact(selectedText, cfg.Redaction)
+	selectedText = red.Text
+	if red.Count > 0 {
+		runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("发送至 AI 前已自动脱敏 %d 处敏感信息", red.Count))
 	}
 	return local.ExplainStream(ctx, selectedText, question, func(delta string) {
 		runtime.EventsEmit(a.ctx, "ai:delta", delta)

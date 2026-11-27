@@ -100,21 +100,39 @@ func dialTCPWithProxy(ctx context.Context, targetAddr string, p ProxyConfig) (ne
 			conn.Close()
 			return nil, fmt.Errorf("发送 HTTP CONNECT 请求失败：%w", err)
 		}
-		br := bufio.NewReader(conn)
-		resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+		tunnel, err := readConnectResponse(conn)
 		if err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("读取 HTTP 代理响应失败：%w", err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			conn.Close()
-			return nil, fmt.Errorf("HTTP 代理拒绝连接：HTTP %d %s", resp.StatusCode, resp.Status)
+			return nil, err
 		}
 		_ = conn.SetDeadline(time.Time{})
-		return conn, nil
+		return tunnel, nil
 
 	default:
 		return nil, fmt.Errorf("不支持的代理协议：%s（支持 socks5 或 http）", p.Type)
 	}
+}
+
+type bufferedTunnel struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedTunnel) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+func readConnectResponse(conn net.Conn) (net.Conn, error) {
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		return nil, fmt.Errorf("读取 HTTP 代理响应失败：%w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP 代理拒绝连接：%s", resp.Status)
+	}
+	// RFC 9110 §9.3.6: after the successful header block all remaining
+	// bytes are tunnel data, including an SSH banner already read ahead.
+	if reader.Buffered() > 0 {
+		return &bufferedTunnel{Conn: conn, reader: reader}, nil
+	}
+	return conn, nil
 }

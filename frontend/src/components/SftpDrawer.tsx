@@ -63,9 +63,9 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
     | { kind: 'delete'; entry: RemoteEntry }
   >(null);
 
-  const loadDir = async (target: string) => {
+  const loadDir = async (target: string, afterMutation = false) => {
     target = target || '.';
-    if (pendingDirectory.current === target) return;
+    if (pendingDirectory.current === target && !afterMutation) return;
     pendingDirectory.current = target;
     const request = ++directoryRequest.current;
     setLoading(true);
@@ -102,7 +102,7 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
         const done = await getApi().UploadLocalPaths(session.id, dir, payload.paths, true);
         if (done?.length) {
           onToast(`已上传 ${done.length} 个文件`);
-          if (request === directoryRequest.current) void loadDir(dir);
+          if (request === directoryRequest.current) void loadDir(dir, true);
         }
       } catch (e) {
         setErr(errorMessage(e));
@@ -151,7 +151,7 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
       const done = await getApi().UploadLocalPaths(session.id, dir, paths, true);
       if (done?.length) {
         onToast(`已上传 ${done.length} 个文件`);
-        if (request === directoryRequest.current) void loadDir(dir);
+        if (request === directoryRequest.current) void loadDir(dir, true);
       }
     } catch (e) {
       setErr(errorMessage(e));
@@ -227,7 +227,7 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
         onToast(`已删除 ${actionModal.entry.name}`);
       }
       setActionModal(null);
-      if (request === directoryRequest.current) void loadDir(dir);
+      if (request === directoryRequest.current) void loadDir(dir, true);
     } catch (ex) {
       setErr(errorMessage(ex));
     }

@@ -85,6 +85,7 @@ interface GoAppBindings {
 
   GetSettings(): Promise<AppSettings>;
   SaveSettings(s: AppSettings): Promise<AppSettings>;
+  UpdatePreferences(changes: Partial<AppSettings>): Promise<AppSettings>;
   DetectSystemProxy(): Promise<SystemProxyInfo>;
 
   KnownHosts(): Promise<KnownHostEntry[]>;

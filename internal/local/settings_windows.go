@@ -1,7 +1,6 @@
 package local
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -117,30 +116,56 @@ func normalizeSettings(s AppSettings) AppSettings {
 func LoadSettings() (AppSettings, error) {
 	result := DefaultSettings()
 	err := withStore(func(dir string) error {
-		data, err := readLimited(filepath.Join(dir, "settings.json"), 256<<10)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if !json.Valid(data) || json.NewDecoder(bytes.NewReader(data)).Decode(&result) != nil {
-			return errors.New("应用配置文件格式无效")
-		}
-		result = normalizeSettings(result)
-		return nil
+		return readSettings(dir, &result)
 	})
 	return result, err
 }
 
+func readSettings(dir string, result *AppSettings) error {
+	data, err := readLimited(filepath.Join(dir, "settings.json"), 256<<10)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if json.Unmarshal(data, result) != nil {
+		return errors.New("应用配置文件格式无效")
+	}
+	*result = normalizeSettings(*result)
+	return nil
+}
+
+func writeSettings(dir string, s AppSettings) error {
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(filepath.Join(dir, "settings.json"), data)
+}
+
 func SaveSettings(s AppSettings) (AppSettings, error) {
 	s = normalizeSettings(s)
+	err := withStore(func(dir string) error { return writeSettings(dir, s) })
+	return s, err
+}
+
+// UpdateSettings edits the latest settings under the same cross-process lock used for writing.
+func UpdateSettings(edit func(*AppSettings) error) (AppSettings, error) {
+	s := DefaultSettings()
 	err := withStore(func(dir string) error {
-		data, err := json.MarshalIndent(s, "", "  ")
-		if err != nil {
+		if err := readSettings(dir, &s); err != nil {
 			return err
 		}
-		return writeAtomic(filepath.Join(dir, "settings.json"), data)
+		before := s
+		if err := edit(&s); err != nil {
+			return err
+		}
+		s = normalizeSettings(s)
+		if before == s {
+			return nil
+		}
+		return writeSettings(dir, s)
 	})
 	return s, err
 }

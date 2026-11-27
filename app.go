@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -103,24 +104,19 @@ func (a *App) saveWindowBounds(ctx context.Context) {
 	if ctx == nil || runtime.WindowIsMinimised(ctx) {
 		return
 	}
-	st, err := local.LoadSettings()
-	if err != nil {
-		return
-	}
 	maximised := runtime.WindowIsMaximised(ctx)
-	changed := st.WindowMaximised != maximised
-	st.WindowMaximised = maximised
+	var w, h int
 	if !maximised {
-		w, h := runtime.WindowGetSize(ctx)
-		if w >= 880 && w <= 3840 && h >= 560 && h <= 2160 && (w != st.WindowWidth || h != st.WindowHeight) {
+		w, h = runtime.WindowGetSize(ctx)
+	}
+	_, _ = local.UpdateSettings(func(st *local.AppSettings) error {
+		st.WindowMaximised = maximised
+		if w >= 880 && w <= 3840 && h >= 560 && h <= 2160 {
 			st.WindowWidth = w
 			st.WindowHeight = h
-			changed = true
 		}
-	}
-	if changed {
-		_, _ = local.SaveSettings(st)
-	}
+		return nil
+	})
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
@@ -213,12 +209,10 @@ func (a *App) ToggleMCPFromTray() {
 }
 
 func (a *App) ToggleCloseToTray() {
-	st, err := local.LoadSettings()
-	if err != nil {
-		return
-	}
-	st.CloseToTray = !st.CloseToTray
-	saved, err := local.SaveSettings(st)
+	saved, err := local.UpdateSettings(func(st *local.AppSettings) error {
+		st.CloseToTray = !st.CloseToTray
+		return nil
+	})
 	if err != nil {
 		return
 	}
@@ -1151,6 +1145,24 @@ func (a *App) DeleteSnippet(id string) error                      { return local
 func (a *App) GetSettings() (local.AppSettings, error) { return local.LoadSettings() }
 func (a *App) SaveSettings(s local.AppSettings) (local.AppSettings, error) {
 	return local.SaveSettings(s)
+}
+
+func (a *App) UpdatePreferences(changes map[string]any) (local.AppSettings, error) {
+	data, err := json.Marshal(changes)
+	if err != nil {
+		return local.AppSettings{}, err
+	}
+	return local.UpdateSettings(func(current *local.AppSettings) error {
+		s := *current
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		s.WindowWidth = current.WindowWidth
+		s.WindowHeight = current.WindowHeight
+		s.WindowMaximised = current.WindowMaximised
+		*current = s
+		return nil
+	})
 }
 
 func (a *App) KnownHosts() ([]local.KnownHostEntry, error) { return local.ListKnownHosts() }

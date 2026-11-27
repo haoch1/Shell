@@ -27,6 +27,37 @@ func TestExplainTerminalStopsOnInvalidRedactionSettings(t *testing.T) {
 	}
 }
 
+func TestPreferencesKeepConcurrentTrayAndWindowChanges(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	app := newApp()
+	finished := make(chan error, 2)
+	go func() {
+		_, err := local.UpdateSettings(func(s *local.AppSettings) error {
+			s.WindowWidth = 1450
+			s.WindowHeight = 950
+			return nil
+		})
+		finished <- err
+	}()
+	go func() {
+		_, err := app.UpdatePreferences(map[string]any{"fontSize": 17, "windowWidth": 880})
+		finished <- err
+	}()
+	app.ToggleCloseToTray()
+	for range 2 {
+		if err := <-finished; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := app.UpdatePreferences(map[string]any{"theme": "dark", "fontSize": "invalid"}); err == nil {
+		t.Fatal("accepted invalid preference value")
+	}
+	s, err := local.LoadSettings()
+	if err != nil || s.WindowWidth != 1450 || s.WindowHeight != 950 || s.FontSize != 17 || s.CloseToTray || s.Theme != "light" {
+		t.Fatalf("lost or partially applied a preference update: %+v, %v", s, err)
+	}
+}
+
 func TestSaveProfileWithSecretRetainsPasswordOnEdit(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	app := newApp()

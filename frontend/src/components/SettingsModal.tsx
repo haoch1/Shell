@@ -50,7 +50,7 @@ interface SettingsModalProps {
   updateError?: string;
   onCheckUpdate?: () => Promise<void>;
   onApplyUpdate?: () => Promise<void>;
-  onUpdateSettings: (next: AppSettings) => Promise<void>;
+  onUpdateSettings: (changes: Partial<AppSettings>) => Promise<void>;
   onAgentStatusChanged: (st: AgentStatusView) => void;
   onOpenImportSSH: () => void;
   onClose: () => void;
@@ -176,7 +176,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }, [onClose]);
 
   const patch = (partial: Partial<AppSettings>) => {
-    void onUpdateSettings({ ...settings, ...partial });
+    void onUpdateSettings(partial);
   };
 
   const filteredKnownHosts = useMemo(() => {

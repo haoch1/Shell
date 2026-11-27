@@ -123,6 +123,7 @@ export const App: React.FC = () => {
   const [updateError, setUpdateError] = useState('');
 
   const writeChainsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const settingsWrite = useRef(Promise.resolve());
   const wsMapRef = useRef<Map<string, WebSocket>>(new Map());
   const connectingRef = useRef(new Map<string, { controller: AbortController; requestedProfile: string }>());
   const lastSizeRef = useRef<Map<string, string>>(new Map());
@@ -905,18 +906,24 @@ export const App: React.FC = () => {
     [activeLeaf, activeTab, handlePaneInput],
   );
 
-  const updateSettings = useCallback(async (next: AppSettings) => {
-    setSettings(next);
-    if (hasDesktopBridge()) {
-      const saved = await getApi().SaveSettings(next);
-      setSettings(saved);
-    }
-  }, []);
+  const updateSettings = useCallback(async (changes: Partial<AppSettings>) => {
+    setSettings((current) => ({ ...current, ...changes }));
+    if (!hasDesktopBridge()) return;
+    settingsWrite.current = settingsWrite.current.then(async () => {
+      const saved = await getApi().UpdatePreferences(changes);
+      setSettings((current) => {
+        const keys = Object.keys(changes) as (keyof AppSettings)[];
+        const confirmed = keys.filter((key) => current[key] === changes[key]);
+        return { ...current, ...Object.fromEntries(confirmed.map((key) => [key, saved[key]])) };
+      });
+    }).catch((error) => toast(`保存设置失败：${errorMessage(error)}`));
+    await settingsWrite.current;
+  }, [toast]);
 
   const handleFontZoom = useCallback(
     (delta: number) => {
       const nextSize = delta === 0 ? 14 : Math.max(10, Math.min(28, settings.fontSize + delta));
-      void updateSettings({ ...settings, fontSize: nextSize });
+      void updateSettings({ fontSize: nextSize });
       toast(`终端字号 ${nextSize}px`);
     },
     [settings, toast, updateSettings],
@@ -1080,7 +1087,6 @@ export const App: React.FC = () => {
           onToggleTheme={() => {
             const nextDark = !isDark;
             void updateSettings({
-              ...settings,
               theme: nextDark ? 'dark' : 'light',
               terminalTheme: syncTerminalThemeForAppearance(settings.terminalTheme, nextDark),
             });
@@ -1304,7 +1310,6 @@ export const App: React.FC = () => {
           onToggleTheme={() => {
             const nextDark = !isDark;
             void updateSettings({
-              ...settings,
               theme: nextDark ? 'dark' : 'light',
               terminalTheme: syncTerminalThemeForAppearance(settings.terminalTheme, nextDark),
             });

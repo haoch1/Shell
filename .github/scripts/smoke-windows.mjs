@@ -238,8 +238,9 @@ const BRIDGE_MOCK_SCRIPT = `
     Snippets: async () => snippets,
     SaveSnippet: async (s) => { const item = { ...s, id: s.id || 's' + Date.now() }; snippets = [...snippets.filter(x => x.id !== item.id), item]; return item; },
     DeleteSnippet: async (id) => { snippets = snippets.filter(x => x.id !== id); },
-    GetSettings: async () => settings,
-    SaveSettings: async (s) => { settings = { ...settings, ...s }; return settings; },
+    GetSettings: async () => ({ ...settings }),
+    SaveSettings: async (s) => { settings = { ...s }; return { ...settings }; },
+    UpdatePreferences: async (changes) => { settings = { ...settings, ...changes }; return { ...settings }; },
     DetectSystemProxy: async () => ({ enabled: true, protocol: 'http', host: '127.0.0.1', port: 7897, source: 'windows', summary: 'http://127.0.0.1:7897' }),
     KnownHosts: async () => [
       { line: 1, hosts: ['[56.10.113.238]:58222'], keyType: 'ecdsa-sha2-nistp256', fingerprint: 'SHA256:a0Skqj56tH4NyA2btG9Q42FObzEfH8hM53BL9Y3Xd2I' },
@@ -440,10 +441,10 @@ async function verifyFrontendUI() {
 
     // Toggle Dark Mode on Welcome Workbench to verify dark OS icons + IPv6 display
     await click('button[aria-label="切换深浅色外观"]');
-    await sleep(250);
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'dark' && s.fontSize === 14)"), 'persisted dark theme and preserved font size');
     await shot('16-Workbench-Dark');
     await click('button[aria-label="切换深浅色外观"]');
-    await sleep(200);
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'light')"), 'persisted light theme');
 
     // Host modal (Basic + Jump/Proxy identical height guard)
     await click('#addHost');

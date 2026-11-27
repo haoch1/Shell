@@ -3,9 +3,9 @@ package agentbridge
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +46,8 @@ func TestPipeDiscoveryAndAuthentication(t *testing.T) {
 		if err := ProxyStdioToHTTP(strings.NewReader(initializeRequest+"\n"), &out, func() (Endpoint, error) { return ep, nil }); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out.String(), "\"error\":") != wantError || tcpRequests.Load() != wantTCP {
+		var response rpcResponse
+		if err := json.Unmarshal(out.Bytes(), &response); err != nil || string(response.ID) != "9007199254740993" || (response.Error != nil) != wantError || tcpRequests.Load() != wantTCP {
 			t.Fatalf("error=%v tcp=%d response=%s", wantError, tcpRequests.Load(), out.String())
 		}
 	}
@@ -119,10 +120,5 @@ func BenchmarkStdioDiscoveryPipe(b *testing.B) {
 	bridge := New(stubHandler{})
 	bridge.SetToken("fixture")
 	ep := Endpoint{URL: "http://127.0.0.1:17822/mcp", Token: "fixture", PID: os.Getpid(), PipeID: startPipeFixture(b, http.HandlerFunc(bridge.handleMCP))}
-	b.ReportAllocs()
-	for b.Loop() {
-		if err := ProxyStdioToHTTP(strings.NewReader(discoveryMessages), io.Discard, func() (Endpoint, error) { return ep, nil }); err != nil {
-			b.Fatal(err)
-		}
-	}
+	benchmarkStdioDiscovery(b, ep)
 }

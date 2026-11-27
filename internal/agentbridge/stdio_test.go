@@ -162,7 +162,15 @@ func BenchmarkStdioDiscovery(b *testing.B) {
 	bridge.SetToken("fixture")
 	srv := httptest.NewServer(http.HandlerFunc(bridge.handleMCP))
 	defer srv.Close()
-	resolve := func() (Endpoint, error) { return Endpoint{URL: srv.URL, Token: "fixture"}, nil }
+	benchmarkStdioDiscovery(b, Endpoint{URL: srv.URL, Token: "fixture"})
+}
+
+func benchmarkStdioDiscovery(b *testing.B, endpoint Endpoint) {
+	resolve := func() (Endpoint, error) { return endpoint, nil }
+	var initial bytes.Buffer
+	if err := ProxyStdioToHTTP(strings.NewReader(discoveryMessages), &initial, resolve); err != nil || !strings.Contains(initial.String(), "shell_ping") {
+		b.Fatalf("discovery failed before timing: %v %s", err, initial.String())
+	}
 	b.ReportAllocs()
 	for b.Loop() {
 		if err := ProxyStdioToHTTP(strings.NewReader(discoveryMessages), io.Discard, resolve); err != nil {

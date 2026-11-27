@@ -42,7 +42,6 @@ func LoadAI() (AISettings, error) {
 	err := withStore(func(dir string) error {
 		err := readProtected(filepath.Join(dir, "ai.dpapi"), &result)
 		if errors.Is(err, os.ErrNotExist) {
-			result.Endpoint = "http://127.0.0.1:11434/v1"
 			return nil
 		}
 		return err
@@ -89,11 +88,32 @@ func SaveAI(s AISettings) error {
 	return withStore(func(dir string) error { return writeProtected(filepath.Join(dir, "ai.dpapi"), s) })
 }
 
+var aiTransport = http.DefaultTransport.(*http.Transport).Clone()
+
 var aiClient = &http.Client{
-	Timeout: 90 * time.Second,
+	Timeout:   90 * time.Second,
+	Transport: aiTransport,
 	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	},
+}
+
+// SetAIProxyFunc configures an outbound proxy resolver (e.g., Windows system proxy) for AI HTTP requests.
+func SetAIProxyFunc(fn func(*http.Request) (*url.URL, error)) {
+	if fn == nil {
+		aiTransport.Proxy = http.ProxyFromEnvironment
+		return
+	}
+	aiTransport.Proxy = fn
+}
+
+func isAnthropicEndpoint(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "api.anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
 }
 
 type message struct {
@@ -107,10 +127,14 @@ func doChatRequest(ctx context.Context, s AISettings, messages []message, stream
 		return nil, err
 	}
 	payload := struct {
-		Model    string    `json:"model"`
-		Messages []message `json:"messages"`
-		Stream   bool      `json:"stream,omitempty"`
+		Model     string    `json:"model"`
+		Messages  []message `json:"messages"`
+		Stream    bool      `json:"stream,omitempty"`
+		MaxTokens int       `json:"max_tokens,omitempty"`
 	}{Model: s.Model, Messages: messages, Stream: stream}
+	if isAnthropicEndpoint(endpoint) {
+		payload.MaxTokens = 4096
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -127,6 +151,9 @@ func doChatRequest(ctx context.Context, s AISettings, messages []message, stream
 	}
 	if s.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+s.APIKey)
+	}
+	if isAnthropicEndpoint(endpoint) {
+		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 	resp, err := aiClient.Do(req)
 	if err != nil {

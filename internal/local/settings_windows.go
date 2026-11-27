@@ -30,6 +30,7 @@ type AppSettings struct {
 	ProxyUser        string  `json:"proxyUser,omitempty"`
 	ConfirmOnClose   bool    `json:"confirmOnClose"`
 	CloseToTray      bool    `json:"closeToTray"`
+	AutoCheckUpdate  bool    `json:"autoCheckUpdate"`
 	WindowWidth      int     `json:"windowWidth,omitempty"`
 	WindowHeight     int     `json:"windowHeight,omitempty"`
 	WindowMaximised  bool    `json:"windowMaximised,omitempty"`
@@ -53,6 +54,7 @@ func DefaultSettings() AppSettings {
 		ProxyMode:        "direct",
 		ConfirmOnClose:   true,
 		CloseToTray:      true,
+		AutoCheckUpdate:  true,
 		WindowWidth:      1280,
 		WindowHeight:     820,
 		WindowMaximised:  false,

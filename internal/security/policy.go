@@ -35,7 +35,7 @@ type PolicyConfig struct {
 
 func DefaultPolicyConfig() PolicyConfig {
 	return PolicyConfig{
-		Mode: ModeSmart,
+		Mode: ModeTrusted,
 		DeniedPaths: []string{
 			"/etc/shadow",
 			"/etc/gshadow",

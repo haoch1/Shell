@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -81,5 +82,13 @@ func writeAtomic(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+	var moveErr error
+	for attempt := 0; attempt < 6; attempt++ {
+		moveErr = windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+		if moveErr == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+	}
+	return moveErr
 }

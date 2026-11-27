@@ -181,7 +181,7 @@ interface HostIconProps {
   profile?: Pick<Profile, 'icon' | 'color' | 'name' | 'host' | 'group' | 'tags'>;
   iconOverride?: HostIconId;
   colorOverride?: ProfileColor;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   isLive?: boolean;
 }
 
@@ -195,7 +195,7 @@ export const HostIcon: React.FC<HostIconProps> = ({
   const resolvedIcon = iconOverride !== undefined ? (iconOverride || inferHostIcon(profile)) : inferHostIcon(profile);
   const customColor = colorOverride ?? profile?.color;
   const theme = BRAND_THEMES[resolvedIcon];
-  const glyphSize = size === 'sm' ? 13 : size === 'lg' ? 18 : 16;
+  const glyphSize = size === 'xs' ? 11 : size === 'sm' ? 12.5 : size === 'lg' ? 17 : 15;
 
   const customHex = customColor ? profileColorHex(customColor) : '';
   const styleVars = (customHex

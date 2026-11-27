@@ -113,6 +113,9 @@ func RunAgentLoop(
 			"tools":       openAITools,
 			"tool_choice": "auto",
 		}
+		if isAnthropicEndpoint(endpoint) {
+			payload["max_tokens"] = 4096
+		}
 		body, err := json.Marshal(payload)
 		if err != nil {
 			return "", err
@@ -125,6 +128,9 @@ func RunAgentLoop(
 		req.Header.Set("Accept", "application/json")
 		if s.APIKey != "" {
 			req.Header.Set("Authorization", "Bearer "+s.APIKey)
+		}
+		if isAnthropicEndpoint(endpoint) {
+			req.Header.Set("anthropic-version", "2023-06-01")
 		}
 		resp, err := aiClient.Do(req)
 		if err != nil {

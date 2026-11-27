@@ -203,6 +203,11 @@ func ResolveSystemProxy(targetAddr string) (ProxyConfig, bool) {
 	}, true
 }
 
+// ShouldBypass reports whether host matches the detected Windows system proxy bypass list.
+func (s SystemProxyInfo) ShouldBypass(host string) bool {
+	return shouldBypassProxy(host, s.Bypass)
+}
+
 func shouldBypassProxy(host, bypassList string) bool {
 	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
 	if host == "" {

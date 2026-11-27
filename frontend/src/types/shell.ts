@@ -173,6 +173,7 @@ export interface AppSettings {
   proxyUser?: string;
   confirmOnClose: boolean;
   closeToTray: boolean;
+  autoCheckUpdate?: boolean;
 }
 
 export interface KnownHostEntry {
@@ -256,6 +257,7 @@ export interface RedactionConfig {
 export interface AgentConfig {
   enabled: boolean;
   port: number;
+  execMode?: 'silent' | 'visible';
   policy: PolicyConfig;
   redaction: RedactionConfig;
 }
@@ -335,6 +337,27 @@ export interface AgentStepEvent {
 export interface AppInfoView {
   version: string;
   dataDir: string;
+}
+
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  releaseUrl: string;
+  notes: string;
+  publishedAt?: string;
+  assetName?: string;
+  assetSize?: number;
+  downloadUrl?: string;
+  checksumsUrl?: string;
+}
+
+export interface UpdateProgress {
+  phase: 'checking' | 'downloading' | 'verifying' | 'applying' | 'restarting' | 'error';
+  downloaded: number;
+  total: number;
+  percent: number;
+  message: string;
 }
 
 export interface HostVerifyRequest {

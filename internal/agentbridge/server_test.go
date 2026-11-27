@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -21,9 +22,16 @@ func (stubHandler) CallTool(_ context.Context, source, _ string, toolName string
 }
 
 func TestMCPStreamableHTTPAuthOriginAndStdioProxy(t *testing.T) {
+	probeLn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freePort := probeLn.Addr().(*net.TCPAddr).Port
+	_ = probeLn.Close()
+
 	srv := New(stubHandler{})
 	const tok = "sh_unit_test_secret_token_0123456789"
-	port, err := srv.Start(0, tok)
+	port, err := srv.Start(freePort, tok)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -58,7 +58,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           </span>
         </span>
         {jumpHostName && (
-          <span className="pill-badge neutral" style={{ fontSize: 10.5 }}>
+          <span className="pill-badge neutral" style={{ fontSize: 11, height: 18, lineHeight: 1 }}>
             via {jumpHostName}
           </span>
         )}
@@ -75,19 +75,19 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             style={{ color: 'var(--green)' }}
             onClick={onOpenTunnels}
           >
-            {activeTunnelsCount} 转发运行中
+            {activeTunnelsCount} 转发
           </button>
         )}
         {agentStatus?.running && (
           <button
             type="button"
             className="telemetry-trigger"
-            style={{ color: 'var(--accent)' }}
+            style={{ color: 'var(--accent)', gap: 4 }}
             onClick={onOpenAgentSettings}
-            title="本地 MCP Agent 服务运行中，点击管理权限与脱敏"
+            title="本地 MCP Agent 服务运行中，点击管理权限与执行方式"
           >
-            <Bot size={11} />
-            MCP :{agentStatus.port}
+            <Bot size={12} />
+            <span>MCP :{agentStatus.port}</span>
           </button>
         )}
       </div>
@@ -110,7 +110,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             )}
           </button>
         )}
-        <span className="mono" style={{ opacity: 0.75 }}>
+        <span className="status-chip mono" style={{ opacity: 0.78 }}>
           {session.cols}×{session.rows}
         </span>
       </div>

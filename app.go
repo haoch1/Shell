@@ -22,7 +22,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-var appVersion = "1.1.0"
+var appVersion = "1.2.0"
 
 type liveSession struct {
 	cancel  context.CancelFunc
@@ -34,6 +34,7 @@ type App struct {
 	ctx              context.Context
 	mu               sync.Mutex
 	live             map[string]*liveSession
+	headless         map[string]*liveSession
 	verify           map[string]chan bool
 	challenges       map[string]chan challengeReply
 	approvals        map[string]chan string
@@ -45,6 +46,11 @@ type App struct {
 	quitting         atomic.Bool
 	aiCancel         context.CancelFunc
 	aiSequence       uint64
+	agentCfgMu       sync.RWMutex
+	agentCfg         local.AgentConfig
+	agentCfgLoaded   bool
+	updateMu         sync.Mutex
+	updating         bool
 }
 
 type challengeReply struct {
@@ -53,8 +59,10 @@ type challengeReply struct {
 }
 
 func newApp() *App {
+	local.SetAIProxyFunc(outboundHTTPProxy)
 	a := &App{
 		live:             make(map[string]*liveSession),
+		headless:         make(map[string]*liveSession),
 		verify:           make(map[string]chan bool),
 		challenges:       make(map[string]chan challengeReply),
 		approvals:        make(map[string]chan string),
@@ -146,7 +154,7 @@ func (a *App) QuitApp() {
 func (a *App) ActiveSessionCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return len(a.live)
+	return len(a.live) + len(a.headless)
 }
 
 func (a *App) DisconnectAllSessions() {
@@ -155,12 +163,28 @@ func (a *App) DisconnectAllSessions() {
 	for id := range a.live {
 		ids = append(ids, id)
 	}
+	headlessList := make([]*liveSession, 0, len(a.headless))
+	for id, e := range a.headless {
+		headlessList = append(headlessList, e)
+		delete(a.headless, id)
+	}
 	a.mu.Unlock()
 	for _, id := range ids {
 		a.Disconnect(id)
 	}
-	if a.ctx != nil && len(ids) > 0 {
-		runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("已断开 %d 个 SSH 会话", len(ids)))
+	for _, e := range headlessList {
+		if e != nil {
+			if e.cancel != nil {
+				e.cancel()
+			}
+			if e.session != nil {
+				e.session.Close()
+			}
+		}
+	}
+	total := len(ids) + len(headlessList)
+	if a.ctx != nil && total > 0 {
+		runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("已断开 %d 个 SSH 会话", total))
 	}
 }
 
@@ -215,6 +239,11 @@ func (a *App) shutdown(context.Context) {
 	for id := range a.live {
 		ids = append(ids, id)
 	}
+	headlessList := make([]*liveSession, 0, len(a.headless))
+	for id, e := range a.headless {
+		headlessList = append(headlessList, e)
+		delete(a.headless, id)
+	}
 	for tid, cancel := range a.transfers {
 		cancel()
 		delete(a.transfers, tid)
@@ -225,6 +254,16 @@ func (a *App) shutdown(context.Context) {
 	a.mu.Unlock()
 	for _, id := range ids {
 		a.Disconnect(id)
+	}
+	for _, e := range headlessList {
+		if e != nil {
+			if e.cancel != nil {
+				e.cancel()
+			}
+			if e.session != nil {
+				e.session.Close()
+			}
+		}
 	}
 }
 
@@ -412,6 +451,7 @@ func (a *App) DuplicateProfile(id string) (ProfileView, error) {
 
 func (a *App) DeleteProfile(id string) error     { return local.DeleteProfile(id) }
 func (a *App) DeleteProfiles(ids []string) error { return local.DeleteProfiles(ids) }
+func (a *App) ClearRecentHosts() error           { return local.ClearRecentProfiles() }
 func (a *App) ForgetSecret(id string) error      { return local.ForgetSecret(id) }
 
 func (a *App) PickKey() (string, error) {

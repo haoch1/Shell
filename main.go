@@ -55,6 +55,7 @@ func main() {
 		fmt.Println("Shell", appVersion)
 		return
 	}
+	cleanupPreviousExecutable()
 
 	assets, err := fs.Sub(embedded, "frontend/dist")
 	if err != nil {

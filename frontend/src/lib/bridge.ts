@@ -24,11 +24,14 @@ import type {
   SystemProxyInfo,
   TunnelRule,
   TunnelStatus,
+  UpdateInfo,
 } from '../types/shell';
 
 interface GoAppBindings {
   AppInfo(): Promise<AppInfoView>;
   OpenDataDir(): Promise<void>;
+  CheckForUpdate(): Promise<UpdateInfo>;
+  DownloadAndApplyUpdate(): Promise<void>;
   TermWSURL(sessionId: string): Promise<string>;
   Profiles(): Promise<Profile[]>;
   SaveProfile(p: Profile): Promise<Profile>;
@@ -37,6 +40,7 @@ interface GoAppBindings {
   DuplicateProfile(id: string): Promise<Profile>;
   DeleteProfile(id: string): Promise<void>;
   DeleteProfiles(ids: string[]): Promise<void>;
+  ClearRecentHosts(): Promise<void>;
   ForgetSecret(id: string): Promise<void>;
   PickKey(): Promise<string>;
 

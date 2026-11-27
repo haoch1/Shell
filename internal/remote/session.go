@@ -2,7 +2,6 @@
 package remote
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -62,18 +61,21 @@ type Session struct {
 	write        sync.Mutex
 	fileMu       sync.Mutex
 	files        *sftp.Client
-	tunnelMu     sync.Mutex
-	tunnels      map[string]*activeTunnel
-	latencyMs    atomic.Int64
-	ringMu       sync.Mutex
-	ringBuf      []byte
-	statsMu      sync.Mutex
-	prevCPU      [7]float64
-	hasPrevCPU   bool
-	staticHost   string
-	staticOS     string
-	staticKernel string
-	staticCores  int
+	tunnelMu         sync.Mutex
+	tunnels          map[string]*activeTunnel
+	latencyMs        atomic.Int64
+	ringMu           sync.Mutex
+	ringBuf          []byte
+	statsMu          sync.Mutex
+	prevCPU          [7]float64
+	hasPrevCPU       bool
+	staticHost       string
+	staticOS         string
+	staticKernel     string
+	staticCores      int
+	execWorkerMu     sync.Mutex
+	execWorker       *sshExecWorker
+	noPersistentExec atomic.Bool
 }
 
 type outputWriter struct {
@@ -554,66 +556,36 @@ func (s *Session) Exec(ctx context.Context, command string, maxBytes int64) (str
 }
 
 // ExecDetailed runs a non-interactive command and returns separated stdout, stderr, exit code, and timing.
+// It uses a persistent multiplexed `sh -s` worker channel for 1-RTT execution when idle,
+// and falls back seamlessly to a fresh SSH channel for concurrent calls or non-POSIX remotes.
 func (s *Session) ExecDetailed(ctx context.Context, command string, maxBytes int64) (ExecResult, error) {
 	if s.closed.Load() {
 		return ExecResult{}, net.ErrClosed
 	}
-	t0 := time.Now()
-	sess, err := s.client.NewSession()
-	if err != nil {
-		return ExecResult{}, err
-	}
-	defer sess.Close()
-
-	stdout, err := sess.StdoutPipe()
-	if err != nil {
-		return ExecResult{}, err
-	}
-	stderr, err := sess.StderrPipe()
-	if err != nil {
-		return ExecResult{}, err
-	}
-	if err := sess.Start(command); err != nil {
-		return ExecResult{}, err
-	}
-	stop := context.AfterFunc(ctx, func() { sess.Close() })
-	defer stop()
-
-	if maxBytes <= 0 {
-		maxBytes = 256 << 10
-	}
-	var outBuf, errBuf bytes.Buffer
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&outBuf, io.LimitReader(stdout, maxBytes))
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&errBuf, io.LimitReader(stderr, maxBytes/2))
-	}()
-	wg.Wait()
-
-	waitErr := sess.Wait()
-	res := ExecResult{
-		Stdout:     outBuf.String(),
-		Stderr:     errBuf.String(),
-		ExitCode:   0,
-		DurationMs: time.Since(t0).Milliseconds(),
-	}
-	if waitErr != nil {
-		var exitErr *ssh.ExitError
-		if errors.As(waitErr, &exitErr) {
-			res.ExitCode = exitErr.ExitStatus()
-		} else {
-			res.ExitCode = -1
+	if !s.noPersistentExec.Load() && s.execWorkerMu.TryLock() {
+		defer s.execWorkerMu.Unlock()
+		if s.execWorker == nil || s.execWorker.closed {
+			w, err := startExecWorker(s.client)
+			if err != nil {
+				s.noPersistentExec.Store(true)
+				return s.execOneShot(ctx, command, maxBytes)
+			}
+			s.execWorker = w
 		}
+		res, err := s.execWorker.run(ctx, command, maxBytes)
+		if err == nil {
+			return res, nil
+		}
+		// If the worker died unexpectedly (e.g. restricted/non-POSIX shell) and context wasn't canceled,
+		// mark persistent mode unavailable and retry once over standard exec channel.
+		if ctx.Err() == nil && !s.closed.Load() {
+			s.execWorker = nil
+			s.noPersistentExec.Store(true)
+			return s.execOneShot(ctx, command, maxBytes)
+		}
+		return res, err
 	}
-	if ctx.Err() != nil {
-		return res, ctx.Err()
-	}
-	return res, waitErr
+	return s.execOneShot(ctx, command, maxBytes)
 }
 
 // InstallPublicKey appends an OpenSSH public key line to ~/.ssh/authorized_keys safely without duplicates.
@@ -642,7 +614,7 @@ func validSize(cols, rows int) bool {
 func (s *Session) Write(b []byte) error {
 	s.write.Lock()
 	defer s.write.Unlock()
-	if s.closed.Load() {
+	if s.closed.Load() || s.input == nil {
 		return net.ErrClosed
 	}
 	n, err := s.input.Write(b)
@@ -656,7 +628,7 @@ func (s *Session) Resize(cols, rows int) error {
 	if !validSize(cols, rows) {
 		return errors.New("终端尺寸无效")
 	}
-	if s.closed.Load() {
+	if s.closed.Load() || s.pty == nil {
 		return net.ErrClosed
 	}
 	return s.pty.WindowChange(rows, cols)
@@ -668,6 +640,13 @@ func (s *Session) Close() {
 	}
 	if s.stopKeep != nil {
 		s.stopKeep()
+	}
+	if s.execWorkerMu.TryLock() {
+		if s.execWorker != nil {
+			s.execWorker.close()
+			s.execWorker = nil
+		}
+		s.execWorkerMu.Unlock()
 	}
 	s.CloseAllTunnels()
 	if s.stop != nil {

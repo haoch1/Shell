@@ -305,9 +305,9 @@ func (s *Server) dispatchMCP(ctx context.Context, req rpcRequest, clientName str
 				},
 				"serverInfo": map[string]any{
 					"name":    "Shell SSH Client",
-					"version": "2.1.0",
+					"version": "1.2.0",
 				},
-				"instructions": "Shell SSH Client MCP Bridge. All outputs are automatically redacted for secrets/PII, and mutating commands follow the user's permission & approval policy.",
+				"instructions": "Shell SSH Client MCP Bridge. You can pass `host` (saved host name, IP, or ID) directly to shell_exec, shell_sftp_*, or shell_server_stats for automatic zero-friction connection & persistent-channel execution. Outputs are automatically redacted for secrets/PII.",
 			},
 		}
 
@@ -351,11 +351,41 @@ func (s *Server) dispatchMCP(ctx context.Context, req rpcRequest, clientName str
 }
 
 // ProxyStdioToHTTP implements `Shell.exe --mcp` stdio JSON-RPC 2.0 mode by forwarding cleanly
-// to the running Shell desktop window's local MCP HTTP endpoint.
+// to the running Shell desktop window's local MCP HTTP endpoint with keep-alive pooling and token caching.
 func ProxyStdioToHTTP(in io.Reader, out io.Writer, resolveEndpoint func() (string, string, error)) error {
 	scanner := bufioNewScanner(in)
-	httpClient := &http.Client{Timeout: 180 * time.Second}
+	transport := &http.Transport{
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	httpClient := &http.Client{Timeout: 180 * time.Second, Transport: transport}
 	enc := json.NewEncoder(out)
+
+	var cachedEndpoint, cachedToken string
+	getEndpoint := func(forceRefresh bool) (string, string, error) {
+		if !forceRefresh && cachedEndpoint != "" && cachedToken != "" {
+			return cachedEndpoint, cachedToken, nil
+		}
+		ep, tok, err := resolveEndpoint()
+		if err != nil {
+			cachedEndpoint, cachedToken = "", ""
+			return "", "", err
+		}
+		cachedEndpoint, cachedToken = ep, tok
+		return ep, tok, nil
+	}
+
+	sendOnce := func(endpoint, token string, line []byte) (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(line)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-MCP-Client", "Shell stdio MCP")
+		return httpClient.Do(req)
+	}
 
 	for scanner.Scan() {
 		line := bytesTrimSpace(scanner.Bytes())
@@ -368,7 +398,7 @@ func ProxyStdioToHTTP(in io.Reader, out io.Writer, resolveEndpoint func() (strin
 		}
 		_ = json.Unmarshal(line, &probe)
 
-		endpoint, token, err := resolveEndpoint()
+		endpoint, token, err := getEndpoint(false)
 		if err != nil {
 			if probe.ID != nil {
 				_ = enc.Encode(rpcResponse{
@@ -380,15 +410,16 @@ func ProxyStdioToHTTP(in io.Reader, out io.Writer, resolveEndpoint func() (strin
 			continue
 		}
 
-		req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(line)))
-		if err != nil {
-			continue
+		resp, err := sendOnce(endpoint, token, line)
+		if err != nil || (resp != nil && resp.StatusCode == http.StatusUnauthorized) {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			// Re-resolve endpoint/token once (e.g. if Shell restarted on a new port or rotated token).
+			if ep2, tok2, err2 := getEndpoint(true); err2 == nil {
+				resp, err = sendOnce(ep2, tok2, line)
+			}
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-MCP-Client", "Shell stdio MCP")
-
-		resp, err := httpClient.Do(req)
 		if err != nil {
 			if probe.ID != nil {
 				_ = enc.Encode(rpcResponse{

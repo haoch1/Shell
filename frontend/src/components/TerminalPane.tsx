@@ -12,6 +12,7 @@ import {
   Download,
   Eraser,
   FolderOpen,
+  Loader2,
   RefreshCw,
   Search,
   Sparkles,
@@ -256,9 +257,6 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       clear: () => term.clear(),
     });
 
-    term.writeln(
-      `\x1b[90m正在连接 ${session.profile.user}@${session.profile.host}:${session.profile.port} …\x1b[0m`,
-    );
     requestAnimationFrame(() => {
       doFit();
       resizeRef.current(term.cols, term.rows);
@@ -360,6 +358,15 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       >
         <div ref={hostRef} className="pane-xterm-host" />
       </div>
+
+      {session.state === 'connecting' && (
+        <div className="pane-connecting-bar">
+          <Loader2 size={13} className="spin" />
+          <span className="mono">
+            正在连接 {session.profile.user}@{session.profile.host}:{session.profile.port} …
+          </span>
+        </div>
+      )}
 
       {session.state === 'closed' && (
         <div className="pane-closed-bar">

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -39,20 +40,39 @@ func (s AISettings) Ready() bool {
 	return strings.TrimSpace(s.Endpoint) != "" && strings.TrimSpace(s.Model) != ""
 }
 
-// DetectAICLIs scans PATH for common local AI CLI tools (Claude Code, Codex CLI, Gemini CLI).
+// DetectAICLIs scans PATH (and standard install directories) for local AI CLI tools.
 func DetectAICLIs() []DetectedAICLI {
 	specs := []struct {
-		id      string
-		name    string
-		command string
+		id        string
+		name      string
+		command   string
+		fallbacks []string
 	}{
 		{id: "claude", name: "Claude Code", command: "claude"},
 		{id: "codex", name: "Codex CLI", command: "codex"},
-		{id: "gemini", name: "Gemini CLI", command: "gemini"},
+		{
+			id:      "agy",
+			name:    "Antigravity CLI",
+			command: "agy",
+			fallbacks: []string{
+				filepath.Join(os.Getenv("LOCALAPPDATA"), "agy", "bin", "agy.exe"),
+			},
+		},
 	}
 	out := make([]DetectedAICLI, 0, len(specs))
 	for _, sp := range specs {
 		p, err := exec.LookPath(sp.command)
+		if err != nil || p == "" {
+			for _, fb := range sp.fallbacks {
+				if fb != "" {
+					if st, stErr := os.Stat(fb); stErr == nil && !st.IsDir() {
+						p = fb
+						err = nil
+						break
+					}
+				}
+			}
+		}
 		out = append(out, DetectedAICLI{
 			ID:        sp.id,
 			Name:      sp.name,
@@ -67,7 +87,7 @@ func DetectAICLIs() []DetectedAICLI {
 func validateCLISettings(s AISettings) error {
 	cmd := strings.TrimSpace(s.CLICommand)
 	if cmd == "" {
-		return errors.New("请选择或填写本地 AI CLI 命令（例如 claude、codex、gemini）")
+		return errors.New("请选择或填写本地 AI CLI 命令（例如 agy、claude、codex、gemini）")
 	}
 	if len(cmd) > 512 || strings.IndexFunc(cmd, unicode.IsControl) >= 0 {
 		return errors.New("CLI 命令格式无效")
@@ -160,6 +180,13 @@ func buildCLICommandArgs(s AISettings, fullPrompt string) (bin string, args []st
 		args = append(args, extra...)
 		args = append(args, "-")
 		return bin, args, fullPrompt
+	case "agy":
+		args = append(args, "-p", "--output-format", "text", "--disable-slash-commands")
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		args = append(args, extra...)
+		return bin, args, fullPrompt
 	case "gemini":
 		if model != "" {
 			args = append(args, "-m", model)
@@ -177,6 +204,13 @@ func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt s
 	}
 	bin := strings.TrimSpace(s.CLICommand)
 	resolved, err := exec.LookPath(bin)
+	if err != nil && strings.EqualFold(bin, "agy") {
+		fb := filepath.Join(os.Getenv("LOCALAPPDATA"), "agy", "bin", "agy.exe")
+		if st, stErr := os.Stat(fb); stErr == nil && !st.IsDir() {
+			resolved = fb
+			err = nil
+		}
+	}
 	if err != nil {
 		return "", fmt.Errorf("未在本机 PATH 中找到命令「%s」，请先安装对应 CLI 或填写可执行文件完整路径", bin)
 	}

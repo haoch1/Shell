@@ -9,8 +9,10 @@ import {
   FolderOpen,
   Info,
   KeyRound,
+  Loader2,
   Palette,
   Plus,
+  RefreshCw,
   Search,
   Send,
   Shield,
@@ -28,6 +30,8 @@ import type {
   KnownHostEntry,
   LocalKeyInfo,
   SystemProxyInfo,
+  UpdateInfo,
+  UpdateProgress,
 } from '../types/shell';
 import { syncTerminalThemeForAppearance, TERMINAL_THEMES } from '../lib/themes';
 import { copyToClipboard, errorMessage, getApi, openExternalURL } from '../lib/bridge';
@@ -39,6 +43,13 @@ interface SettingsModalProps {
   initialTab: SettingsTab;
   settings: AppSettings;
   activeSessionId?: string;
+  updateInfo?: UpdateInfo | null;
+  updateProgress?: UpdateProgress | null;
+  checkingUpdate?: boolean;
+  updatingApp?: boolean;
+  updateError?: string;
+  onCheckUpdate?: () => Promise<void>;
+  onApplyUpdate?: () => Promise<void>;
   onUpdateSettings: (next: AppSettings) => Promise<void>;
   onAgentStatusChanged: (st: AgentStatusView) => void;
   onOpenImportSSH: () => void;
@@ -48,16 +59,16 @@ interface SettingsModalProps {
 }
 
 const AI_PRESETS = [
+  { id: 'claude', label: 'Claude', sub: 'api.anthropic.com', endpoint: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-6' },
+  { id: 'chatgpt', label: 'ChatGPT', sub: 'api.openai.com', endpoint: 'https://api.openai.com/v1', model: 'gpt-5-mini' },
+  { id: 'gemini', label: 'Gemini', sub: 'generativelanguage.googleapis.com', endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
   { id: 'deepseek', label: 'DeepSeek', sub: 'api.deepseek.com', endpoint: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-  { id: 'openai', label: 'OpenAI', sub: 'api.openai.com', endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-  { id: 'ollama', label: 'Ollama 本地', sub: '127.0.0.1:11434', endpoint: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder:7b' },
-  { id: 'openrouter', label: 'OpenRouter', sub: 'openrouter.ai', endpoint: 'https://openrouter.ai/api/v1', model: 'anthropic/claude-3.5-haiku' },
 ];
 
 const AI_CLI_PRESETS = [
   { id: 'claude', label: 'Claude Code', command: 'claude', modelHint: '留空使用默认，如 sonnet / opus' },
   { id: 'codex', label: 'Codex CLI', command: 'codex', modelHint: '留空使用默认，如 o3 / gpt-5' },
-  { id: 'gemini', label: 'Gemini CLI', command: 'gemini', modelHint: '留空使用默认，如 gemini-2.5-pro' },
+  { id: 'agy', label: 'Antigravity CLI', command: 'agy', modelHint: '留空使用默认模型' },
   { id: 'custom', label: '自定义 CLI', command: '', modelHint: '可选模型参数' },
 ];
 
@@ -84,6 +95,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   initialTab,
   settings,
   activeSessionId,
+  updateInfo,
+  updateProgress,
+  checkingUpdate = false,
+  updatingApp = false,
+  updateError = '',
+  onCheckUpdate,
+  onApplyUpdate,
   onUpdateSettings,
   onAgentStatusChanged,
   onOpenImportSSH,
@@ -92,7 +110,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onToast,
 }) => {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
-  const [themeFilter, setThemeFilter] = useState<'all' | 'dark' | 'light'>('all');
   const [knownHosts, setKnownHosts] = useState<KnownHostEntry[]>([]);
   const [khQuery, setKhQuery] = useState('');
   const [selectedLines, setSelectedLines] = useState<Record<number, boolean>>({});
@@ -112,11 +129,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // AI settings state
   const [aiCfg, setAiCfg] = useState<AIConfigView | null>(null);
   const [aiMode, setAiMode] = useState<AIProviderMode>('api');
-  const [aiEndpoint, setAiEndpoint] = useState('https://api.deepseek.com/v1');
+  const [aiEndpoint, setAiEndpoint] = useState('');
   const [aiModel, setAiModel] = useState('');
   const [aiKey, setAiKey] = useState('');
   const [clearAiKey, setClearAiKey] = useState(false);
-  const [cliCommand, setCliCommand] = useState('claude');
+  const [cliCommand, setCliCommand] = useState('agy');
   const [cliModel, setCliModel] = useState('');
   const [cliArgs, setCliArgs] = useState('');
   const [detectedCLIs, setDetectedCLIs] = useState<DetectedAICLI[]>([]);
@@ -141,7 +158,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .then((c) => {
         setAiCfg(c);
         setAiMode(c.mode === 'cli' ? 'cli' : 'api');
-        setAiEndpoint(c.endpoint || 'https://api.deepseek.com/v1');
+        setAiEndpoint(c.endpoint || '');
         setAiModel(c.model || '');
         if (c.cliCommand) setCliCommand(c.cliCommand);
         setCliModel(c.cliModel || '');
@@ -396,52 +413,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 <div className="pref-section">
-                  <div className="pref-section-head">
-                    <span className="pref-section-title">终端配色</span>
-                    <div className="segmented" style={{ padding: 2 }}>
-                      {(
-                        [
-                          { id: 'all', label: '全部' },
-                          { id: 'dark', label: '深色' },
-                          { id: 'light', label: '浅色' },
-                        ] as const
-                      ).map((f) => (
-                        <button
-                          key={f.id}
-                          type="button"
-                          style={{ padding: '2px 9px', fontSize: 11.5 }}
-                          className={themeFilter === f.id ? 'active' : ''}
-                          onClick={() => setThemeFilter(f.id)}
-                        >
-                          {f.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  <div className="pref-section-title">终端配色</div>
                   <div className="pref-group-pad">
                     <div className="theme-grid">
-                      {themeFilter === 'all' && (
-                        <button
-                          type="button"
-                          className={`theme-tile ${settings.terminalTheme === 'auto' || !settings.terminalTheme ? 'active' : ''}`}
-                          onClick={() => patch({ terminalTheme: 'auto' })}
-                        >
-                          <div className="theme-swatch-box theme-swatch-auto">
-                            <span className="theme-swatch-half light">
-                              <span style={{ color: '#2563EB' }}>&gt;_</span>
-                              <span style={{ fontSize: 9.5, opacity: 0.72 }}>浅色</span>
-                            </span>
-                            <span className="theme-swatch-half dark">
-                              <span style={{ color: '#34D399' }}>&gt;_</span>
-                              <span style={{ fontSize: 9.5, opacity: 0.78 }}>深色</span>
-                            </span>
-                          </div>
-                          <span style={{ fontSize: 12, fontWeight: 500 }}>跟随界面外观</span>
-                        </button>
-                      )}
-                      {TERMINAL_THEMES.filter((p) =>
-                        themeFilter === 'all' ? true : themeFilter === 'dark' ? p.isDark : !p.isDark,
-                      ).map((preset) => (
+                      <button
+                        type="button"
+                        className={`theme-tile ${settings.terminalTheme === 'auto' || !settings.terminalTheme ? 'active' : ''}`}
+                        onClick={() => patch({ terminalTheme: 'auto' })}
+                      >
+                        <div className="theme-swatch-box theme-swatch-auto">
+                          <span className="theme-swatch-half light">
+                            <span style={{ color: '#2563EB' }}>&gt;_</span>
+                            <span style={{ fontSize: 9, opacity: 0.72 }}>浅色</span>
+                          </span>
+                          <span className="theme-swatch-half dark">
+                            <span style={{ color: '#34D399' }}>&gt;_</span>
+                            <span style={{ fontSize: 9, opacity: 0.78 }}>深色</span>
+                          </span>
+                        </div>
+                        <span style={{ fontSize: 11.5, fontWeight: 500 }}>跟随界面外观</span>
+                      </button>
+                      {TERMINAL_THEMES.map((preset) => (
                         <button
                           key={preset.id}
                           type="button"
@@ -457,7 +449,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </span>
                             <span style={{ color: preset.preview[2] }}>ls -la</span>
                           </div>
-                          <span style={{ fontSize: 12, fontWeight: 500 }}>{preset.name}</span>
+                          <span style={{ fontSize: 11.5, fontWeight: 500 }}>{preset.name}</span>
                         </button>
                       ))}
                     </div>
@@ -952,7 +944,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             required
                             value={aiEndpoint}
                             onChange={(e) => setAiEndpoint(e.target.value)}
-                            placeholder="https://api.deepseek.com/v1"
+                            placeholder="https://api.openai.com/v1（兼容任意 OpenAI 格式接口）"
                           />
                         </div>
                         <div className="field-group">
@@ -963,7 +955,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             required
                             value={aiModel}
                             onChange={(e) => setAiModel(e.target.value)}
-                            placeholder="deepseek-chat / gpt-4o-mini"
+                            placeholder="claude-sonnet-4-6 / gpt-5-mini / gemini-2.5-flash / deepseek-chat"
                           />
                         </div>
                         <div className="field-group">
@@ -1022,7 +1014,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           const det = detectedCLIs.find((d) => d.id === p.id);
                           const isCustom = p.id === 'custom';
                           const active = isCustom
-                            ? !['claude', 'codex', 'gemini'].includes(cliCommand.trim().toLowerCase())
+                            ? !['claude', 'codex', 'agy'].includes(cliCommand.trim().toLowerCase())
                             : cliCommand.trim().toLowerCase() === p.command;
                           return (
                             <button
@@ -1034,7 +1026,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 if (!isCustom) {
                                   setCliCommand(p.command);
                                   setCliArgs('');
-                                } else if (['claude', 'codex', 'gemini'].includes(cliCommand.trim().toLowerCase())) {
+                                } else if (['claude', 'codex', 'agy'].includes(cliCommand.trim().toLowerCase())) {
                                   setCliCommand('');
                                 }
                               }}
@@ -1193,14 +1185,99 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {tab === 'about' && (
               <>
                 <div className="about-hero">
-                  <div className="welcome-app-icon" style={{ width: 60, height: 60, fontSize: 23 }}>
+                  <div className="welcome-app-icon" style={{ width: 52, height: 52, fontSize: 20 }}>
                     &gt;<span>_</span>
                   </div>
-                  <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.03em' }}>Shell</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.03em' }}>Shell</div>
                   <div className="about-badges">
-                    <span className="pill-badge accent mono">v{appInfo?.version || '1.1.0'}</span>
+                    <span className="pill-badge accent mono">v{appInfo?.version || '1.2.0'}</span>
                     <span className="pill-badge neutral">Windows x64</span>
                     <span className="pill-badge neutral">MIT License</span>
+                  </div>
+                </div>
+
+                <div className="pref-section">
+                  <div className="pref-section-title">软件更新</div>
+                  <div className="pref-group">
+                    <div className="pref-row">
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="pref-row-label" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                          <span>版本更新</span>
+                          {updateInfo?.hasUpdate ? (
+                            <span className="pill-badge accent mono">发现新版本 v{updateInfo.latestVersion}</span>
+                          ) : updateInfo ? (
+                            <span className="pill-badge safe">已是最新</span>
+                          ) : null}
+                        </div>
+                        <div className="pref-row-sub">
+                          {updateProgress
+                            ? updateProgress.message
+                            : updateInfo?.hasUpdate
+                              ? '点击「立即更新」将在应用内下载、校验 SHA-256 并自动重启生效'
+                              : '支持应用内检测与一键更新，自动保留原有主机配置与凭据'}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        {updateInfo?.hasUpdate && onApplyUpdate && (
+                          <button
+                            id="applyUpdateBtn"
+                            type="button"
+                            className="btn btn-primary btn-sm"
+                            disabled={updatingApp}
+                            onClick={() => void onApplyUpdate()}
+                          >
+                            {updatingApp ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
+                            {updatingApp ? '更新中…' : '立即更新'}
+                          </button>
+                        )}
+                        <button
+                          id="checkUpdateBtn"
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={checkingUpdate || updatingApp}
+                          onClick={() => void onCheckUpdate?.()}
+                        >
+                          {checkingUpdate ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
+                          检查更新
+                        </button>
+                      </div>
+                    </div>
+
+                    {updateProgress && updateProgress.phase !== 'error' && (
+                      <div style={{ padding: '0 14px 10px' }}>
+                        <div className="update-progress-track">
+                          <div
+                            className="update-progress-fill"
+                            style={{ width: `${Math.max(4, Math.min(100, updateProgress.percent || 8))}%` }}
+                          />
+                        </div>
+                        <div className="mono" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--ink-tertiary)', marginTop: 4 }}>
+                          <span>{updateProgress.message}</span>
+                          <span>
+                            {updateProgress.total > 0
+                              ? `${(updateProgress.downloaded / 1048576).toFixed(1)} / ${(updateProgress.total / 1048576).toFixed(1)} MB (${updateProgress.percent}%)`
+                              : `${updateProgress.percent}%`}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {updateError && (
+                      <div style={{ padding: '0 14px 10px' }}>
+                        <p className="error-text">{updateError}</p>
+                      </div>
+                    )}
+
+                    <div className="pref-row">
+                      <span className="pref-row-label">启动时自动检查更新</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={settings.autoCheckUpdate !== false}
+                        className="apple-switch accent"
+                        onClick={() => patch({ autoCheckUpdate: settings.autoCheckUpdate === false })}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -1236,29 +1313,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
 
                     <div className="pref-row">
-                      <span className="pref-row-label">运行框架</span>
-                      <span className="mono" style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>
-                        Go 1.26 · Wails v2 · xterm.js v6
-                      </span>
-                    </div>
-
-                    <div className="pref-row">
-                      <span className="pref-row-label">开源项目与更新</span>
-                      <div style={{ display: 'flex', gap: 6 }}>
+                      <span className="pref-row-label">运行框架与仓库</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className="mono" style={{ fontSize: 11.5, color: 'var(--ink-secondary)' }}>
+                          Go 1.26 · Wails v2 · xterm.js v6
+                        </span>
                         <button
                           type="button"
                           className="btn btn-sm"
                           onClick={() => openExternalURL('https://github.com/haoch1/Shell')}
                         >
                           GitHub
-                          <ExternalLink size={11} />
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-sm"
-                          onClick={() => openExternalURL('https://github.com/haoch1/Shell/releases')}
-                        >
-                          检查更新
                           <ExternalLink size={11} />
                         </button>
                       </div>

@@ -10,6 +10,7 @@ interface WelcomeViewProps {
   onQuickConnect: (target: { user: string; host: string; port: number }) => void;
   onNewConnection: () => void;
   onImportSSH: () => void;
+  onClearRecent?: () => void;
   onOpenKeys: () => void;
   onOpenSettings: () => void;
   onOpenAI: () => void;
@@ -22,6 +23,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
   onQuickConnect,
   onNewConnection,
   onImportSSH,
+  onClearRecent,
 }) => {
   const [quickInput, setQuickInput] = useState('');
   const [quickErr, setQuickErr] = useState('');
@@ -86,7 +88,19 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
           </div>
         ) : recentHosts.length > 0 ? (
           <div className="recent-section">
-            <div className="recent-title">最近使用</div>
+            <div className="recent-head">
+              <div className="recent-title">最近使用</div>
+              {onClearRecent && (
+                <button
+                  id="clearRecentBtn"
+                  type="button"
+                  className="recent-clear-btn"
+                  onClick={onClearRecent}
+                >
+                  清空
+                </button>
+              )}
+            </div>
             <div className="recent-grid">
               {recentHosts.map((p) => (
                 <button

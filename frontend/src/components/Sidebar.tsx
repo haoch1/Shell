@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowUpDown,
   Check,
@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  CopyPlus,
   Download,
   KeyRound,
   Moon,
@@ -49,7 +50,9 @@ interface SidebarProps {
   sessions: Record<string, SessionRecord>;
   activeProfileId?: string;
   isDark?: boolean;
+  hasUpdate?: boolean;
   onConnect: (profile: Profile) => void;
+  onConnectNewSession?: (profile: Profile) => void;
   onQuickConnect: (target: { user: string; host: string; port: number }) => void;
   onAddHost: () => void;
   onEditHost: (profile: Profile) => void;
@@ -69,7 +72,9 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   sessions,
   activeProfileId,
   isDark = false,
+  hasUpdate = false,
   onConnect,
+  onConnectNewSession,
   onQuickConnect,
   onAddHost,
   onEditHost,
@@ -84,16 +89,25 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
 }) => {
   const [query, setQuery] = useState('');
   const [sortMode, setSortMode] = useState<HostSortMode>(loadSortMode);
-  const [sortOpen, setSortOpen] = useState(false);
+  const [sortMenuPos, setSortMenuPos] = useState<{ left: number; top: number } | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; profile: Profile } | null>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [deletingBatch, setDeletingBatch] = useState(false);
 
+  useEffect(() => {
+    if (!sortMenuPos) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSortMenuPos(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sortMenuPos]);
+
   const changeSortMode = (next: HostSortMode) => {
     setSortMode(next);
-    setSortOpen(false);
+    setSortMenuPos(null);
     try {
       localStorage.setItem('shell.sidebar.sort', next);
     } catch {
@@ -244,38 +258,28 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             <Plus size={15} strokeWidth={2.1} />
             <span>新建主机</span>
           </button>
-          <div style={{ position: 'relative' }}>
-            <button
-              id="sortHostsBtn"
-              type="button"
-              className={`btn sidebar-sort-btn ${sortMode !== 'default' ? 'active' : ''}`}
-              title={`排序：${SORT_OPTIONS.find((o) => o.id === sortMode)?.label}`}
-              aria-label="主机排序"
-              onClick={() => setSortOpen((v) => !v)}
-            >
-              <ArrowUpDown size={14} strokeWidth={1.8} />
-            </button>
-            {sortOpen && (
-              <>
-                <div style={{ position: 'fixed', inset: 0, zIndex: 139 }} onClick={() => setSortOpen(false)} />
-                <div className="context-menu sort-popover">
-                  {SORT_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      className="context-menu-item"
-                      onClick={() => changeSortMode(opt.id)}
-                    >
-                      <span style={{ width: 14, display: 'inline-flex', justifyContent: 'center' }}>
-                        {sortMode === opt.id && <Check size={13} />}
-                      </span>
-                      <span>{opt.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
+          <button
+            id="sortHostsBtn"
+            type="button"
+            className={`btn sidebar-sort-btn ${sortMode !== 'default' || sortMenuPos ? 'active' : ''}`}
+            title={`排序：${SORT_OPTIONS.find((o) => o.id === sortMode)?.label}`}
+            aria-label="主机排序"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (sortMenuPos) {
+                setSortMenuPos(null);
+                return;
+              }
+              const rect = e.currentTarget.getBoundingClientRect();
+              const menuW = 152;
+              setSortMenuPos({
+                left: Math.max(8, Math.min(rect.right - menuW, window.innerWidth - menuW - 8)),
+                top: rect.bottom + 6,
+              });
+            }}
+          >
+            <ArrowUpDown size={13.5} strokeWidth={1.8} />
+          </button>
         </div>
       </div>
 
@@ -453,7 +457,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                 aria-label="切换深浅色外观"
                 onClick={onToggleTheme}
               >
-                {isDark ? <Sun size={15} strokeWidth={1.7} /> : <Moon size={15} strokeWidth={1.7} />}
+                {isDark ? <Sun size={14} strokeWidth={1.7} /> : <Moon size={14} strokeWidth={1.7} />}
               </button>
             )}
             <button
@@ -464,20 +468,53 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               aria-label="密钥管理"
               onClick={() => onOpenSettings('keys')}
             >
-              <KeyRound size={15} strokeWidth={1.7} />
+              <KeyRound size={14} strokeWidth={1.7} />
             </button>
             <button
               id="settingsBtn"
               type="button"
               className="icon-btn"
-              title="偏好设置 (Ctrl+,)"
+              style={{ position: 'relative' }}
+              title={hasUpdate ? '发现新版本 · 点击查看更新' : '偏好设置 (Ctrl+,)'}
               aria-label="偏好设置"
-              onClick={() => onOpenSettings('appearance')}
+              onClick={() => onOpenSettings(hasUpdate ? 'about' : 'appearance')}
             >
-              <Settings size={15} strokeWidth={1.7} />
+              <Settings size={14} strokeWidth={1.7} />
+              {hasUpdate && <span className="update-dot" />}
             </button>
           </div>
         </div>
+      )}
+
+      {sortMenuPos && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 139 }}
+            onClick={() => setSortMenuPos(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setSortMenuPos(null);
+            }}
+          />
+          <div
+            className="context-menu sort-popover"
+            style={{ left: sortMenuPos.left, top: sortMenuPos.top, minWidth: 152 }}
+          >
+            {SORT_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className="context-menu-item"
+                onClick={() => changeSortMode(opt.id)}
+              >
+                <span style={{ width: 14, display: 'inline-flex', justifyContent: 'center' }}>
+                  {sortMode === opt.id && <Check size={13} />}
+                </span>
+                <span>{opt.label}</span>
+              </button>
+            ))}
+          </div>
+        </>
       )}
 
       {ctxMenu && (
@@ -494,7 +531,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             className="context-menu"
             style={{
               left: Math.min(ctxMenu.x, window.innerWidth - 190),
-              top: Math.min(ctxMenu.y, window.innerHeight - 240),
+              top: Math.min(ctxMenu.y, window.innerHeight - 260),
             }}
           >
             <button
@@ -506,8 +543,21 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               }}
             >
               <Terminal size={13} />
-              立即连接
+              {liveProfileIds.has(ctxMenu.profile.id) ? '切换到当前会话' : '立即连接'}
             </button>
+            {liveProfileIds.has(ctxMenu.profile.id) && onConnectNewSession && (
+              <button
+                type="button"
+                className="context-menu-item"
+                onClick={() => {
+                  onConnectNewSession(ctxMenu.profile);
+                  setCtxMenu(null);
+                }}
+              >
+                <CopyPlus size={13} />
+                新建并行会话
+              </button>
+            )}
             <button
               type="button"
               className="context-menu-item"

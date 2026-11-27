@@ -39,7 +39,7 @@ const DECISION_LABEL: Record<string, string> = {
 
 export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChanged, onToast }) => {
   const [sub, setSub] = useState<'mcp' | 'guard' | 'audit'>('mcp');
-  const [mcpClient, setMcpClient] = useState<'json' | 'claude' | 'codex' | 'gemini'>('json');
+  const [mcpClient, setMcpClient] = useState<'json' | 'claude' | 'codex' | 'antigravity'>('json');
   const [status, setStatus] = useState<AgentStatusView | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [portInput, setPortInput] = useState('17822');
@@ -165,16 +165,16 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
   const claudeCmdReal = `claude mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${status.token}"`;
   const claudeCmdPreview = `claude mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${showToken ? status.token : maskedToken}"`;
   const codexCmd = `codex mcp add shell -- ${exeQuoted} --mcp`;
-  const geminiCmdReal = `gemini mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${status.token}"`;
-  const geminiCmdPreview = `gemini mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${showToken ? status.token : maskedToken}"`;
+  const agyCmdReal = `agy mcp add --type http --header "Authorization: Bearer ${status.token}" shell http://127.0.0.1:${status.port}/mcp`;
+  const agyCmdPreview = `agy mcp add --type http --header "Authorization: Bearer ${showToken ? status.token : maskedToken}" shell http://127.0.0.1:${status.port}/mcp`;
 
   const activeSnippetCopy =
     mcpClient === 'claude'
       ? claudeCmdReal
       : mcpClient === 'codex'
         ? codexCmd
-        : mcpClient === 'gemini'
-          ? geminiCmdReal
+        : mcpClient === 'antigravity'
+          ? agyCmdReal
           : mcpHttpConfig;
 
   const activeSnippetPreview =
@@ -182,8 +182,8 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
       ? claudeCmdPreview
       : mcpClient === 'codex'
         ? codexCmd
-        : mcpClient === 'gemini'
-          ? geminiCmdPreview
+        : mcpClient === 'antigravity'
+          ? agyCmdPreview
           : mcpHttpPreview;
 
   const runPolicyTest = async () => {
@@ -253,6 +253,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                     {
                       enabled: !status.enabled,
                       port: Number(portInput) || 17822,
+                      execMode: status.execMode || 'silent',
                       policy: status.policy,
                       redaction: status.redaction,
                     },
@@ -260,6 +261,45 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                   )
                 }
               />
+            </div>
+
+            <div className="pref-row" style={{ padding: '6px 0 2px', minHeight: 36, borderBottom: 'none' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="pref-row-label" style={{ fontSize: 12.5 }}>MCP 执行方式</div>
+                <div className="pref-row-sub">
+                  {(status.execMode || 'silent') === 'visible'
+                    ? '自动唤起并切到对应主机终端，实时回显 Agent 执行过程'
+                    : '后台静默直连执行，托盘驻留期间无需弹窗即可自动响应'}
+                </div>
+              </div>
+              <div className="segmented" style={{ flexShrink: 0 }}>
+                {(
+                  [
+                    { id: 'silent', label: '后台静默' },
+                    { id: 'visible', label: '前台终端可视' },
+                  ] as const
+                ).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={(status.execMode || 'silent') === m.id ? 'active' : ''}
+                    onClick={() =>
+                      void saveConfig(
+                        {
+                          enabled: status.enabled,
+                          port: Number(portInput) || status.port || 17822,
+                          execMode: m.id,
+                          policy: status.policy,
+                          redaction: status.redaction,
+                        },
+                        m.id === 'visible' ? '已切换为前台终端可视执行' : '已切换为后台静默执行',
+                      )
+                    }
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="field-row" style={{ marginTop: 2 }}>
@@ -362,7 +402,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                   { id: 'json', label: 'JSON 配置' },
                   { id: 'claude', label: 'Claude Code' },
                   { id: 'codex', label: 'Codex' },
-                  { id: 'gemini', label: 'Gemini CLI' },
+                  { id: 'antigravity', label: 'Antigravity' },
                 ] as const
               ).map((c) => (
                 <button

@@ -12,10 +12,11 @@ import (
 	"github.com/haoch1/Shell/internal/security"
 )
 
-// AgentConfig controls external Agent MCP/HTTP bridge, command permissions, and text redaction.
+// AgentConfig controls external Agent MCP/HTTP bridge, execution mode, command permissions, and text redaction.
 type AgentConfig struct {
 	Enabled   bool                     `json:"enabled"`
 	Port      int                      `json:"port"`
+	ExecMode  string                   `json:"execMode,omitempty"` // "silent" (default, background headless/tray) or "visible" (open/focus GUI terminal)
 	Policy    security.PolicyConfig    `json:"policy"`
 	Redaction security.RedactionConfig `json:"redaction"`
 }
@@ -24,6 +25,7 @@ func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
 		Enabled:   false,
 		Port:      17822,
+		ExecMode:  "silent",
 		Policy:    security.DefaultPolicyConfig(),
 		Redaction: security.DefaultRedactionConfig(),
 	}
@@ -33,6 +35,11 @@ func normalizeAgentConfig(c AgentConfig) AgentConfig {
 	d := DefaultAgentConfig()
 	if c.Port < 1024 || c.Port > 65535 {
 		c.Port = d.Port
+	}
+	switch c.ExecMode {
+	case "silent", "visible":
+	default:
+		c.ExecMode = d.ExecMode
 	}
 	switch c.Policy.Mode {
 	case security.ModeReadOnly, security.ModeSmart, security.ModeAskAll, security.ModeTrusted:

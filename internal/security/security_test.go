@@ -61,7 +61,20 @@ func TestRedactionEngineSecretsPIIAndGuardrails(t *testing.T) {
 }
 
 func TestStructuralCommandPolicyEngine(t *testing.T) {
+	// Default policy is ModeTrusted (auto-allow normal ops while still protecting danger & deny rules)
+	defCfg := DefaultPolicyConfig()
+	if defCfg.Mode != ModeTrusted {
+		t.Fatalf("expected default mode trusted, got %s", defCfg.Mode)
+	}
+	if ev := EvaluateCommand("systemctl restart nginx", defCfg, ""); ev.Decision != DecisionAllow {
+		t.Fatalf("expected default trusted mode to auto-allow normal ops, got %+v", ev)
+	}
+	if pe := EvaluatePath("/etc/nginx/nginx.conf", true, defCfg, ""); pe.Decision != DecisionAllow {
+		t.Fatalf("expected default trusted mode to allow normal config write, got %+v", pe)
+	}
+
 	cfg := DefaultPolicyConfig()
+	cfg.Mode = ModeSmart
 	cfg.DenyPatterns = []string{"systemctl stop postgres*"}
 	cfg.AllowPatterns = []string{"docker compose ps*"}
 

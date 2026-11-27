@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -24,10 +25,38 @@ type AgentStatusView struct {
 	Enabled   bool                     `json:"enabled"`
 	Running   bool                     `json:"running"`
 	Port      int                      `json:"port"`
+	ExecMode  string                   `json:"execMode"` // "silent" or "visible"
 	Token     string                   `json:"token"`
 	ExePath   string                   `json:"exePath"`
 	Policy    security.PolicyConfig    `json:"policy"`
 	Redaction security.RedactionConfig `json:"redaction"`
+}
+
+func (a *App) getCachedAgentConfig() local.AgentConfig {
+	a.agentCfgMu.RLock()
+	if a.agentCfgLoaded {
+		cfg := a.agentCfg
+		a.agentCfgMu.RUnlock()
+		return cfg
+	}
+	a.agentCfgMu.RUnlock()
+
+	cfg, err := local.LoadAgentConfig()
+	if err != nil {
+		cfg = local.DefaultAgentConfig()
+	}
+	a.agentCfgMu.Lock()
+	a.agentCfg = cfg
+	a.agentCfgLoaded = true
+	a.agentCfgMu.Unlock()
+	return cfg
+}
+
+func (a *App) setCachedAgentConfig(cfg local.AgentConfig) {
+	a.agentCfgMu.Lock()
+	a.agentCfg = cfg
+	a.agentCfgLoaded = true
+	a.agentCfgMu.Unlock()
 }
 
 func (a *App) initAgentBridge() {
@@ -35,6 +64,7 @@ func (a *App) initAgentBridge() {
 	if err != nil {
 		return
 	}
+	a.setCachedAgentConfig(cfg)
 	if !cfg.Enabled {
 		local.ClearBridgeRuntime()
 		return
@@ -54,6 +84,7 @@ func (a *App) GetAgentStatus() (AgentStatusView, error) {
 	if err != nil {
 		return AgentStatusView{}, err
 	}
+	a.setCachedAgentConfig(cfg)
 	token, err := local.EnsureAgentToken()
 	if err != nil {
 		return AgentStatusView{}, err
@@ -67,6 +98,7 @@ func (a *App) GetAgentStatus() (AgentStatusView, error) {
 		Enabled:   cfg.Enabled,
 		Running:   running,
 		Port:      port,
+		ExecMode:  cfg.ExecMode,
 		Token:     token,
 		ExePath:   exePath,
 		Policy:    cfg.Policy,
@@ -79,6 +111,7 @@ func (a *App) SaveAgentConfig(cfg local.AgentConfig) (AgentStatusView, error) {
 	if err != nil {
 		return AgentStatusView{}, err
 	}
+	a.setCachedAgentConfig(saved)
 	token, err := local.EnsureAgentToken()
 	if err != nil {
 		return AgentStatusView{}, err
@@ -204,7 +237,6 @@ func (a *App) ResolveAgentApproval(id, decision string) {
 }
 
 func (a *App) requestApproval(ctx context.Context, source, clientName, host, sessionID, tool, summary string, eval security.Evaluation, cacheKey string) (string, bool) {
-	// Check per-session approval cache (never cache high-risk danger actions!).
 	if eval.Risk != "danger" && cacheKey != "" {
 		a.mu.Lock()
 		cached := a.sessionApprovals[cacheKey]
@@ -229,6 +261,8 @@ func (a *App) requestApproval(ctx context.Context, source, clientName, host, ses
 		a.mu.Unlock()
 	}()
 
+	// Bring window forward if user approval is required so the prompt isn't missed in tray.
+	a.ShowMainWindow()
 	runtime.EventsEmit(a.ctx, "agent:approval", map[string]any{
 		"id":                 reqID,
 		"source":             source,
@@ -273,33 +307,34 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 	return []agentbridge.ToolSpec{
 		{
 			Name:        "shell_list_hosts",
-			Description: "List saved SSH host profiles accessible to the Agent (never returns passwords or private keys).",
+			Description: "List saved SSH host profiles (including activeSessionId if already connected; never returns passwords or keys).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
 			Name:        "shell_list_sessions",
-			Description: "List currently open SSH sessions inside Shell with their sessionId, host, state, and latency.",
+			Description: "List active SSH sessions (both GUI tabs and background MCP sessions) with sessionId, host, mode, and latency.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
 			Name:        "shell_connect",
-			Description: "Request Shell GUI to open a new SSH session tab for a saved host by profile ID or name.",
+			Description: "Connect to a saved host by ID, display name, or IP and wait until ready, returning sessionId directly (headless in silent mode or GUI tab in visible mode).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"host": map[string]any{"type": "string", "description": "Saved profile ID, display name, or hostname"},
+					"host": map[string]any{"type": "string", "description": "Saved profile ID, display name, or hostname/IP"},
 				},
 				"required": []string{"host"},
 			},
 		},
 		{
 			Name:        "shell_exec",
-			Description: "Execute a shell command over an active SSH session via a multiplexed exec channel. Output is automatically redacted for secrets and PII.",
+			Description: "Execute a shell command over a fast persistent SSH exec channel. Accepts either sessionId or host (auto-connects if needed). Output is automatically redacted.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"sessionId":  map[string]any{"type": "string", "description": "Active sessionId (optional if only one session is open)"},
-					"command":    map[string]any{"type": "string", "description": "POSIX shell command to run"},
+					"sessionId":  map[string]any{"type": "string", "description": "Active sessionId (optional if host is provided or only one session is open)"},
+					"host":       map[string]any{"type": "string", "description": "Optional saved host name, IP, or profile ID (reuses or auto-connects)"},
+					"command":    map[string]any{"type": "string", "description": "POSIX shell command or multi-line script to run"},
 					"timeoutSec": map[string]any{"type": "integer", "description": "Optional timeout in seconds (default 30, max 120)"},
 				},
 				"required": []string{"command"},
@@ -311,7 +346,8 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"sessionId": map[string]any{"type": "string", "description": "Active sessionId (optional if only one session is open)"},
+					"sessionId": map[string]any{"type": "string", "description": "Active sessionId (optional if host is provided or only one session is open)"},
+					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
 					"lines":     map[string]any{"type": "integer", "description": "Number of recent lines to read (default 80, max 400)"},
 				},
 			},
@@ -322,7 +358,8 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"sessionId": map[string]any{"type": "string", "description": "Active sessionId (optional if only one session is open)"},
+					"sessionId": map[string]any{"type": "string", "description": "Active sessionId"},
+					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
 					"command":   map[string]any{"type": "string", "description": "Command to send to the terminal"},
 					"enter":     map[string]any{"type": "boolean", "description": "Whether to press Enter after the command (default true)"},
 				},
@@ -331,22 +368,24 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 		},
 		{
 			Name:        "shell_sftp_list",
-			Description: "List files and directories at a remote path over SFTP.",
+			Description: "List files and directories at a remote path over SFTP (accepts sessionId or host).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId": map[string]any{"type": "string"},
+					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
 					"path":      map[string]any{"type": "string", "description": "Remote directory path (default '.')"},
 				},
 			},
 		},
 		{
 			Name:        "shell_sftp_read",
-			Description: "Read a UTF-8 remote text file over SFTP (sensitive paths are blocked and secrets/PII are automatically redacted).",
+			Description: "Read a UTF-8 remote text file over SFTP (accepts sessionId or host; sensitive paths blocked & secrets redacted).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId": map[string]any{"type": "string"},
+					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
 					"path":      map[string]any{"type": "string", "description": "Remote file path"},
 				},
 				"required": []string{"path"},
@@ -354,11 +393,12 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 		},
 		{
 			Name:        "shell_sftp_write",
-			Description: "Write or update a UTF-8 remote text file atomically over SFTP (requires approval unless trusted).",
+			Description: "Write or update a UTF-8 remote text file atomically over SFTP (accepts sessionId or host).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId": map[string]any{"type": "string"},
+					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
 					"path":      map[string]any{"type": "string", "description": "Remote file path"},
 					"content":   map[string]any{"type": "string", "description": "Full text content to save"},
 				},
@@ -367,11 +407,12 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 		},
 		{
 			Name:        "shell_server_stats",
-			Description: "Fetch live CPU, memory, root disk, load average, uptime, and network metrics from an active SSH session.",
+			Description: "Fetch live CPU, memory, root disk, load average, uptime, and network metrics (accepts sessionId or host).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId": map[string]any{"type": "string"},
+					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
 				},
 			},
 		},
@@ -382,6 +423,7 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId":  map[string]any{"type": "string"},
+					"host":       map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
 					"action":     map[string]any{"type": "string", "enum": []string{"list", "start", "stop"}},
 					"tunnelId":   map[string]any{"type": "string"},
 					"mode":       map[string]any{"type": "string", "enum": []string{"local", "remote", "dynamic"}},
@@ -396,33 +438,289 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 	}
 }
 
+func (a *App) mirrorToTerminal(sessionID, text string) {
+	if sessionID == "" || text == "" {
+		return
+	}
+	data := []byte(text)
+	if a.ws != nil && a.ws.SendOutput(sessionID, data) {
+		return
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "ssh:data", sessionID, base64.StdEncoding.EncodeToString(data))
+	}
+}
+
+func formatMirrorLines(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\n", "\r\n")
+	return s
+}
+
+func findSavedProfile(target string) (*local.Profile, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil, errors.New("未指定目标主机")
+	}
+	profs, err := local.Profiles()
+	if err != nil {
+		return nil, err
+	}
+	for i := range profs {
+		p := &profs[i]
+		if p.ID == target || strings.EqualFold(p.Name, target) || strings.EqualFold(p.Host, target) {
+			return p, nil
+		}
+	}
+	return nil, fmt.Errorf("未找到匹配的已保存主机：%s", target)
+}
+
+func (a *App) findExistingSessionForProfile(profileID, host string) (sid string, entry *liveSession, isGUI bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Prefer live GUI tab first
+	for id, e := range a.live {
+		if e != nil && e.session != nil && ((profileID != "" && e.profile.ID == profileID) || (host != "" && (strings.EqualFold(e.profile.Name, host) || strings.EqualFold(e.profile.Host, host)))) {
+			return id, e, true
+		}
+	}
+	for id, e := range a.headless {
+		if e != nil && e.session != nil && ((profileID != "" && e.profile.ID == profileID) || (host != "" && (strings.EqualFold(e.profile.Name, host) || strings.EqualFold(e.profile.Host, host)))) {
+			return id, e, false
+		}
+	}
+	return "", nil, false
+}
+
+// connectHeadlessProfile dials a pooled background SSH transport without touching the GUI (works even in tray).
+func (a *App) connectHeadlessProfile(ctx context.Context, p local.Profile) (string, *liveSession, error) {
+	if sid, existing, _ := a.findExistingSessionForProfile(p.ID, p.Host); existing != nil {
+		return sid, existing, nil
+	}
+	var secret string
+	if p.ID != "" && (p.Auth == "password" || p.Auth == "key") {
+		secret, _ = local.LoadSecret(p)
+	}
+	settings, _ := local.LoadSettings()
+	keepAlive := p.KeepAliveSec
+	if keepAlive == 0 && settings.DefaultKeepAlive > 0 {
+		keepAlive = settings.DefaultKeepAlive
+	}
+	visited := map[string]bool{}
+	if p.ID != "" {
+		visited[p.ID] = true
+	}
+	jumpCfg, err := resolveJumpChain(p.JumpHostID, settings, visited, 1)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	sid := "mcp-" + hex.EncodeToString(b[:])
+
+	baseCtx := a.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	sessCtx, cancel := context.WithCancel(baseCtx)
+	cfg := remote.Config{
+		Host:         p.Host,
+		User:         p.User,
+		Port:         p.Port,
+		Auth:         p.Auth,
+		KeyPath:      p.KeyPath,
+		KeepAliveSec: keepAlive,
+		ForwardAgent: p.ForwardAgent,
+		Proxy:        effectiveProxyConfig(p, settings),
+		Jump:         jumpCfg,
+	}
+	if p.Auth == "key" {
+		cfg.Passphrase = secret
+	} else if p.Auth == "password" {
+		cfg.Password = secret
+	}
+
+	s, err := remote.ConnectHeadless(sessCtx, cfg, remote.Callbacks{
+		Verify: func(host, algorithm, fingerprint string) bool {
+			if a.ctx == nil {
+				return false
+			}
+			a.ShowMainWindow()
+			return a.confirm(sessCtx, sid, host, algorithm, fingerprint)
+		},
+		Challenge: func(user, instruction string, questions []string, echo []bool) ([]string, error) {
+			if a.ctx == nil {
+				return nil, errors.New("后台静默模式无法完成交互式 2FA 认证")
+			}
+			a.ShowMainWindow()
+			return a.challenge(sessCtx, sid, p.Host, user, instruction, questions, echo)
+		},
+		End: func(error) {
+			a.mu.Lock()
+			delete(a.headless, sid)
+			a.mu.Unlock()
+			cancel()
+		},
+	})
+	if err != nil {
+		cancel()
+		return "", nil, err
+	}
+	entry := &liveSession{cancel: cancel, session: s, profile: p}
+	a.mu.Lock()
+	a.headless[sid] = entry
+	a.mu.Unlock()
+	return sid, entry, nil
+}
+
+// connectVisibleProfile brings the GUI window up, opens/focuses the host tab, and waits until connected.
+func (a *App) connectVisibleProfile(ctx context.Context, p local.Profile) (string, *liveSession, error) {
+	a.ShowMainWindow()
+	if sid, existing, isGUI := a.findExistingSessionForProfile(p.ID, p.Host); existing != nil && isGUI {
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
+		}
+		return sid, existing, nil
+	}
+	if a.ctx == nil {
+		return a.connectHeadlessProfile(ctx, p)
+	}
+	runtime.EventsEmit(a.ctx, "agent:connect_profile", p.ID)
+
+	deadline := time.NewTimer(25 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
+		case <-deadline.C:
+			return "", nil, fmt.Errorf("等待前台打开「%s」终端超时，请检查主机凭据或网络", p.Name)
+		case <-ticker.C:
+			if sid, existing, isGUI := a.findExistingSessionForProfile(p.ID, p.Host); existing != nil && isGUI {
+				runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
+				return sid, existing, nil
+			}
+		}
+	}
+}
+
 func (a *App) resolveLiveSession(requestedID string) (string, *liveSession, error) {
+	sid, entry, _, err := a.resolveSessionByIDOrSingle(requestedID)
+	return sid, entry, err
+}
+
+func (a *App) resolveSessionByIDOrSingle(requestedID string) (string, *liveSession, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	requestedID = strings.TrimSpace(requestedID)
 	if requestedID != "" {
 		if e := a.live[requestedID]; e != nil && e.session != nil {
-			return requestedID, e, nil
+			return requestedID, e, true, nil
 		}
-		return "", nil, fmt.Errorf("未找到活动的 SSH 会话：%s", requestedID)
+		if e := a.headless[requestedID]; e != nil && e.session != nil {
+			return requestedID, e, false, nil
+		}
+		return "", nil, false, fmt.Errorf("未找到活动的 SSH 会话：%s", requestedID)
 	}
 	var chosenID string
 	var chosen *liveSession
+	chosenGUI := false
 	count := 0
 	for id, e := range a.live {
 		if e != nil && e.session != nil {
 			chosenID = id
 			chosen = e
+			chosenGUI = true
+			count++
+		}
+	}
+	for id, e := range a.headless {
+		if e != nil && e.session != nil {
+			chosenID = id
+			chosen = e
+			chosenGUI = false
 			count++
 		}
 	}
 	if count == 0 {
-		return "", nil, errors.New("当前没有已连接的 SSH 会话，请先在 Shell 中连接主机或调用 shell_connect")
+		return "", nil, false, errors.New("当前没有已连接的 SSH 会话，请传入 host 参数（将自动连接）或先调用 shell_connect")
 	}
 	if count > 1 {
-		return "", nil, errors.New("当前存在多个活动会话，请先调用 shell_list_sessions 并传入具体的 sessionId")
+		return "", nil, false, errors.New("当前存在多个活动会话，请传入 sessionId 或 host 参数指定目标主机")
 	}
-	return chosenID, chosen, nil
+	return chosenID, chosen, chosenGUI, nil
+}
+
+// resolveOrConnectSession resolves by sessionId, by host (auto-reusing or auto-connecting according to ExecMode),
+// or falls back to the sole open session.
+func (a *App) resolveOrConnectSession(ctx context.Context, reqSessionID, reqHost string, cfg local.AgentConfig, requirePTY bool) (string, *liveSession, bool, error) {
+	reqSessionID = strings.TrimSpace(reqSessionID)
+	reqHost = strings.TrimSpace(reqHost)
+	visible := cfg.ExecMode == "visible" || requirePTY
+
+	if reqSessionID != "" {
+		sid, entry, isGUI, err := a.resolveSessionByIDOrSingle(reqSessionID)
+		if err == nil {
+			if visible && isGUI && a.ctx != nil {
+				a.ShowMainWindow()
+				runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
+			} else if visible && !isGUI {
+				// Upgrade to visible GUI tab when visible mode or PTY is requested.
+				if p, pErr := findSavedProfile(entry.profile.ID); pErr == nil {
+					if gsid, gentry, gErr := a.connectVisibleProfile(ctx, *p); gErr == nil {
+						return gsid, gentry, true, nil
+					}
+				}
+			}
+			return sid, entry, isGUI, nil
+		}
+		// Allow caller passing a host name into sessionId gracefully
+		if reqHost == "" {
+			reqHost = reqSessionID
+		} else {
+			return "", nil, false, err
+		}
+	}
+
+	if reqHost != "" {
+		if sid, entry, isGUI := a.findExistingSessionForProfile(reqHost, reqHost); entry != nil {
+			if visible && isGUI && a.ctx != nil {
+				a.ShowMainWindow()
+				runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
+				return sid, entry, true, nil
+			}
+			if !visible {
+				return sid, entry, isGUI, nil
+			}
+		}
+		prof, err := findSavedProfile(reqHost)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if prof.AgentAccess == "deny" {
+			return "", nil, false, errors.New("该主机已禁止 Agent 访问")
+		}
+		if visible {
+			sid, entry, err := a.connectVisibleProfile(ctx, *prof)
+			return sid, entry, true, err
+		}
+		sid, entry, err := a.connectHeadlessProfile(ctx, *prof)
+		return sid, entry, false, err
+	}
+
+	sid, entry, isGUI, err := a.resolveSessionByIDOrSingle("")
+	if err != nil {
+		return "", nil, false, err
+	}
+	if visible && isGUI && a.ctx != nil {
+		a.ShowMainWindow()
+		runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
+	}
+	return sid, entry, isGUI, nil
 }
 
 func strArg(args map[string]any, key string) string {
@@ -459,13 +757,13 @@ func boolArg(args map[string]any, key string, def bool) bool {
 }
 
 func mustJSONText(v any) string {
-	b, _ := json.MarshalIndent(v, "", "  ")
+	b, _ := json.Marshal(v)
 	return string(b)
 }
 
 func (a *App) CallTool(ctx context.Context, source, clientName, toolName string, args map[string]any) agentbridge.ToolCallOutcome {
 	t0 := time.Now()
-	cfg, _ := local.LoadAgentConfig()
+	cfg := a.getCachedAgentConfig()
 
 	audit := security.AuditEntry{
 		Source:     source,
@@ -487,7 +785,9 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			audit.Decision = out.Decision
 		}
 		audit.RedactedCount = out.RedactedCount
-		_ = security.AppendAudit(audit)
+		go func(entry security.AuditEntry) {
+			_ = security.AppendAudit(entry)
+		}(audit)
 		return out
 	}
 
@@ -498,15 +798,30 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
+		activeByProfile := make(map[string]string)
+		a.mu.Lock()
+		for id, e := range a.headless {
+			if e != nil && e.session != nil && e.profile.ID != "" {
+				activeByProfile[e.profile.ID] = id
+			}
+		}
+		for id, e := range a.live {
+			if e != nil && e.session != nil && e.profile.ID != "" {
+				activeByProfile[e.profile.ID] = id
+			}
+		}
+		a.mu.Unlock()
+
 		type safeHost struct {
-			ID          string   `json:"id"`
-			Name        string   `json:"name"`
-			Group       string   `json:"group,omitempty"`
-			Host        string   `json:"host"`
-			Port        int      `json:"port"`
-			User        string   `json:"user"`
-			Tags        []string `json:"tags,omitempty"`
-			AgentAccess string   `json:"agentAccess"`
+			ID              string   `json:"id"`
+			Name            string   `json:"name"`
+			Group           string   `json:"group,omitempty"`
+			Host            string   `json:"host"`
+			Port            int      `json:"port"`
+			User            string   `json:"user"`
+			Tags            []string `json:"tags,omitempty"`
+			AgentAccess     string   `json:"agentAccess"`
+			ActiveSessionID string   `json:"activeSessionId,omitempty"`
 		}
 		var list []safeHost
 		for _, p := range profs {
@@ -520,6 +835,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			list = append(list, safeHost{
 				ID: p.ID, Name: p.Name, Group: p.Group, Host: p.Host,
 				Port: p.Port, User: p.User, Tags: p.Tags, AgentAccess: access,
+				ActiveSessionID: activeByProfile[p.ID],
 			})
 		}
 		red := security.Redact(mustJSONText(list), cfg.Redaction)
@@ -534,44 +850,38 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			Host        string `json:"host"`
 			Port        int    `json:"port"`
 			User        string `json:"user"`
+			Mode        string `json:"mode"`
 			LatencyMs   int64  `json:"latencyMs"`
 			AgentAccess string `json:"agentAccess"`
 		}
-		list := make([]sessInfo, 0, len(a.live))
-		for id, e := range a.live {
-			if e == nil || e.session == nil || e.profile.AgentAccess == "deny" {
-				continue
+		list := make([]sessInfo, 0, len(a.live)+len(a.headless))
+		appendSessions := func(m map[string]*liveSession, mode string) {
+			for id, e := range m {
+				if e == nil || e.session == nil || e.profile.AgentAccess == "deny" {
+					continue
+				}
+				access := e.profile.AgentAccess
+				if access == "" {
+					access = "inherit"
+				}
+				list = append(list, sessInfo{
+					SessionID: id, Name: e.profile.Name, Host: e.profile.Host,
+					Port: e.profile.Port, User: e.profile.User, Mode: mode,
+					LatencyMs: e.session.LatencyMs(), AgentAccess: access,
+				})
 			}
-			access := e.profile.AgentAccess
-			if access == "" {
-				access = "inherit"
-			}
-			list = append(list, sessInfo{
-				SessionID: id, Name: e.profile.Name, Host: e.profile.Host,
-				Port: e.profile.Port, User: e.profile.User,
-				LatencyMs: e.session.LatencyMs(), AgentAccess: access,
-			})
 		}
+		appendSessions(a.live, "visible")
+		appendSessions(a.headless, "silent")
 		a.mu.Unlock()
 		return finish(agentbridge.ToolCallOutcome{Text: mustJSONText(list)})
 
 	case "shell_connect":
 		target := strings.TrimSpace(strArg(args, "host"))
 		audit.Summary = "connect " + target
-		profs, err := local.Profiles()
+		matched, err := findSavedProfile(target)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
-		}
-		var matched *local.Profile
-		for i := range profs {
-			p := &profs[i]
-			if p.ID == target || strings.EqualFold(p.Name, target) || strings.EqualFold(p.Host, target) {
-				matched = p
-				break
-			}
-		}
-		if matched == nil {
-			return finish(agentbridge.ToolCallOutcome{Text: "未找到匹配的已保存主机：" + target, IsError: true})
 		}
 		audit.Host = matched.Name
 		eval := security.EvaluateMutatingTool("打开主机 "+matched.Name+" 的 SSH 会话", cfg.Policy, matched.AgentAccess)
@@ -586,9 +896,32 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 				return finish(agentbridge.ToolCallOutcome{Text: "用户已拒绝连接请求", IsError: true, Risk: eval.Risk, Decision: decLabel})
 			}
 		}
-		runtime.EventsEmit(a.ctx, "agent:connect_profile", matched.ID)
+		_, existingBefore, _ := a.findExistingSessionForProfile(matched.ID, matched.Host)
+		var sid string
+		var connErr error
+		mode := cfg.ExecMode
+		if mode == "" {
+			mode = "silent"
+		}
+		if mode == "visible" {
+			sid, _, connErr = a.connectVisibleProfile(ctx, *matched)
+		} else {
+			sid, _, connErr = a.connectHeadlessProfile(ctx, *matched)
+		}
+		if connErr != nil {
+			return finish(agentbridge.ToolCallOutcome{Text: connErr.Error(), IsError: true, Risk: eval.Risk, Decision: decLabel})
+		}
+		audit.SessionID = sid
 		return finish(agentbridge.ToolCallOutcome{
-			Text:     fmt.Sprintf("已通知 Shell 界面打开主机「%s」(%s@%s:%d) 的会话标签，请稍后调用 shell_list_sessions 获取 sessionId。", matched.Name, matched.User, matched.Host, matched.Port),
+			Text: mustJSONText(map[string]any{
+				"sessionId": sid,
+				"name":      matched.Name,
+				"host":      matched.Host,
+				"port":      matched.Port,
+				"user":      matched.User,
+				"mode":      mode,
+				"reused":    existingBefore != nil,
+			}),
 			Risk:     eval.Risk,
 			Decision: decLabel,
 		})
@@ -596,7 +929,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 	case "shell_exec":
 		cmd := strings.TrimSpace(strArg(args, "command"))
 		audit.Summary = cmd
-		sid, entry, err := a.resolveLiveSession(strArg(args, "sessionId"))
+		sid, entry, isGUI, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -622,13 +955,38 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		if timeoutSec < 3 || timeoutSec > 120 {
 			timeoutSec = 30
 		}
+		mirrorVisible := cfg.ExecMode == "visible" && isGUI
+		if mirrorVisible {
+			a.mirrorToTerminal(sid, fmt.Sprintf("\r\n\x1b[38;5;75m[MCP · %s]\x1b[0m \x1b[1m$ %s\x1b[0m\r\n", clientName, cmd))
+		}
 		execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 		defer cancel()
 		res, execErr := entry.session.ExecDetailed(execCtx, cmd, 256<<10)
 		rOut := security.Redact(res.Stdout, cfg.Redaction)
 		rErr := security.Redact(res.Stderr, cfg.Redaction)
+		if mirrorVisible {
+			var mirrorBuf strings.Builder
+			if outPreview := strings.TrimRight(res.Stdout, "\r\n"); outPreview != "" {
+				if len(outPreview) > 8192 {
+					outPreview = outPreview[:8192] + "\n…(已截断显示)"
+				}
+				mirrorBuf.WriteString(formatMirrorLines(outPreview))
+				mirrorBuf.WriteString("\r\n")
+			}
+			if errPreview := strings.TrimRight(res.Stderr, "\r\n"); errPreview != "" {
+				if len(errPreview) > 4096 {
+					errPreview = errPreview[:4096] + "\n…(已截断显示)"
+				}
+				mirrorBuf.WriteString("\x1b[31m")
+				mirrorBuf.WriteString(formatMirrorLines(errPreview))
+				mirrorBuf.WriteString("\x1b[0m\r\n")
+			}
+			mirrorBuf.WriteString(fmt.Sprintf("\x1b[90m[exit %d · %dms]\x1b[0m\r\n", res.ExitCode, res.DurationMs))
+			a.mirrorToTerminal(sid, mirrorBuf.String())
+		}
 		totalRedacted := rOut.Count + rErr.Count
 		payload := map[string]any{
+			"sessionId":     sid,
 			"exitCode":      res.ExitCode,
 			"durationMs":    res.DurationMs,
 			"stdout":        rOut.Text,
@@ -643,7 +1001,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 	case "shell_read_terminal":
 		lines := intArg(args, "lines", 80)
 		audit.Summary = fmt.Sprintf("read last %d terminal lines", lines)
-		sid, entry, err := a.resolveLiveSession(strArg(args, "sessionId"))
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -660,7 +1018,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		cmd := strArg(args, "command")
 		enter := boolArg(args, "enter", true)
 		audit.Summary = "pty: " + strings.TrimSpace(cmd)
-		sid, entry, err := a.resolveLiveSession(strArg(args, "sessionId"))
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, true)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -693,7 +1051,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			dir = "."
 		}
 		audit.Summary = "sftp ls " + dir
-		sid, entry, err := a.resolveLiveSession(strArg(args, "sessionId"))
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -712,7 +1070,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 	case "shell_sftp_read":
 		p := strings.TrimSpace(strArg(args, "path"))
 		audit.Summary = "sftp read " + p
-		sid, entry, err := a.resolveLiveSession(strArg(args, "sessionId"))
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -741,7 +1099,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		p := strings.TrimSpace(strArg(args, "path"))
 		content := strArg(args, "content")
 		audit.Summary = fmt.Sprintf("sftp write %s (%d bytes)", p, len(content))
-		sid, entry, err := a.resolveLiveSession(strArg(args, "sessionId"))
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -766,7 +1124,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 
 	case "shell_server_stats":
 		audit.Summary = "server telemetry stats"
-		sid, entry, err := a.resolveLiveSession(strArg(args, "sessionId"))
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -787,7 +1145,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			action = "list"
 		}
 		audit.Summary = "tunnels " + action
-		sid, entry, err := a.resolveLiveSession(strArg(args, "sessionId"))
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -840,7 +1198,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 	}
 }
 
-// --- Built-in AI Agent Mode (reuses the user's configured OpenAI-compatible API!) ---
+// --- Built-in AI Agent Mode (reuses the user's configured OpenAI-compatible API or local CLI!) ---
 
 func (a *App) RunAIAgent(sessionID, goal string) (string, error) {
 	ctx, done := a.beginAI()

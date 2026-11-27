@@ -142,8 +142,16 @@ const BRIDGE_MOCK_SCRIPT = `
     Quit() {},
   };
   window.go = { main: { App: {
-    AppInfo: async () => ({ version: '1.1.0', dataDir: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\Shell' }),
+    AppInfo: async () => ({ version: '1.2.0', dataDir: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\Shell' }),
     OpenDataDir: async () => {},
+    CheckForUpdate: async () => ({
+      currentVersion: '1.2.0',
+      latestVersion: '1.2.0',
+      hasUpdate: false,
+      releaseUrl: 'https://github.com/haoch1/Shell/releases',
+      notes: ''
+    }),
+    DownloadAndApplyUpdate: async () => {},
     TermWSURL: async () => '',
     Profiles: async () => profiles,
     SaveProfile: async (p) => { const item = { ...p, id: p.id || 'p' + Date.now() }; profiles = [...profiles.filter(x => x.id !== item.id), item]; return item; },
@@ -152,6 +160,7 @@ const BRIDGE_MOCK_SCRIPT = `
     DuplicateProfile: async (id) => { const src = profiles.find(x => x.id === id); const c = { ...src, id: 'p' + Date.now(), name: src.name + ' 副本' }; profiles = [...profiles, c]; return c; },
     DeleteProfile: async (id) => { profiles = profiles.filter(x => x.id !== id); },
     DeleteProfiles: async (ids) => { const drop = new Set(ids); profiles = profiles.filter(x => !drop.has(x.id)); },
+    ClearRecentHosts: async () => { profiles = profiles.map(x => ({ ...x, lastUsedAt: 0 })); },
     ForgetSecret: async () => {},
     PickKey: async () => '',
     PickAndParseImportFiles: async () => ({
@@ -244,11 +253,11 @@ const BRIDGE_MOCK_SCRIPT = `
     GenerateSSHKey: async () => ({}),
     ExportBackup: async () => '',
     ImportBackup: async () => ({ profiles: 0, snippets: 0, secrets: 0 }),
-    AIConfig: async () => ({ mode: 'api', endpoint: 'http://127.0.0.1:11434/v1', model: 'qwen2.5-coder:7b', hasKey: false, cliCommand: 'claude', ready: true }),
+    AIConfig: async () => ({ mode: 'api', endpoint: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-6', hasKey: false, cliCommand: 'agy', ready: true }),
     DetectAICLIs: async () => [
       { id: 'claude', name: 'Claude Code', command: 'claude', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Roaming\\\\npm\\\\claude.cmd' },
       { id: 'codex', name: 'Codex CLI', command: 'codex', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Roaming\\\\npm\\\\codex.cmd' },
-      { id: 'gemini', name: 'Gemini CLI', command: 'gemini', installed: false }
+      { id: 'agy', name: 'Antigravity CLI', command: 'agy', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\agy\\\\bin\\\\agy.exe' }
     ],
     SaveAIConfig: async () => {},
     TestAIConfig: async () => {},
@@ -260,9 +269,9 @@ const BRIDGE_MOCK_SCRIPT = `
     ExplainTerminal: async () => '分析完成。',
     RunAIAgent: async () => '巡检完成。',
     GetAgentStatus: async () => ({
-      enabled: true, running: true, port: 17822, token: 'sh_demo_token_9f8e7d6c5b4a32109876543210abcdef',
+      enabled: true, running: true, port: 17822, execMode: 'silent', token: 'sh_demo_token_9f8e7d6c5b4a32109876543210abcdef',
       exePath: 'C:\\\\Tools\\\\Shell.exe',
-      policy: { mode: 'smart', allowPatterns: ['kubectl get *'], denyPatterns: ['rm -rf /*'], deniedPaths: ['/etc/shadow', '*/.ssh/id_*'] },
+      policy: { mode: 'trusted', allowPatterns: ['kubectl get *'], denyPatterns: ['rm -rf /*'], deniedPaths: ['/etc/shadow', '*/.ssh/id_*'] },
       redaction: { enabled: true, maskSecrets: true, maskPII: true, maskIPs: false }
     }),
     SaveAgentConfig: async (cfg) => ({ ...cfg, running: cfg.enabled, token: 'sh_demo_token_9f8e7d6c5b4a32109876543210abcdef', exePath: 'C:\\\\Tools\\\\Shell.exe' }),
@@ -421,6 +430,13 @@ async function verifyFrontendUI() {
     await sleep(250);
     await shot('01-Workbench-Light');
 
+    // Verify sidebar sort button popover actually opens inside viewport (regression guard)
+    await click('#sortHostsBtn');
+    const sortRect = await evaluate(`(() => { const el = document.querySelector('.sort-popover'); if (!el) return null; const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width, height: r.height }; })()`);
+    assert.ok(sortRect && sortRect.top > 0 && sortRect.bottom < 820 && sortRect.width > 100, 'Expected visible sort popover inside viewport, got ' + JSON.stringify(sortRect));
+    await click('.sort-popover .context-menu-item:nth-child(2)');
+    await sleep(150);
+
     // Toggle Dark Mode on Welcome Workbench to verify dark OS icons + IPv6 display
     await click('button[aria-label="切换深浅色外观"]');
     await sleep(250);
@@ -428,10 +444,17 @@ async function verifyFrontendUI() {
     await click('button[aria-label="切换深浅色外观"]');
     await sleep(200);
 
-    // Host modal (Basic + Private Key)
+    // Host modal (Basic + Jump/Proxy identical height guard)
     await click('#addHost');
     await until(() => evaluate("!!document.querySelector('#connectDialog')"), 'host modal');
+    const basicH = await evaluate(`document.querySelector('#connectDialog .modal-sheet').getBoundingClientRect().height`);
     await shot('02-HostModal');
+    await click('#connectDialog .modal-header .segmented button:nth-child(2)');
+    await sleep(120);
+    const jumpH = await evaluate(`document.querySelector('#connectDialog .modal-sheet').getBoundingClientRect().height`);
+    assert.ok(Math.abs(basicH - jumpH) <= 1, 'Expected identical HostModal height across tabs: ' + basicH + ' vs ' + jumpH);
+    await click('#connectDialog .modal-header .segmented button:nth-child(1)');
+    await sleep(100);
     await click('#authMode [data-auth="key"]');
     await until(() => evaluate("!!document.querySelector('#keyPath')"), 'private key form');
     await click('#connectDialog [data-close]');
@@ -442,9 +465,16 @@ async function verifyFrontendUI() {
     await shot('03-CommandPalette');
     await click('#commandPalette');
 
-    // Connect to first host -> Active Terminal + Telemetry + SFTP Drawer
+    // Connect to first host & double-click regression guard (must only create 1 tab!)
+    await click('.host-row');
     await click('.host-row');
     await until(() => evaluate("!!document.querySelector('.xterm-screen') && !document.querySelector('#sftpBtn').disabled"), 'active terminal session');
+    const tabCountAfterDbl = await evaluate(`document.querySelectorAll('.tab-item').length`);
+    assert.equal(tabCountAfterDbl, 1, 'Expected double-clicking a host to open strictly 1 tab');
+    // Verify bottom sidebar-footer and statusbar share identical top edge & height
+    const barAlign = await evaluate(`(() => { const f = document.querySelector('.sidebar-footer')?.getBoundingClientRect(); const s = document.querySelector('.statusbar')?.getBoundingClientRect(); return f && s ? { fTop: f.top, sTop: s.top, fH: f.height, sH: s.height } : null; })()`);
+    assert.ok(barAlign && Math.abs(barAlign.fTop - barAlign.sTop) <= 1 && Math.abs(barAlign.fH - barAlign.sH) <= 1, 'Expected aligned bottom strip, got ' + JSON.stringify(barAlign));
+
     await sleep(900); // let telemetry poll populate
     await click('#sftpBtn');
     await until(() => evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'SFTP drawer files');
@@ -480,6 +510,7 @@ async function verifyFrontendUI() {
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(4)').click()`);
     await sleep(200);
+    await shot('17-Settings-AI-API');
     await evaluate(`document.querySelector('#settingsDialog [data-ai-mode="cli"]').click()`);
     await sleep(200);
     await shot('15-Settings-AI-CLI');

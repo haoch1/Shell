@@ -137,6 +137,9 @@ func TestLocalAICLIExecutionAndPersistence(t *testing.T) {
 	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "exec --skip-git-repo-check -m o3 -" {
 		t.Fatalf("unexpected codex args=%v stdin=%q", args, stdin)
 	}
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "agy", CLIModel: "gemini-2.5-pro"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "-p --output-format text --disable-slash-commands --model gemini-2.5-pro" {
+		t.Fatalf("unexpected agy args=%v stdin=%q", args, stdin)
+	}
 	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "gemini", CLIModel: "gemini-2.5-pro"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "-m gemini-2.5-pro" {
 		t.Fatalf("unexpected gemini args=%v stdin=%q", args, stdin)
 	}

@@ -492,3 +492,25 @@ func DeleteProfiles(ids []string) error {
 		return writeProfiles(dir, next)
 	})
 }
+
+// ClearRecentProfiles clears the LastUsedAt timestamp across all saved host profiles
+// without deleting any hosts or saved credentials.
+func ClearRecentProfiles() error {
+	return withStore(func(dir string) error {
+		list, err := readProfiles(dir)
+		if err != nil {
+			return err
+		}
+		changed := false
+		for i := range list {
+			if list[i].LastUsedAt != 0 {
+				list[i].LastUsedAt = 0
+				changed = true
+			}
+		}
+		if !changed {
+			return nil
+		}
+		return writeProfiles(dir, list)
+	})
+}

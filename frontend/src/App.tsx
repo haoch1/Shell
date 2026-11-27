@@ -13,6 +13,8 @@ import type {
   Snippet,
   TransferProgress,
   TunnelRule,
+  UpdateInfo,
+  UpdateProgress,
   WorkspaceTab,
 } from './types/shell';
 import { errorMessage, getApi, hasDesktopBridge, onDesktopEvent } from './lib/bridge';
@@ -61,6 +63,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultKeepAlive: 30,
   confirmOnClose: true,
   closeToTray: true,
+  autoCheckUpdate: true,
 };
 
 export const App: React.FC = () => {
@@ -102,10 +105,17 @@ export const App: React.FC = () => {
   const [transfers, setTransfers] = useState<TransferProgress[]>([]);
   const [explainText, setExplainText] = useState('');
   const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updatingApp, setUpdatingApp] = useState(false);
+  const [updateError, setUpdateError] = useState('');
 
   const writeChainsRef = useRef<Map<string, Promise<void>>>(new Map());
   const wsMapRef = useRef<Map<string, WebSocket>>(new Map());
   const lastSizeRef = useRef<Map<string, string>>(new Map());
+  const lastConnectAtRef = useRef<Map<string, number>>(new Map());
+  const autoCheckedRef = useRef(false);
   const textEncoderRef = useRef(new TextEncoder());
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
@@ -297,7 +307,33 @@ export const App: React.FC = () => {
   );
 
   const connectOrPromptProfile = useCallback(
-    (profile: Profile) => {
+    (profile: Profile, forceNew = false) => {
+      if (!forceNew && profile.id) {
+        // Focus existing live or connecting tab for this host instead of spawning duplicates on double-click.
+        for (const tab of tabsRef.current) {
+          const leaves = collectLeaves(tab.root);
+          const match = leaves.find((l) => {
+            const s = sessionsRef.current[l.sessionId];
+            return s && s.profile.id === profile.id && (s.state === 'connected' || s.state === 'connecting');
+          });
+          if (match) {
+            setActiveTabId(tab.id);
+            setTabs((prev) =>
+              prev.map((t) => (t.id === tab.id ? { ...t, activePaneId: match.paneId } : t)),
+            );
+            setSearchOpen(false);
+            return;
+          }
+        }
+        // Anti-double-click guard before React commits the new tab state.
+        const now = Date.now();
+        const prev = lastConnectAtRef.current.get(profile.id) ?? 0;
+        if (now - prev < 750) {
+          return;
+        }
+        lastConnectAtRef.current.set(profile.id, now);
+      }
+
       if (profile.auth === 'agent' || profile.remembered) {
         openSessionInNewTab(profile, '', Boolean(profile.remembered));
       } else {
@@ -306,6 +342,83 @@ export const App: React.FC = () => {
     },
     [openSessionInNewTab],
   );
+
+  const handleClearRecent = useCallback(async () => {
+    try {
+      await getApi().ClearRecentHosts();
+      setProfiles((prev) => prev.map((p) => ({ ...p, lastUsedAt: 0 })));
+      toast('已清空最近使用记录');
+    } catch (ex) {
+      toast(errorMessage(ex));
+    }
+  }, [toast]);
+
+  const handleCheckUpdate = useCallback(
+    async (silent = false) => {
+      if (!hasDesktopBridge()) return;
+      const api = getApi();
+      if (typeof api.CheckForUpdate !== 'function') return;
+      setCheckingUpdate(true);
+      setUpdateError('');
+      try {
+        const info = await api.CheckForUpdate();
+        setUpdateInfo(info);
+        if (!silent) {
+          toast(info.hasUpdate ? `发现新版本 v${info.latestVersion}` : `已是最新版本 v${info.currentVersion}`);
+        } else if (info.hasUpdate) {
+          toast(`发现新版本 v${info.latestVersion}，可在「关于 Shell」中一键更新`);
+        }
+      } catch (ex) {
+        if (!silent) {
+          setUpdateError(errorMessage(ex));
+        }
+      } finally {
+        setCheckingUpdate(false);
+      }
+    },
+    [toast],
+  );
+
+  const handleApplyUpdate = useCallback(async () => {
+    if (!hasDesktopBridge()) return;
+    const api = getApi();
+    if (typeof api.DownloadAndApplyUpdate !== 'function') return;
+    setUpdatingApp(true);
+    setUpdateError('');
+    setUpdateProgress({ phase: 'checking', downloaded: 0, total: 0, percent: 0, message: '准备下载更新…' });
+    try {
+      await api.DownloadAndApplyUpdate();
+    } catch (ex) {
+      const msg = errorMessage(ex);
+      setUpdateError(msg);
+      setUpdateProgress(null);
+      setUpdatingApp(false);
+      toast(msg);
+    }
+  }, [toast]);
+
+  // Automatic background update check once after startup when enabled.
+  useEffect(() => {
+    if (autoCheckedRef.current || settings.autoCheckUpdate === false || !hasDesktopBridge()) return;
+    autoCheckedRef.current = true;
+    const timer = window.setTimeout(() => {
+      void handleCheckUpdate(true);
+    }, 3200);
+    return () => window.clearTimeout(timer);
+  }, [settings.autoCheckUpdate, handleCheckUpdate]);
+
+  // Subscribe to in-app update download/verify progress.
+  useEffect(() => {
+    if (!hasDesktopBridge()) return;
+    return onDesktopEvent<[UpdateProgress]>('update:progress', (prog) => {
+      if (!prog) return;
+      setUpdateProgress(prog);
+      if (prog.phase === 'error') {
+        setUpdateError(prog.message || '更新失败');
+        setUpdatingApp(false);
+      }
+    });
+  }, []);
 
   // Desktop event subscriptions
   useEffect(() => {
@@ -349,7 +462,20 @@ export const App: React.FC = () => {
       onDesktopEvent<[string]>('agent:connect_profile', (profileId) => {
         const target = profilesRef.current.find((p) => p.id === profileId);
         if (target) {
-          connectOrPromptProfile(target);
+          connectOrPromptProfile(target, false);
+        }
+      }),
+      onDesktopEvent<[string]>('agent:focus_session', (sessionId) => {
+        for (const tab of tabsRef.current) {
+          const leaf = collectLeaves(tab.root).find((l) => l.sessionId === sessionId);
+          if (leaf) {
+            setActiveTabId(tab.id);
+            setTabs((prev) =>
+              prev.map((t) => (t.id === tab.id ? { ...t, activePaneId: leaf.paneId } : t)),
+            );
+            setSearchOpen(false);
+            break;
+          }
         }
       }),
       onDesktopEvent<[TransferProgress]>('sftp:progress', (prog) => {
@@ -861,6 +987,7 @@ export const App: React.FC = () => {
       <Titlebar
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        profiles={profiles}
         tabs={tabs}
         activeTabId={activeTabId}
         sessions={sessions}
@@ -889,7 +1016,9 @@ export const App: React.FC = () => {
           profiles={profiles}
           sessions={sessions}
           activeProfileId={activeSession?.profile.id}
-          onConnect={connectOrPromptProfile}
+          hasUpdate={Boolean(updateInfo?.hasUpdate)}
+          onConnect={(p) => connectOrPromptProfile(p, false)}
+          onConnectNewSession={(p) => connectOrPromptProfile(p, true)}
           onQuickConnect={handleQuickConnect}
           onAddHost={() => setHostModal({ open: true, profile: null })}
           onEditHost={(p) => setHostModal({ open: true, profile: p })}
@@ -941,10 +1070,11 @@ export const App: React.FC = () => {
               {tabs.length === 0 ? (
                 <WelcomeView
                   profiles={profiles}
-                  onConnect={connectOrPromptProfile}
+                  onConnect={(p) => connectOrPromptProfile(p, false)}
                   onQuickConnect={handleQuickConnect}
                   onNewConnection={() => setHostModal({ open: true, profile: null })}
                   onImportSSH={() => setImportOpen(true)}
+                  onClearRecent={() => void handleClearRecent()}
                   onOpenKeys={() => setSettingsModal({ open: true, tab: 'keys' })}
                   onOpenSettings={() => setSettingsModal({ open: true, tab: 'appearance' })}
                   onOpenAI={() => setDrawer('ai')}
@@ -1154,6 +1284,13 @@ export const App: React.FC = () => {
           initialTab={settingsModal.tab}
           settings={settings}
           activeSessionId={activeSession?.state === 'connected' ? activeSession.id : undefined}
+          updateInfo={updateInfo}
+          updateProgress={updateProgress}
+          checkingUpdate={checkingUpdate}
+          updatingApp={updatingApp}
+          updateError={updateError}
+          onCheckUpdate={() => handleCheckUpdate(false)}
+          onApplyUpdate={handleApplyUpdate}
           onUpdateSettings={updateSettings}
           onAgentStatusChanged={setAgentStatus}
           onOpenImportSSH={() => setImportOpen(true)}

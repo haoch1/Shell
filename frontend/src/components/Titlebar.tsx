@@ -1,6 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeftRight,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Code2,
   Command,
   CopyPlus,
@@ -14,13 +17,15 @@ import {
   SplitSquareVertical,
   X,
 } from 'lucide-react';
-import type { DrawerMode, SessionRecord, WorkspaceTab } from '../types/shell';
+import type { DrawerMode, Profile, SessionRecord, WorkspaceTab } from '../types/shell';
 import { collectLeaves } from '../lib/utils';
 import { getRuntime } from '../lib/bridge';
+import { HostIcon } from './HostIcon';
 
 interface TitlebarProps {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  profiles: Profile[];
   tabs: WorkspaceTab[];
   activeTabId: string | null;
   sessions: Record<string, SessionRecord>;
@@ -40,6 +45,7 @@ interface TitlebarProps {
 export const Titlebar: React.FC<TitlebarProps> = ({
   sidebarOpen,
   onToggleSidebar,
+  profiles,
   tabs,
   activeTabId,
   sessions,
@@ -56,7 +62,18 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onOpenPalette,
 }) => {
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+  const [allTabsMenu, setAllTabsMenu] = useState<{ left: number; top: number } | null>(null);
   const [maximised, setMaximised] = useState(false);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  const profileById = useMemo(() => {
+    const map = new Map<string, Profile>();
+    for (const p of profiles) map.set(p.id, p);
+    return map;
+  }, [profiles]);
+
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeLeaves = activeTab ? collectLeaves(activeTab.root) : [];
   const activeLeaf = activeLeaves.find((l) => l.paneId === activeTab?.activePaneId) ?? activeLeaves[0];
@@ -64,6 +81,45 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   const isConnected = activeSession?.state === 'connected';
   const isMultiPane = activeLeaves.length > 1;
   const rt = getRuntime();
+
+  const updateScrollState = useCallback(() => {
+    const el = stripRef.current;
+    if (!el) {
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+    setCanScrollLeft(el.scrollLeft > 4);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+  }, []);
+
+  useEffect(() => {
+    updateScrollState();
+    const el = stripRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(updateScrollState);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tabs.length, updateScrollState]);
+
+  // Smoothly scroll the active tab into view whenever switching or opening a new tab.
+  useEffect(() => {
+    if (!activeTabId) return;
+    const el = stripRef.current;
+    if (!el) return;
+    const node = el.querySelector<HTMLElement>(`[data-tab-id="${activeTabId}"]`);
+    if (node) {
+      node.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+    }
+    const timer = window.setTimeout(updateScrollState, 160);
+    return () => window.clearTimeout(timer);
+  }, [activeTabId, tabs.length, updateScrollState]);
+
+  const scrollTabsBy = (delta: number) => {
+    const el = stripRef.current;
+    if (!el) return;
+    el.scrollBy({ left: delta, behavior: 'smooth' });
+  };
 
   const syncMaximised = useCallback(() => {
     if (!rt?.WindowIsMaximised) return;
@@ -101,11 +157,22 @@ export const Titlebar: React.FC<TitlebarProps> = ({
     return 'closed';
   };
 
+  const tabProfile = (tab: WorkspaceTab): Profile | undefined => {
+    const leaves = collectLeaves(tab.root);
+    const leaf = leaves.find((l) => l.paneId === tab.activePaneId) ?? leaves[0];
+    const sess = leaf ? sessions[leaf.sessionId] : undefined;
+    if (!sess) return undefined;
+    // Prefer latest profile from profiles state so auto-detected OS icons reflect immediately.
+    return (sess.profile.id ? profileById.get(sess.profile.id) : undefined) ?? sess.profile;
+  };
+
+  const hasOverflow = canScrollLeft || canScrollRight;
+
   return (
     <header
       className="titlebar"
       onDoubleClick={(e) => {
-        if ((e.target as HTMLElement).closest('button')) return;
+        if ((e.target as HTMLElement).closest('button, [role="tab"]')) return;
         handleToggleMaximise();
       }}
     >
@@ -118,7 +185,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label="切换侧栏"
           onClick={onToggleSidebar}
         >
-          <PanelLeft size={15} strokeWidth={1.7} />
+          <PanelLeft size={14} strokeWidth={1.7} />
         </button>
         <div className="brand-pill">
           <span className="brand-icon">&gt;<span>_</span></span>
@@ -126,46 +193,118 @@ export const Titlebar: React.FC<TitlebarProps> = ({
         </div>
       </div>
 
-      <div className="tab-strip" role="tablist" aria-label="会话标签">
-        {tabs.map((tab) => {
-          const st = tabState(tab);
-          const active = tab.id === activeTabId;
-          return (
-            <div
-              key={tab.id}
-              role="tab"
-              aria-selected={active}
-              className={`tab-item ${active ? 'active' : ''}`}
-              onClick={() => onSelectTab(tab.id)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                onSelectTab(tab.id);
-                setTabMenu({ x: e.clientX, y: e.clientY, tabId: tab.id });
-              }}
-              onMouseDown={(e) => {
-                if (e.button === 1) {
+      <div className="tab-bar-shell">
+        {canScrollLeft && (
+          <button
+            type="button"
+            className="tab-scroll-btn"
+            title="向左滚动标签"
+            aria-label="向左滚动标签"
+            onClick={() => scrollTabsBy(-200)}
+          >
+            <ChevronLeft size={13} />
+          </button>
+        )}
+
+        <div
+          ref={stripRef}
+          className="tab-strip"
+          role="tablist"
+          aria-label="会话标签"
+          onScroll={updateScrollState}
+          onWheel={(e) => {
+            const el = stripRef.current;
+            if (!el || el.scrollWidth <= el.clientWidth) return;
+            if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+              e.preventDefault();
+              el.scrollLeft += e.deltaY;
+              updateScrollState();
+            }
+          }}
+        >
+          {tabs.map((tab) => {
+            const st = tabState(tab);
+            const prof = tabProfile(tab);
+            const active = tab.id === activeTabId;
+            return (
+              <div
+                key={tab.id}
+                data-tab-id={tab.id}
+                role="tab"
+                aria-selected={active}
+                className={`tab-item ${active ? 'active' : ''}`}
+                onClick={() => onSelectTab(tab.id)}
+                onContextMenu={(e) => {
                   e.preventDefault();
-                  onCloseTab(tab.id);
-                }
-              }}
-              title={tab.title}
-            >
-              <span className={`tab-dot ${st}`} />
-              <span className="tab-label">{tab.title}</span>
-              <button
-                type="button"
-                className="tab-close"
-                aria-label={`关闭 ${tab.title}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onCloseTab(tab.id);
+                  onSelectTab(tab.id);
+                  setTabMenu({ x: e.clientX, y: e.clientY, tabId: tab.id });
                 }}
+                onMouseDown={(e) => {
+                  if (e.button === 1) {
+                    e.preventDefault();
+                    onCloseTab(tab.id);
+                  }
+                }}
+                title={prof ? `${tab.title} (${prof.user}@${prof.host}:${prof.port})` : tab.title}
               >
-                <X size={12} strokeWidth={2} />
-              </button>
-            </div>
-          );
-        })}
+                <span className="tab-icon-wrap">
+                  <HostIcon profile={prof} size="xs" />
+                  <span className={`tab-dot-badge ${st}`} />
+                </span>
+                <span className="tab-label">{tab.title}</span>
+                <button
+                  type="button"
+                  className="tab-close"
+                  aria-label={`关闭 ${tab.title}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCloseTab(tab.id);
+                  }}
+                >
+                  <X size={11} strokeWidth={2} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {canScrollRight && (
+          <button
+            type="button"
+            className="tab-scroll-btn"
+            title="向右滚动标签"
+            aria-label="向右滚动标签"
+            onClick={() => scrollTabsBy(200)}
+          >
+            <ChevronRight size={13} />
+          </button>
+        )}
+
+        {(hasOverflow || tabs.length > 5) && (
+          <button
+            id="allTabsBtn"
+            type="button"
+            className={`tab-scroll-btn ${allTabsMenu ? 'active' : ''}`}
+            title={`全部会话 (${tabs.length})`}
+            aria-label="展开全部会话标签"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (allTabsMenu) {
+                setAllTabsMenu(null);
+                return;
+              }
+              const rect = e.currentTarget.getBoundingClientRect();
+              const menuW = 220;
+              setAllTabsMenu({
+                left: Math.max(8, Math.min(rect.right - menuW, window.innerWidth - menuW - 8)),
+                top: rect.bottom + 6,
+              });
+            }}
+          >
+            <ChevronDown size={13} />
+          </button>
+        )}
+
         <button
           id="newTabBtn"
           type="button"
@@ -174,7 +313,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label="新建连接"
           onClick={onNewConnection}
         >
-          <Plus size={15} strokeWidth={1.8} />
+          <Plus size={14} strokeWidth={1.8} />
         </button>
       </div>
 
@@ -188,7 +327,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               aria-label="搜索终端"
               onClick={onOpenSearch}
             >
-              <Search size={14} strokeWidth={1.7} />
+              <Search size={13.5} strokeWidth={1.7} />
             </button>
             <button
               type="button"
@@ -197,7 +336,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               aria-label="左右分屏"
               onClick={() => onSplit('horizontal')}
             >
-              <SplitSquareHorizontal size={14} strokeWidth={1.7} />
+              <SplitSquareHorizontal size={13.5} strokeWidth={1.7} />
             </button>
             <button
               type="button"
@@ -206,7 +345,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               aria-label="上下分屏"
               onClick={() => onSplit('vertical')}
             >
-              <SplitSquareVertical size={14} strokeWidth={1.7} />
+              <SplitSquareVertical size={13.5} strokeWidth={1.7} />
             </button>
             {isMultiPane && (
               <button
@@ -216,7 +355,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 aria-label="广播输入"
                 onClick={onToggleBroadcast}
               >
-                <Radio size={14} strokeWidth={1.7} />
+                <Radio size={13.5} strokeWidth={1.7} />
               </button>
             )}
             <span className="titlebar-divider" />
@@ -228,7 +367,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               title="SFTP 文件管理"
               onClick={() => onToggleDrawer('sftp')}
             >
-              <FolderOpen size={14} strokeWidth={1.7} />
+              <FolderOpen size={13.5} strokeWidth={1.7} />
               <span>文件</span>
             </button>
 
@@ -240,7 +379,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               title="端口转发隧道"
               onClick={() => onToggleDrawer('tunnels')}
             >
-              <ArrowLeftRight size={14} strokeWidth={1.7} />
+              <ArrowLeftRight size={13.5} strokeWidth={1.7} />
               <span>转发</span>
             </button>
           </>
@@ -253,7 +392,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           title="快捷命令片段"
           onClick={() => onToggleDrawer('snippets')}
         >
-          <Code2 size={14} strokeWidth={1.7} />
+          <Code2 size={13.5} strokeWidth={1.7} />
           <span>片段</span>
         </button>
 
@@ -264,7 +403,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           title="AI 命令助手 (Ctrl+Shift+A)"
           onClick={() => onToggleDrawer('ai')}
         >
-          <Sparkles size={14} strokeWidth={1.7} />
+          <Sparkles size={13.5} strokeWidth={1.7} />
           <span>AI</span>
         </button>
 
@@ -276,7 +415,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label="命令面板"
           onClick={onOpenPalette}
         >
-          <Command size={14} strokeWidth={1.7} />
+          <Command size={13.5} strokeWidth={1.7} />
         </button>
       </div>
 
@@ -288,7 +427,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label="最小化"
           onClick={() => rt?.WindowMinimise()}
         >
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+          <svg width="10.5" height="10.5" viewBox="0 0 11 11" fill="none" aria-hidden="true">
             <path d="M1.5 5.5H9.5" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
           </svg>
         </button>
@@ -300,12 +439,12 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           onClick={handleToggleMaximise}
         >
           {maximised ? (
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+            <svg width="10.5" height="10.5" viewBox="0 0 11 11" fill="none" aria-hidden="true">
               <rect x="1.5" y="3.2" width="6.3" height="6.3" rx="1" stroke="currentColor" strokeWidth="1.1" />
               <path d="M3.4 3.2V2.2C3.4 1.75 3.75 1.4 4.2 1.4H8.8C9.25 1.4 9.6 1.75 9.6 2.2V6.8C9.6 7.25 9.25 7.6 8.8 7.6H7.8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
             </svg>
           ) : (
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+            <svg width="10.5" height="10.5" viewBox="0 0 11 11" fill="none" aria-hidden="true">
               <rect x="1.6" y="1.6" width="7.8" height="7.8" rx="1.2" stroke="currentColor" strokeWidth="1.15" />
             </svg>
           )}
@@ -317,11 +456,66 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label="关闭窗口"
           onClick={() => rt?.Quit()}
         >
-          <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+          <svg width="10.5" height="10.5" viewBox="0 0 11 11" fill="none" aria-hidden="true">
             <path d="M2 2L9 9M9 2L2 9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
           </svg>
         </button>
       </div>
+
+      {allTabsMenu && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 139 }} onClick={() => setAllTabsMenu(null)} />
+          <div
+            className="context-menu"
+            style={{
+              left: allTabsMenu.left,
+              top: allTabsMenu.top,
+              width: 220,
+              maxHeight: '60vh',
+              overflowY: 'auto',
+            }}
+          >
+            {tabs.map((tab) => {
+              const st = tabState(tab);
+              const prof = tabProfile(tab);
+              const active = tab.id === activeTabId;
+              return (
+                <div
+                  key={tab.id}
+                  className={`context-menu-item ${active ? 'active-row' : ''}`}
+                  style={{ justifyContent: 'space-between', paddingRight: 6 }}
+                  onClick={() => {
+                    onSelectTab(tab.id);
+                    setAllTabsMenu(null);
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 1 }}>
+                    <span className="tab-icon-wrap">
+                      <HostIcon profile={prof} size="xs" />
+                      <span className={`tab-dot-badge ${st}`} />
+                    </span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {tab.title}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="host-action-btn"
+                    style={{ width: 18, height: 18, flexShrink: 0 }}
+                    aria-label={`关闭 ${tab.title}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCloseTab(tab.id);
+                    }}
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       {tabMenu && (
         <>

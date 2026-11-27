@@ -90,8 +90,8 @@ Shell 提供两种互补的 AI 协作方式，并统一纳入本地权限策略�
 
 ### 1. 内置 AI 助手（自定义 API / 本地 CLI）
 在 **偏好设置 → AI 模型** 中可自由切换两种调用模式：
-- **API 接口**：兼容任意 OpenAI Chat Completions 协议服务（内置 DeepSeek、OpenAI、Ollama 本地模型、OpenRouter 预设）。
-- **本地 CLI**：自动检测并无弹窗调用本机已安装的 **Claude Code (`claude`)**、**Codex CLI (`codex`)**、**Gemini CLI (`gemini`)** 或自定义命令行工具，直接复用现有 CLI 登录态。
+- **API 接口**：内置 **Claude、ChatGPT、Gemini、DeepSeek** 热门四家预设，同时兼容任意 OpenAI Chat Completions 接口，自动适配 Windows 系统代理。
+- **本地 CLI**：自动检测并无弹窗调用本机已安装的 **Claude Code (`claude`)**、**Codex CLI (`codex`)**、**Antigravity CLI (`agy`)** 或自定义命令行工具，直接复用现有 CLI 登录态。
 
 在终端侧边栏支持三种模式：
 - **写命令**：自然语言生成 Shell 命令并标注风险等级，支持一键插入或执行。
@@ -99,7 +99,7 @@ Shell 提供两种互补的 AI 协作方式，并统一纳入本地权限策略�
 - **自动运维**：自主调用诊断与文件工具完成巡检与排障，高危操作弹窗确认。
 
 ### 2. 外部 AI Agent 接入（MCP Server）
-Shell 内置符合 MCP `2025-03-26` 规范的本地桥接服务，默认监听 `127.0.0.1:17822`，支持 **Streamable HTTP**（`/mcp`）与 **stdio**（`Shell.exe --mcp`）两种传输方式，并提供 **JSON 配置 / Claude Code / Codex / Gemini CLI** 一键复制命令，可供 Antigravity、Claude Code、Codex、Gemini CLI、Cursor、Windsurf 等客户端直接调用。
+Shell 内置符合 MCP `2025-03-26` 规范的高性能本地桥接服务（持久复用 SSH 命令通道、内存配置缓存与异步审计日志），默认监听 `127.0.0.1:17822`，支持 **Streamable HTTP**（`/mcp`）与 **stdio**（`Shell.exe --mcp`）两种传输方式，并提供 **JSON 配置 / Claude Code / Codex / Antigravity** 一键复制命令。支持切换 **后台静默（托盘极速执行）** 与 **前台终端可视（自动切页实时回显）** 两种执行方式，默认自动放行常规运维命令并保留显式禁止规则与敏感路径保护。
 
 在 **偏好设置 → Agent 与安全** 中开启后可一键复制接入配置：
 

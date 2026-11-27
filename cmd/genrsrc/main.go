@@ -186,43 +186,43 @@ func sampleIcon(u, v float64) (r, g, b, a float64) {
 		return 0, 0, 0, 0
 	}
 
-	// Base obsidian/graphite vertical gradient (#2C2C2E -> #141416).
+	// Base vibrant sapphire-cobalt vertical gradient (#3B82F6 -> #1D4ED8) — pops on both Light & Dark taskbars.
 	t := math.Max(0, math.Min(1, (v-0.06)/0.88))
-	r = lerp(0.185, 0.075, t)
-	g = lerp(0.192, 0.080, t)
-	b = lerp(0.210, 0.092, t)
+	r = lerp(0.231, 0.114, t)
+	g = lerp(0.510, 0.306, t)
+	b = lerp(0.965, 0.847, t)
 
-	// Subtle top-edge Apple glass sheen.
-	if v < 0.46 {
-		sheen := (1.0 - (v-0.06)/0.40) * 0.055
+	// Subtle top-edge specular glass sheen.
+	if v < 0.48 {
+		sheen := (1.0 - (v-0.06)/0.42) * 0.11
 		if sheen > 0 {
-			r += sheen
-			g += sheen
-			b += sheen * 1.15
+			r = math.Min(1.0, r+sheen)
+			g = math.Min(1.0, g+sheen)
+			b = math.Min(1.0, b+sheen*0.8)
 		}
 	}
 
 	// Crisp inner bevel rim.
 	if d > 0.945 {
-		rim := 0.14 * (1.0 - t*0.5)
-		r += rim
-		g += rim
-		b += rim * 1.08
+		rim := 0.22 * (1.0 - t*0.45)
+		r = math.Min(1.0, r+rim)
+		g = math.Min(1.0, g+rim)
+		b = math.Min(1.0, b+rim)
 	}
 
-	// Draw crisp minimalist ">" chevron (left) and "_" cursor bar (right, subtle Apple Blue accent).
-	stroke := 0.036
+	// Draw crisp minimalist ">" chevron (left, pure white) and "_" cursor bar (right, luminous mint #6EE7B7).
+	stroke := 0.042
 	// Top leg of ">": (0.27, 0.36) -> (0.45, 0.50)
 	d1 := distSeg(u, v, 0.27, 0.36, 0.45, 0.50)
 	// Bottom leg of ">": (0.27, 0.64) -> (0.45, 0.50)
 	d2 := distSeg(u, v, 0.27, 0.64, 0.45, 0.50)
 	if math.Min(d1, d2) <= stroke {
-		return 0.96, 0.965, 0.98, 1.0
+		return 1.0, 1.0, 1.0, 1.0
 	}
-	// Cursor underscore bar: (0.53, 0.64) -> (0.72, 0.64) in vibrant Apple Blue (#0A84FF).
+	// Cursor underscore bar: (0.53, 0.64) -> (0.72, 0.64) in luminous mint (#6EE7B7).
 	d3 := distSeg(u, v, 0.53, 0.64, 0.72, 0.64)
 	if d3 <= stroke*0.95 {
-		return 0.04, 0.52, 1.0, 1.0
+		return 0.431, 0.906, 0.718, 1.0
 	}
 	return r, g, b, 1.0
 }

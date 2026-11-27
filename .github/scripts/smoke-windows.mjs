@@ -17,7 +17,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const { version: expectedVersion } = JSON.parse(await readFile(new URL('../../frontend/package.json', import.meta.url), 'utf8'));
-const snapshotDir = path.resolve('build/preview');
+const snapshotDir = path.resolve(process.env.SHELL_SMOKE_DIR || 'build/preview');
 await mkdir(snapshotDir, { recursive: true });
 
 // =========================================================================
@@ -136,7 +136,7 @@ const BRIDGE_MOCK_SCRIPT = `
   let settings = {
     theme: 'light', terminalTheme: 'auto',
     fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
-    fontSize: 14, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
+    fontSize: 13, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
     showTelemetry: true, syntaxHighlight: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false, groupOrder: []
   };
@@ -582,7 +582,7 @@ async function verifyFrontendUI() {
 
     // Toggle Dark Mode on Welcome Workbench to verify dark OS icons + IPv6 display
     await click('button[aria-label="切换深浅色外观"]');
-    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'dark' && s.fontSize === 14)"), 'persisted dark theme and preserved font size');
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'dark' && s.fontSize === 13)"), 'persisted dark theme and preserved font size');
     await shot('16-Workbench-Dark');
     await click('button[aria-label="切换深浅色外观"]');
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'light')"), 'persisted light theme');
@@ -720,23 +720,56 @@ async function verifyFrontendUI() {
     await click('#batchGroupPopover button[type="submit"]');
     await until(() => evaluate("window.go.main.App.Profiles().then(list => list.find(x => x.id === 'p3')?.group === '开发测试')"), 'batch assign custom group and restore');
 
-    // Host modal (Basic + Jump/Proxy identical height & zero vertical clipping guard)
+    // Verify prominent accent-blue split New Host CTA before opening HostModal
+    const newHostStyle = await evaluate(`(() => {
+      const split = document.querySelector('.sidebar-new-split');
+      const btn = document.querySelector('#addHost');
+      const caret = document.querySelector('#addHostMenuBtn');
+      return {
+        splitBg: split ? getComputedStyle(split).backgroundColor : '',
+        btnColor: btn ? getComputedStyle(btn).color : '',
+        hasCaret: Boolean(caret),
+      };
+    })()`);
+    assert.equal(newHostStyle.splitBg, 'rgb(0, 113, 227)', 'Expected vibrant accent-blue .sidebar-new-split in light mode, got ' + JSON.stringify(newHostStyle));
+    assert.equal(newHostStyle.btnColor, 'rgb(255, 255, 255)', 'Expected pure white text on #addHost, got ' + JSON.stringify(newHostStyle));
+    assert.equal(newHostStyle.hasCaret, true, 'Expected #addHostMenuBtn dropdown caret inside split button');
+
+    // Host modal (Basic + Jump/Proxy identical height, solid OS tiles, frosted Group ComboBox & zero vertical clipping guard)
     await click('#addHost');
     await until(() => evaluate("!!document.querySelector('#connectDialog')"), 'host modal');
     const basicMetrics = await evaluate(`(() => {
       const sheet = document.querySelector('#connectDialog .modal-sheet');
       const body = document.querySelector('#connectDialog .modal-body');
+      const tileBadges = [...document.querySelectorAll('#connectDialog .icon-choice-btn.is-tile .host-icon-badge.size-sm')];
+      const pickerButtons = [...document.querySelectorAll('#connectDialog .icon-choice-btn')];
+      const topSet = new Set(pickerButtons.map(b => Math.round(b.getBoundingClientRect().top)));
       return {
         height: sheet.getBoundingClientRect().height,
         scrollHeight: body.scrollHeight,
         clientHeight: body.clientHeight,
+        solidTiles: tileBadges.length,
+        singleRow: topSet.size === 1,
+        hasDatalist: Boolean(document.querySelector('#connectDialog datalist')),
       };
     })()`);
     assert.ok(
       basicMetrics.scrollHeight <= basicMetrics.clientHeight + 2,
       'Expected Basic tab in HostModal to render without vertical clipping at 1280x820, got ' + JSON.stringify(basicMetrics),
     );
+    assert.equal(basicMetrics.solidTiles, 10, 'Expected 10 solid Termius-style OS tiles in HostModal icon picker, got ' + JSON.stringify(basicMetrics));
+    assert.equal(basicMetrics.singleRow, true, 'Expected all OS icon choices on a single clean row, got ' + JSON.stringify(basicMetrics));
+    assert.equal(basicMetrics.hasDatalist, false, 'Expected native <datalist> removed in favor of custom ComboBox');
     await shot('02-HostModal');
+    // Verify custom frosted-glass Group ComboBox opens, lists existing groups, and closes cleanly on Escape without closing HostModal
+    await click('#hostGroup');
+    await until(() => evaluate("!!document.querySelector('[data-combobox-open=\"true\"]')"), 'custom group combobox dropdown');
+    const groupItems = await evaluate(`[...document.querySelectorAll('[data-combobox-open="true"] .ui-combobox-item-label')].map(el => el.textContent.trim())`);
+    assert.ok(groupItems.includes('生产集群') && groupItems.includes('开发测试'), 'Expected existing groups in custom ComboBox, got ' + JSON.stringify(groupItems));
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('[data-combobox-open=\"true\"]')"), 'closed group combobox on Escape');
+    assert.equal(await evaluate("!!document.querySelector('#connectDialog')"), true, 'Escape on open ComboBox must keep HostModal open');
     await click('#connectDialog .modal-header .segmented button:nth-child(2)');
     await sleep(120);
     const jumpH = await evaluate(`document.querySelector('#connectDialog .modal-sheet').getBoundingClientRect().height`);
@@ -936,7 +969,9 @@ async function verifyFrontendUI() {
     await shot('06-Terminal-AI');
     await click('#aiOpen');
 
-    // Universal Importer Modal
+    // Universal Importer Modal (accessed via split New Host dropdown menu)
+    await click('#addHostMenuBtn');
+    await until(() => evaluate("!!document.querySelector('#addHostMenu #importSshBtn')"), 'add-host split menu for import');
     await click('#importSshBtn');
     await until(() => evaluate("!!document.querySelector('#importDialog')"), 'universal import modal');
     await click('#pickImportFilesBtn');
@@ -1095,15 +1130,86 @@ async function verifyFrontendUI() {
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.fontFamily.includes('SF Mono'))"), 'restored default font via Radix Select');
     await evaluate(`document.querySelector('#settingsDialog .settings-content').scrollTop = 0`);
     await sleep(200);
-    const themeTiles = await evaluate(`[...document.querySelectorAll('#settingsDialog .theme-tile')].map(el => el.textContent.trim())`);
-    assert.ok(
-      themeTiles.some(t => t.includes('默认深色')) && themeTiles.some(t => t.includes('默认浅色')) && !themeTiles.some(t => t.includes('Termius')),
-      'Expected high-clarity theme presets 默认深色 / 默认浅色 in Settings, got ' + JSON.stringify(themeTiles),
-    );
+    // Verify v1.5.7 Settings: default 13 px font size, concise 隐藏主机 IP label, and 全局配色 3x2 grid
+    const settingsV157 = await evaluate(`(() => {
+      const dialogText = document.querySelector('#settingsDialog')?.textContent || '';
+      const fontRow = [...document.querySelectorAll('#settingsDialog .pref-row')].find(r => r.querySelector('.pref-row-label')?.textContent?.trim() === '字号');
+      const fontText = fontRow?.querySelector('.stepper span')?.textContent?.trim() || '';
+      const hideIpLabel = [...document.querySelectorAll('#settingsDialog .pref-row-label')].map(el => el.textContent.trim()).find(t => t.includes('隐藏主机 IP')) || '';
+      const sectionTitles = [...document.querySelectorAll('#settingsDialog .pref-section-title')].map(el => el.textContent.trim());
+      const themeTiles = [...document.querySelectorAll('#settingsDialog .theme-tile')].map(el => el.textContent.trim());
+      const sidebarEyeLabel = document.querySelector('#toggleHideIpBtn')?.getAttribute('aria-label') || '';
+      const legacySuffix = '\\u9690\\u79c1\\u6a21\\u5f0f';
+      return { fontText, hideIpLabel, hasDisallowedPrivacyTerm: dialogText.includes(legacySuffix) || sidebarEyeLabel.includes(legacySuffix), sectionTitles, themeTiles };
+    })()`);
+    assert.equal(settingsV157.fontText, '13 px', 'Expected default font size 13 px in Settings, got ' + JSON.stringify(settingsV157));
+    assert.equal(settingsV157.hideIpLabel, '隐藏主机 IP', 'Expected concise 隐藏主机 IP label, got ' + JSON.stringify(settingsV157));
+    assert.equal(settingsV157.hasDisallowedPrivacyTerm, false, 'Expected zero disallowed privacy suffix in Settings/Sidebar: ' + JSON.stringify(settingsV157));
+    assert.ok(settingsV157.sectionTitles.includes('全局配色'), 'Expected 全局配色 section title, got ' + JSON.stringify(settingsV157.sectionTitles));
+    const expectedPalettes = ['跟随界面外观', '曜石深黑', '东京夜色', '摩卡暮紫', '极简浅白', '暖纸米白'];
+    assert.equal(settingsV157.themeTiles.length, 6, 'Expected 6 tiles (auto + 5 curated palettes) in 全局配色 grid, got ' + JSON.stringify(settingsV157.themeTiles));
+    for (const label of expectedPalettes) {
+      assert.ok(
+        settingsV157.themeTiles.some(t => t.includes(label)),
+        `Expected palette tile "${label}" in 全局配色 grid, got ${JSON.stringify(settingsV157.themeTiles)}`,
+      );
+    }
+    assert.equal(settingsV157.themeTiles.some(t => t.includes('Termius')), false, 'Legacy Termius palette name must not appear');
     await shot('08-Settings-Dark');
+
+    // Global Theme live switching: Tokyo Night -> Warm Paper -> Obsidian Dark + localStorage persistence
+    const selectGlobalPalette = async (name) => {
+      await evaluate(`[...document.querySelectorAll('#settingsDialog .theme-tile')].find(el => el.textContent.includes(${JSON.stringify(name)}))?.click()`);
+    };
+
+    await selectGlobalPalette('东京夜色');
+    await until(() => evaluate("document.documentElement.dataset.palette === 'tokyo-night' && document.documentElement.dataset.theme === 'dark'"), 'Tokyo Night global palette');
+    const tokyoState = await evaluate(`(() => ({
+      palette: document.documentElement.dataset.palette,
+      theme: document.documentElement.dataset.theme,
+      sidebarVar: getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim(),
+      sidebarBg: getComputedStyle(document.querySelector('.sidebar')).backgroundColor,
+      cached: JSON.parse(localStorage.getItem('shell:appearance:v1') || 'null'),
+    }))()`);
+    assert.equal(tokyoState.palette, 'tokyo-night');
+    assert.equal(tokyoState.theme, 'dark');
+    assert.equal(tokyoState.sidebarBg, 'rgb(25, 27, 37)', 'Expected Tokyo Night sidebar bg #191b25, got ' + JSON.stringify(tokyoState));
+    assert.deepEqual(tokyoState.cached, { theme: 'dark', terminalTheme: 'tokyo-night' }, 'Expected localStorage shell:appearance:v1 persisted for Tokyo Night');
     await click('#settingsDialog button[aria-label="关闭设置"]');
+    await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings for Tokyo Night screenshot');
     await sleep(250);
-    // Verify 默认深色 (#121316) pure-neutral obsidian dark terminal background, crisp neutral cursor (#E6EDF3), GitHub Dark ANSI green (#3FB950), no blue active accent bars & full tab title visibility
+    await shot('31-GlobalTheme-TokyoNight');
+
+    await click('#settingsBtn');
+    await until(() => evaluate("document.querySelectorAll('#settingsDialog .theme-tile').length === 6"), 'reopened settings for Warm Paper');
+    await selectGlobalPalette('暖纸米白');
+    await until(() => evaluate("document.documentElement.dataset.palette === 'warm-paper' && document.documentElement.dataset.theme === 'light'"), 'Warm Paper global palette');
+    const warmState = await evaluate(`(() => ({
+      palette: document.documentElement.dataset.palette,
+      theme: document.documentElement.dataset.theme,
+      sidebarVar: getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim(),
+      sidebarBg: getComputedStyle(document.querySelector('.sidebar')).backgroundColor,
+      cached: JSON.parse(localStorage.getItem('shell:appearance:v1') || 'null'),
+    }))()`);
+    assert.equal(warmState.palette, 'warm-paper');
+    assert.equal(warmState.theme, 'light');
+    assert.equal(warmState.sidebarBg, 'rgb(242, 237, 227)', 'Expected Warm Paper sidebar bg #f2ede3, got ' + JSON.stringify(warmState));
+    assert.deepEqual(warmState.cached, { theme: 'light', terminalTheme: 'warm-paper' }, 'Expected localStorage shell:appearance:v1 persisted for Warm Paper');
+    await click('#settingsDialog button[aria-label="关闭设置"]');
+    await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings for Warm Paper screenshot');
+    await sleep(250);
+    await shot('32-GlobalTheme-WarmPaper');
+
+    await click('#settingsBtn');
+    await until(() => evaluate("document.querySelectorAll('#settingsDialog .theme-tile').length === 6"), 'reopened settings to restore Obsidian Dark');
+    await selectGlobalPalette('曜石深黑');
+    await until(() => evaluate("document.documentElement.dataset.palette === 'shell-dark' && document.documentElement.dataset.theme === 'dark'"), 'restored Obsidian Dark global palette');
+    const obsidianCache = await evaluate("JSON.parse(localStorage.getItem('shell:appearance:v1') || 'null')");
+    assert.deepEqual(obsidianCache, { theme: 'dark', terminalTheme: 'shell-dark' }, 'Expected localStorage shell:appearance:v1 persisted for Obsidian Dark');
+    await click('#settingsDialog button[aria-label="关闭设置"]');
+    await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings after restoring Obsidian Dark');
+    await sleep(250);
+    // Verify 曜石深黑 (#121316) pure-neutral obsidian dark terminal background, crisp neutral cursor (#E6EDF3), GitHub Dark ANSI green (#3FB950), no blue active accent bars & full tab title visibility
     const darkPaletteAudit = await evaluate(`(() => {
       const wrap = document.querySelector('.pane-xterm-wrap');
       const bg = wrap ? getComputedStyle(wrap).backgroundColor : '';
@@ -1122,8 +1228,8 @@ async function verifyFrontendUI() {
       const tabFullVisible = firstTabLabel ? firstTabLabel.scrollWidth <= firstTabLabel.clientWidth + 1 : false;
       return { bg, greenColor, cursorBoxShadow, hasCrispCursor, hasCrispGreen, tabAfterContent, hostBeforeContent, tabFullVisible };
     })()`);
-    assert.equal(darkPaletteAudit.bg, 'rgb(18, 19, 22)', 'Expected 默认深色 canvas background #121316, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.greenColor, 'rgb(63, 185, 80)', 'Expected crisp 默认深色 ANSI green #3FB950, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.bg, 'rgb(18, 19, 22)', 'Expected 曜石深黑 canvas background #121316, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.greenColor, 'rgb(63, 185, 80)', 'Expected crisp 曜石深黑 ANSI green #3FB950, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.hasCrispCursor, true, 'Expected crisp neutral cursor #E6EDF3 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.hasCrispGreen, true, 'Expected crisp green #3FB950 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.tabAfterContent, 'none', 'Expected no blue ::after accent bar on .tab-item.active, got ' + JSON.stringify(darkPaletteAudit));
@@ -1345,6 +1451,29 @@ async function verifyFrontendUI() {
     await evaluate(`[...document.querySelectorAll('.context-menu-item')].find(el => el.textContent.trim() === '关闭所有标签')?.click()`);
     await until(() => evaluate("document.querySelectorAll('.tab-item').length === 0"), 'all tabs closed via context menu');
 
+    // Verify Dark Mode split New Host dropdown menu + HostModal solid OS icons + frosted Group ComboBox
+    const darkNewHostBg = await evaluate("getComputedStyle(document.querySelector('.sidebar-new-split')).backgroundColor");
+    assert.equal(darkNewHostBg, 'rgb(10, 132, 255)', 'Expected crisp #0A84FF .sidebar-new-split in dark mode, got ' + darkNewHostBg);
+    await click('#addHostMenuBtn');
+    await until(() => evaluate("!!document.querySelector('#addHostMenu #importSshBtn') && !!document.querySelector('#addHostMenu #exportHostsBtn')"), 'dark add-host split menu');
+    await sleep(160);
+    await shot('29-AddHost-SplitMenu-Dark');
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('#addHostMenu')"), 'closed add-host split menu');
+
+    await click('#addHost');
+    await until(() => evaluate("!!document.querySelector('#connectDialog')"), 'dark host modal');
+    await click('#hostGroup');
+    await until(() => evaluate("!!document.querySelector('[data-combobox-open=\"true\"]')"), 'dark group combobox dropdown');
+    await sleep(160);
+    await shot('30-HostModal-Dark-ComboBox');
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('[data-combobox-open=\"true\"]')"), 'closed dark group combobox');
+    await click('#connectDialog [data-close]');
+    await until(() => evaluate("!document.querySelector('#connectDialog')"), 'closed dark host modal');
+
     const { verifySplitWorkspace } = await import('./split-workspace.mjs');
     await verifySplitWorkspace({ call, evaluate, until, click });
     const exportRect = await verifyHostExport({ call, evaluate, until, click, shot });
@@ -1352,7 +1481,7 @@ async function verifyFrontendUI() {
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 28 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 32 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

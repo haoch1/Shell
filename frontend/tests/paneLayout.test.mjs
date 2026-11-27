@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { connectedProfilePanes, movePane, nearestEdge, paneGeometry } from '../src/lib/paneLayout.ts';
+import { connectedProfilePanes, detachPaneToTab, movePane, nearestEdge, paneGeometry } from '../src/lib/paneLayout.ts';
 
 const leaf = paneId => ({type: 'leaf', paneId, sessionId: 'session-' + paneId});
 const branch = (first, second) => ({type: 'split', id: 'divider-' + first.paneId, direction: 'horizontal', ratio: 0.5, first, second});
@@ -62,4 +62,36 @@ test('full targets reject new panes but allow rearranging an existing one', () =
   assert.equal(moved[1].activePaneId, 'g');
   assert.deepEqual(panes.map(p => p.leaf.paneId).sort(), ['b', 'c', 'd', 'e', 'f', 'g']);
   assert.equal(panes.reduce((area, p) => area + p.bounds.width * p.bounds.height, 0), 1);
+});
+
+test('detachPaneToTab pops a split leaf into an adjacent standalone tab while preserving sessionId', () => {
+  const source = {...tab('A', branch(leaf('a'), leaf('b')), 'a'), broadcast: true};
+  const tail = tab('C', leaf('c'), 'c');
+  const next = detachPaneToTab([source, tail], 'A', 'a', 'D', 'Detached A', 'blue');
+  assert.deepEqual(next.map(t => t.id), ['A', 'D', 'C']);
+  assert.deepEqual(next[0], {...source, root: leaf('b'), activePaneId: 'b', broadcast: false});
+  assert.deepEqual(next[1], {
+    id: 'D',
+    title: 'Detached A',
+    color: 'blue',
+    root: leaf('a'),
+    activePaneId: 'a',
+    broadcast: false,
+  });
+  assert.equal(next[2], tail);
+});
+
+test('detachPaneToTab preserves remaining split broadcast/focus and ignores invalid or single-pane targets', () => {
+  const three = {...tab('A', branch(leaf('a'), branch(leaf('b'), leaf('c'))), 'a'), broadcast: true};
+  const next = detachPaneToTab([three], 'A', 'c', 'D', 'Detached C');
+  assert.deepEqual(next.map(t => t.id), ['A', 'D']);
+  assert.equal(next[0].activePaneId, 'a');
+  assert.equal(next[0].broadcast, true);
+  assert.deepEqual(paneGeometry(next[0].root).panes.map(p => p.leaf.sessionId), ['session-a', 'session-b']);
+  assert.deepEqual(next[1].root, leaf('c'));
+
+  const single = [tab('S', leaf('s'), 's')];
+  assert.equal(detachPaneToTab(single, 'S', 's', 'D', 'Nope'), single);
+  assert.equal(detachPaneToTab([three], 'missing', 'a', 'D', 'Nope')[0], three);
+  assert.equal(detachPaneToTab([three], 'A', 'missing', 'D', 'Nope')[0], three);
 });

@@ -187,6 +187,7 @@ const BRIDGE_MOCK_SCRIPT = `
     DuplicateProfile: async (id) => { const src = profiles.find(x => x.id === id); const c = { ...src, id: 'p' + Date.now(), name: src.name + ' 副本' }; profiles = [...profiles, c]; return c; },
     DeleteProfile: async (id) => { profiles = profiles.filter(x => x.id !== id); },
     DeleteProfiles: async (ids) => { const drop = new Set(ids); profiles = profiles.filter(x => !drop.has(x.id)); },
+    SetProfilesGroup: async (ids, group) => { const set = new Set(ids); const g = (group || '').trim(); profiles = profiles.map(x => set.has(x.id) ? { ...x, group: g } : x); },
     ClearRecentHosts: async () => { profiles = profiles.map(x => ({ ...x, lastUsedAt: 0 })); },
     ForgetSecret: async () => {},
     PickKey: async () => '',
@@ -287,7 +288,8 @@ const BRIDGE_MOCK_SCRIPT = `
     GenerateSSHKey: async () => ({}),
     ExportBackup: async () => '',
     ImportBackup: async () => ({ profiles: 0, snippets: 0, secrets: 0 }),
-    AIConfig: async () => ({ mode: 'api', endpoint: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-6', hasKey: false, cliCommand: 'agy', ready: true }),
+    AIConfig: async () => ({ mode: 'api', endpoint: 'https://api.anthropic.com/v1', model: 'claude-sonnet-5-5', hasKey: false, cliCommand: 'agy', ready: true }),
+    FetchAIModels: async () => ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2', 'claude-haiku-5-5'],
     DetectAICLIs: async () => [
       { id: 'claude', name: 'Claude Code', command: 'claude', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Roaming\\\\npm\\\\claude.cmd' },
       { id: 'codex', name: 'Codex CLI', command: 'codex', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Roaming\\\\npm\\\\codex.cmd' },
@@ -478,32 +480,94 @@ async function verifyFrontendUI() {
     await click('button[aria-label="切换深浅色外观"]');
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'light')"), 'persisted light theme');
 
-    // Verify IP privacy masking toggle (#toggleHideIpBtn)
+    // Verify IP privacy hiding toggle (#toggleHideIpBtn) omits IPs cleanly with zero layout jump
+    const beforeHideLayout = await evaluate(`(() => ({
+      rowHeights: [...document.querySelectorAll('.host-row')].map(el => el.getBoundingClientRect().height),
+      cardHeights: [...document.querySelectorAll('.recent-card')].map(el => el.getBoundingClientRect().height),
+    }))()`);
     await click('#toggleHideIpBtn');
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.hideHostIp === true)"), 'persisted hideHostIp=true');
-    const maskedSubs = await evaluate("[...document.querySelectorAll('.host-row .host-sub')].map(el => el.textContent.trim())");
+    await sleep(240);
+    const hiddenPrivacy = await evaluate(`(() => ({
+      sidebarText: document.querySelector('.sidebar-list')?.textContent || '',
+      recentText: document.querySelector('.recent-grid')?.textContent || '',
+      hiddenSubCount: document.querySelectorAll('.host-row .host-sub[data-ip-hidden="true"]').length,
+      rowHeights: [...document.querySelectorAll('.host-row')].map(el => el.getBoundingClientRect().height),
+      cardHeights: [...document.querySelectorAll('.recent-card')].map(el => el.getBoundingClientRect().height),
+    }))()`);
     assert.ok(
-      maskedSubs.includes('•••.•••.•••.•••') && maskedSubs.includes('••••:••••:••••') && maskedSubs.every(t => !/\d/.test(t)),
-      'Expected masked sidebar host addresses when hideHostIp is enabled, got ' + JSON.stringify(maskedSubs),
+      hiddenPrivacy.hiddenSubCount === 3 &&
+        !hiddenPrivacy.sidebarText.includes('10.24.0.10') &&
+        !hiddenPrivacy.sidebarText.includes('2406:da18') &&
+        !hiddenPrivacy.sidebarText.includes('192.168.1.88') &&
+        !hiddenPrivacy.sidebarText.includes('•') &&
+        !hiddenPrivacy.recentText.includes('10.24.0.10') &&
+        !hiddenPrivacy.recentText.includes('2406:da18') &&
+        !hiddenPrivacy.recentText.includes('192.168.1.88') &&
+        !hiddenPrivacy.recentText.includes('•'),
+      'Expected sidebar & recent cards to omit IPs cleanly with zero dots when hideHostIp is enabled, got ' + JSON.stringify(hiddenPrivacy),
+    );
+    assert.ok(
+      hiddenPrivacy.rowHeights.every((h, i) => Math.abs(h - beforeHideLayout.rowHeights[i]) <= 2) &&
+        hiddenPrivacy.cardHeights.every((h, i) => Math.abs(h - beforeHideLayout.cardHeights[i]) <= 2),
+      'Expected stable row/card heights when hiding IPs (zero layout shift): before=' +
+        JSON.stringify(beforeHideLayout) +
+        ' after=' +
+        JSON.stringify({ rowHeights: hiddenPrivacy.rowHeights, cardHeights: hiddenPrivacy.cardHeights }),
     );
     await shot('18-Privacy-HideIP');
     await click('#toggleHideIpBtn');
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.hideHostIp === false)"), 'persisted hideHostIp=false');
+    await sleep(240);
     const restoredSubs = await evaluate("[...document.querySelectorAll('.host-row .host-sub')].map(el => el.textContent.trim())");
     assert.ok(
       restoredSubs.some(t => t.includes('10.24.0.10')) && restoredSubs.some(t => t.includes('192.168.1.88')),
       'Expected real host addresses restored when hideHostIp is disabled, got ' + JSON.stringify(restoredSubs),
     );
 
-    // Host modal (Basic + Jump/Proxy identical height guard)
+    // Verify batch host grouping (#batchGroupBtn popover: existing group + new group, restoring fixture cleanly)
+    await click('.sidebar-footer button[aria-label="批量管理"]');
+    assert.equal(await evaluate("document.querySelector('#batchGroupBtn')?.disabled"), true, 'Batch group button must start disabled with 0 selected');
+    await click('.host-row[data-profile-id="p3"]');
+    assert.equal(await evaluate("document.querySelector('#batchGroupBtn')?.disabled"), false, 'Batch group button must enable when a host is selected');
+    await click('#batchGroupBtn');
+    const groupPopRect = await evaluate(`(() => { const el = document.querySelector('#batchGroupPopover'); if (!el) return null; const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width }; })()`);
+    assert.ok(groupPopRect && groupPopRect.top > 0 && groupPopRect.bottom < 820 && groupPopRect.width >= 180, 'Expected visible batch group popover inside viewport, got ' + JSON.stringify(groupPopRect));
+    await evaluate(`[...document.querySelectorAll('#batchGroupPopover .batch-group-list .context-menu-item')].find(el => el.textContent.trim() === '生产集群')?.click()`);
+    await until(() => evaluate("window.go.main.App.Profiles().then(list => list.find(x => x.id === 'p3')?.group === '生产集群')"), 'batch assign existing group');
+    await click('.sidebar-footer button[aria-label="批量管理"]');
+    await click('.host-row[data-profile-id="p3"]');
+    await click('#batchGroupBtn');
+    await until(() => evaluate("!!document.querySelector('#batchGroupInput')"), 'batch group input');
+    await evaluate(`(() => {
+      const input = document.querySelector('#batchGroupInput');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '开发测试');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await click('#batchGroupPopover button[type="submit"]');
+    await until(() => evaluate("window.go.main.App.Profiles().then(list => list.find(x => x.id === 'p3')?.group === '开发测试')"), 'batch assign custom group and restore');
+
+    // Host modal (Basic + Jump/Proxy identical height & zero vertical clipping guard)
     await click('#addHost');
     await until(() => evaluate("!!document.querySelector('#connectDialog')"), 'host modal');
-    const basicH = await evaluate(`document.querySelector('#connectDialog .modal-sheet').getBoundingClientRect().height`);
+    const basicMetrics = await evaluate(`(() => {
+      const sheet = document.querySelector('#connectDialog .modal-sheet');
+      const body = document.querySelector('#connectDialog .modal-body');
+      return {
+        height: sheet.getBoundingClientRect().height,
+        scrollHeight: body.scrollHeight,
+        clientHeight: body.clientHeight,
+      };
+    })()`);
+    assert.ok(
+      basicMetrics.scrollHeight <= basicMetrics.clientHeight + 2,
+      'Expected Basic tab in HostModal to render without vertical clipping at 1280x820, got ' + JSON.stringify(basicMetrics),
+    );
     await shot('02-HostModal');
     await click('#connectDialog .modal-header .segmented button:nth-child(2)');
     await sleep(120);
     const jumpH = await evaluate(`document.querySelector('#connectDialog .modal-sheet').getBoundingClientRect().height`);
-    assert.ok(Math.abs(basicH - jumpH) <= 1, 'Expected identical HostModal height across tabs: ' + basicH + ' vs ' + jumpH);
+    assert.ok(Math.abs(basicMetrics.height - jumpH) <= 1, 'Expected identical HostModal height across tabs: ' + basicMetrics.height + ' vs ' + jumpH);
     await click('#connectDialog .modal-header .segmented button:nth-child(1)');
     await sleep(100);
     await click('#authMode [data-auth="key"]');
@@ -553,6 +617,12 @@ async function verifyFrontendUI() {
     await until(() => evaluate("!!document.querySelector('.xterm-screen') && !document.querySelector('#sftpBtn').disabled"), 'active terminal session');
     const tabCountAfterDbl = await evaluate(`document.querySelectorAll('.tab-item').length`);
     assert.equal(tabCountAfterDbl, 1, 'Expected double-clicking a host to open strictly 1 tab');
+    // Verify ultra-quiet online indicator (no tab green bar / no "在线" pill; single quiet right-edge dot in sidebar)
+    const statusIndicatorCheck = await evaluate(`(() => ({
+      legacyLoud: document.querySelectorAll('.tab-status-bar, .host-live-pill').length,
+      quietDot: document.querySelectorAll('.host-row.live .host-live-dot').length,
+    }))()`);
+    assert.deepEqual(statusIndicatorCheck, { legacyLoud: 0, quietDot: 1 }, 'Expected ultra-quiet online indicator');
     // Verify bottom sidebar-footer and statusbar share identical top edge & height
     const barAlign = await evaluate(`(() => { const f = document.querySelector('.sidebar-footer')?.getBoundingClientRect(); const s = document.querySelector('.statusbar')?.getBoundingClientRect(); return f && s ? { fTop: f.top, sTop: s.top, fH: f.height, sH: s.height } : null; })()`);
     assert.ok(barAlign && Math.abs(barAlign.fTop - barAlign.sTop) <= 1 && Math.abs(barAlign.fH - barAlign.sH) <= 1, 'Expected aligned bottom strip, got ' + JSON.stringify(barAlign));
@@ -631,8 +701,14 @@ async function verifyFrontendUI() {
     await shot('13-Settings-SSH-KnownHosts');
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(4)').click()`);
-    await sleep(200);
+    await until(() => evaluate("document.querySelector('#model')?.value === 'claude-sonnet-5-5' && !!document.querySelector('#fetchModelsBtn')"), 'AI API tab with latest default model & refresh button');
+    await click('#fetchModelsBtn');
+    await until(() => evaluate("document.querySelectorAll('#aiModelMenu [role=\"option\"]').length === 4 && (document.querySelector('#aiModelMenu')?.textContent || '').includes('已获取 4 个在线模型')"), 'fetched AI models dropdown');
+    await sleep(150);
     await shot('17-Settings-AI-API');
+    await click('#aiModelMenu [role="option"]:nth-child(3)');
+    assert.equal(await evaluate("document.querySelector('#model')?.value"), 'claude-opus-5-5', 'Selecting a refreshed model option must update #model');
+    assert.equal(await evaluate("!!document.querySelector('#aiModelMenu')"), false, 'Selecting a model option must close #aiModelMenu');
     await evaluate(`document.querySelector('#settingsDialog [data-ai-mode="cli"]').click()`);
     await sleep(200);
     await shot('15-Settings-AI-CLI');

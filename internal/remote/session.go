@@ -22,6 +22,12 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// JumpDialFunc acquires an authenticated *ssh.Client for a ProxyJump hop.
+// If owned is true, the caller owns the client and closes it when the child session closes.
+// If owned is false, the client is borrowed (from a live session or jump pool) and must NOT be closed;
+// release (if non-nil) is invoked once when the child session finishes using the hop.
+type JumpDialFunc func(ctx context.Context, jumpCfg Config, cb Callbacks) (client *ssh.Client, owned bool, release func(), err error)
+
 type Config struct {
 	Host, User, Password, KeyPath, Passphrase, Auth string
 	Port, Cols, Rows                                int
@@ -30,6 +36,10 @@ type Config struct {
 	StartupCommand                                  string
 	Proxy                                           ProxyConfig
 	Jump                                            *Config
+	ProfileID                                       string
+	ParentClient                                    *ssh.Client
+	DialJump                                        JumpDialFunc
+	OnJumpDead                                      func(jumpCfg Config, dead *ssh.Client) bool
 }
 
 type Callbacks struct {
@@ -38,6 +48,9 @@ type Callbacks struct {
 	Output    func([]byte)
 	End       func(error)
 	Latency   func(ms int64)
+	// OnReady fires immediately after SSH authentication (before interactive PTY setup finishes)
+	// so callers can run multiplexed Exec/SFTP/Tunnels or reuse the transport without waiting for PTY.
+	OnReady func(*Session)
 }
 
 // ExecResult contains structured output from a multiplexed SSH exec command.
@@ -53,7 +66,11 @@ const ringBufferLimit = 64 << 10
 type Session struct {
 	client           *ssh.Client
 	jumpClients      []*ssh.Client
+	releaseJumps     []func()
+	ptyMu            sync.Mutex
 	pty              *ssh.Session
+	ptyReady         chan struct{}
+	ptyReadyOnce     sync.Once
 	input            io.WriteCloser
 	stops            []func() bool
 	stopKeep         context.CancelFunc
@@ -79,6 +96,9 @@ type Session struct {
 	execWorkerMu     sync.Mutex
 	execWorker       *sshExecWorker
 	noPersistentExec atomic.Bool
+	warmMu           sync.Mutex
+	warmStarted      bool
+	warmDone         chan struct{}
 }
 
 type outputWriter struct {
@@ -310,85 +330,243 @@ func readKey(path, passphrase string) (ssh.Signer, error) {
 	return signer, nil
 }
 
-func dialSSHClient(ctx, setup context.Context, cfg Config, cb Callbacks, parent *ssh.Client, depth int) (*ssh.Client, []*ssh.Client, []func() bool, error) {
+// preferredSSHConfig prioritizes fast hardware-accelerated AEAD ciphers and modern KEX
+// while retaining full fallback compatibility with older OpenSSH servers.
+func preferredSSHConfig() ssh.Config {
+	return ssh.Config{
+		Ciphers: []string{
+			ssh.CipherAES128GCM,
+			ssh.CipherChaCha20Poly1305,
+			ssh.CipherAES256GCM,
+			ssh.CipherAES128CTR,
+			ssh.CipherAES192CTR,
+			ssh.CipherAES256CTR,
+		},
+		KeyExchanges: []string{
+			ssh.KeyExchangeMLKEM768X25519,
+			ssh.KeyExchangeCurve25519,
+			"curve25519-sha256@libssh.org",
+			ssh.KeyExchangeECDHP256,
+			ssh.KeyExchangeECDHP384,
+			ssh.KeyExchangeECDHP521,
+			ssh.KeyExchangeDH14SHA256,
+			ssh.KeyExchangeDH16SHA512,
+			ssh.KeyExchangeDHGEXSHA256,
+			ssh.InsecureKeyExchangeDH14SHA1,
+		},
+	}
+}
+
+func isOpenChannelError(err error) bool {
+	var openErr *ssh.OpenChannelError
+	return errors.As(err, &openErr)
+}
+
+func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, parent *ssh.Client, depth int) (client *ssh.Client, ownedJumps []*ssh.Client, releaseJumps []func(), stops []func() bool, err error) {
 	if depth > 5 {
-		return nil, nil, nil, errors.New("跳板机链路过深（最多 5 级）")
+		return nil, nil, nil, nil, errors.New("跳板机链路过深（最多 5 级）")
 	}
 	address, err := hostAddress(cfg.Host, cfg.Port)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	user := strings.TrimSpace(cfg.User)
 	if user == "" || strings.ContainsFunc(user, unicode.IsControl) {
-		return nil, nil, nil, errors.New("请填写有效的 SSH 用户名")
+		return nil, nil, nil, nil, errors.New("请填写有效的 SSH 用户名")
 	}
-	var jumps []*ssh.Client
-	var stops []func() bool
-	if cfg.Jump != nil {
-		jClient, deeper, jumpStops, err := dialSSHClient(ctx, setup, *cfg.Jump, cb, nil, depth+1)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("连接跳板机 %s 失败：%w", cfg.Jump.Host, err)
-		}
-		jumps = append(deeper, jClient)
-		stops = append(stops, jumpStops...)
-		parent = jClient
-	}
-	closeJumps := func() {
+
+	cleanupAll := func() {
 		for _, st := range stops {
 			if st != nil {
 				st()
 			}
 		}
-		for i := len(jumps) - 1; i >= 0; i-- {
-			jumps[i].Close()
+		for i := len(ownedJumps) - 1; i >= 0; i-- {
+			ownedJumps[i].Close()
+		}
+		for i := len(releaseJumps) - 1; i >= 0; i-- {
+			if releaseJumps[i] != nil {
+				releaseJumps[i]()
+			}
 		}
 	}
+
+	var borrowedJump bool
+	var borrowedRelease func()
+
+	if parent == nil && cfg.ParentClient != nil {
+		parent = cfg.ParentClient
+		borrowedJump = true
+	} else if parent == nil && cfg.Jump != nil {
+		if cfg.DialJump != nil {
+			jClient, owned, rel, jErr := cfg.DialJump(setup, *cfg.Jump, cb)
+			if jErr != nil {
+				return nil, nil, nil, nil, fmt.Errorf("连接跳板机 %s 失败：%w", cfg.Jump.Host, jErr)
+			}
+			parent = jClient
+			if owned {
+				ownedJumps = append(ownedJumps, jClient)
+			} else {
+				borrowedJump = true
+				borrowedRelease = rel
+				if rel != nil {
+					releaseJumps = append(releaseJumps, rel)
+				}
+			}
+		} else {
+			jClient, deeperOwned, deeperRel, jumpStops, jErr := dialSSHClient(lifeCtx, setup, *cfg.Jump, cb, nil, depth+1)
+			if jErr != nil {
+				return nil, nil, nil, nil, fmt.Errorf("连接跳板机 %s 失败：%w", cfg.Jump.Host, jErr)
+			}
+			ownedJumps = append(deeperOwned, jClient)
+			releaseJumps = append(releaseJumps, deeperRel...)
+			stops = append(stops, jumpStops...)
+			parent = jClient
+		}
+	}
+
 	methods, release, err := loginMethods(setup, cfg, cb.Challenge)
 	if err != nil {
-		closeJumps()
-		return nil, nil, nil, err
+		cleanupAll()
+		return nil, nil, nil, nil, err
 	}
 	defer release()
-	callback, err := hostVerifier(ctx, cb.Verify)
+	callback, err := hostVerifier(setup, cb.Verify)
 	if err != nil {
-		closeJumps()
-		return nil, nil, nil, err
+		cleanupAll()
+		return nil, nil, nil, nil, err
 	}
 
 	var raw net.Conn
 	if parent != nil {
 		raw, err = parent.DialContext(setup, "tcp", address)
-		if err != nil {
-			closeJumps()
-			if setup.Err() != nil {
-				return nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 超时：%w", address, setup.Err())
+		// If a borrowed jump transport died silently (e.g. NAT timeout while idle), evict and retry once.
+		if err != nil && borrowedJump && cfg.Jump != nil && setup.Err() == nil && !isOpenChannelError(err) {
+			if borrowedRelease != nil {
+				borrowedRelease()
+				if len(releaseJumps) > 0 {
+					releaseJumps = releaseJumps[:len(releaseJumps)-1]
+				}
+				borrowedRelease = nil
 			}
-			return nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 失败：%w", address, err)
+			canRetryPool := cfg.OnJumpDead != nil && cfg.OnJumpDead(*cfg.Jump, parent)
+			if canRetryPool && cfg.DialJump != nil {
+				if jClient, owned, rel, jErr := cfg.DialJump(setup, *cfg.Jump, cb); jErr == nil {
+					parent = jClient
+					if owned {
+						ownedJumps = append(ownedJumps, jClient)
+					} else if rel != nil {
+						releaseJumps = append(releaseJumps, rel)
+					}
+					raw, err = parent.DialContext(setup, "tcp", address)
+				}
+			} else if cfg.ParentClient == nil {
+				jumpCopy := *cfg.Jump
+				jumpCopy.ParentClient = nil
+				if jClient, deeperOwned, deeperRel, jumpStops, jErr := dialSSHClient(lifeCtx, setup, jumpCopy, cb, nil, depth+1); jErr == nil {
+					ownedJumps = append(deeperOwned, jClient)
+					releaseJumps = append(releaseJumps, deeperRel...)
+					stops = append(stops, jumpStops...)
+					parent = jClient
+					raw, err = parent.DialContext(setup, "tcp", address)
+				}
+			}
+		}
+		if err != nil {
+			cleanupAll()
+			if setup.Err() != nil {
+				return nil, nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 超时：%w", address, setup.Err())
+			}
+			return nil, nil, nil, nil, fmt.Errorf("通过跳板机连接 %s 失败：%w", address, err)
 		}
 	} else {
 		raw, err = dialTCPWithProxy(setup, address, cfg.Proxy)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("连接 %s 失败：%w", address, err)
+			return nil, nil, nil, nil, fmt.Errorf("连接 %s 失败：%w", address, err)
 		}
 	}
-	stop := context.AfterFunc(ctx, func() { raw.Close() })
-	stops = append(stops, stop)
+
+	stopDial := context.AfterFunc(setup, func() { raw.Close() })
 	deadline, _ := setup.Deadline()
 	_ = raw.SetDeadline(deadline)
 
 	transport, channels, requests, err := ssh.NewClientConn(raw, address, &ssh.ClientConfig{
+		Config:          preferredSSHConfig(),
 		User:            user,
 		Auth:            methods,
 		HostKeyCallback: callback,
-		Timeout:         15 * time.Second,
+		Timeout:         20 * time.Second,
 	})
+	if !stopDial() {
+		if err == nil {
+			transport.Close()
+		} else {
+			raw.Close()
+		}
+		cleanupAll()
+		if setup.Err() != nil {
+			return nil, nil, nil, nil, fmt.Errorf("SSH 握手失败：%w", setup.Err())
+		}
+		return nil, nil, nil, nil, fmt.Errorf("SSH 握手失败：%w", err)
+	}
 	if err != nil {
 		raw.Close()
-		closeJumps()
-		return nil, nil, nil, fmt.Errorf("SSH 握手失败：%w", err)
+		cleanupAll()
+		return nil, nil, nil, nil, fmt.Errorf("SSH 握手失败：%w", err)
 	}
 	_ = raw.SetDeadline(time.Time{})
-	return ssh.NewClient(transport, channels, requests), jumps, stops, nil
+	stopLife := context.AfterFunc(lifeCtx, func() { raw.Close() })
+	stops = append(stops, stopLife)
+	return ssh.NewClient(transport, channels, requests), ownedJumps, releaseJumps, stops, nil
+}
+
+// DialClient establishes a standalone authenticated *ssh.Client (with ProxyJump, proxy,
+// known_hosts verification, fast crypto, and background keepalive) for jump-host transport pooling.
+func DialClient(lifeCtx, dialCtx context.Context, cfg Config, cb Callbacks) (*ssh.Client, func(), error) {
+	if err := lifeCtx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if err := dialCtx.Err(); err != nil {
+		return nil, nil, err
+	}
+	setup, cancel := context.WithTimeout(dialCtx, 45*time.Second)
+	defer cancel()
+
+	client, ownedJumps, releaseJumps, stops, err := dialSSHClient(lifeCtx, setup, cfg, cb, nil, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	keepCtx, stopKeep := context.WithCancel(lifeCtx)
+	var closed atomic.Bool
+	var closeOnce sync.Once
+	closeFn := func() {
+		closeOnce.Do(func() {
+			closed.Store(true)
+			stopKeep()
+			for _, st := range stops {
+				if st != nil {
+					st()
+				}
+			}
+			client.Close()
+			for i := len(ownedJumps) - 1; i >= 0; i-- {
+				ownedJumps[i].Close()
+			}
+			for i := len(releaseJumps) - 1; i >= 0; i-- {
+				if releaseJumps[i] != nil {
+					releaseJumps[i]()
+				}
+			}
+		})
+	}
+
+	keepSec := cfg.KeepAliveSec
+	if keepSec <= 0 {
+		keepSec = 30
+	}
+	go runClientKeepAlive(keepCtx, client, time.Duration(keepSec)*time.Second, &closed, closeFn, nil)
+	return client, closeFn, nil
 }
 
 // Connect establishes an SSH session (optionally via ProxyJump or SOCKS5/HTTP proxy) and keeps ctx associated until close.
@@ -409,27 +587,38 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 	defer cancel()
 
 	t0 := time.Now()
-	client, jumps, stops, err := dialSSHClient(ctx, setup, cfg, cb, nil, 0)
+	client, ownedJumps, releaseJumps, stops, err := dialSSHClient(ctx, setup, cfg, cb, nil, 0)
 	if err != nil {
 		return nil, err
 	}
 	initialRTT := time.Since(t0).Milliseconds()
 
-	cleanupClients := func() {
-		for _, st := range stops {
-			if st != nil {
-				st()
-			}
-		}
-		client.Close()
-		for i := len(jumps) - 1; i >= 0; i-- {
-			jumps[i].Close()
-		}
+	keepCtx, stopKeep := context.WithCancel(ctx)
+	s := &Session{
+		client:       client,
+		jumpClients:  ownedJumps,
+		releaseJumps: releaseJumps,
+		ptyReady:     make(chan struct{}),
+		stops:        stops,
+		stopKeep:     stopKeep,
+		tunnels:      make(map[string]*activeTunnel),
+	}
+	s.latencyMs.Store(initialRTT)
+	if cb.Latency != nil {
+		cb.Latency(initialRTT)
+	}
+
+	// Pre-warm the persistent `sh -s` exec worker concurrently with interactive PTY setup.
+	s.startWarmExecWorkerAsync()
+
+	// Expose the authenticated session immediately so MCP/Exec/Jump callers don't wait for PTY RTTs.
+	if cb.OnReady != nil {
+		cb.OnReady(s)
 	}
 
 	pty, err := client.NewSession()
 	if err != nil {
-		cleanupClients()
+		s.Close()
 		return nil, fmt.Errorf("建立终端通道失败：%w", err)
 	}
 
@@ -438,17 +627,6 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 		if cleanup, err := setupAgentForwarding(ctx, client, pty); err == nil {
 			agentCleanup = cleanup
 		}
-	}
-
-	keepCtx, stopKeep := context.WithCancel(ctx)
-	s := &Session{
-		client:       client,
-		jumpClients:  jumps,
-		pty:          pty,
-		stops:        stops,
-		stopKeep:     stopKeep,
-		agentCleanup: agentCleanup,
-		tunnels:      make(map[string]*activeTunnel),
 	}
 
 	out := &outputWriter{
@@ -461,12 +639,10 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 		if agentCleanup != nil {
 			agentCleanup()
 		}
-		stopKeep()
 		pty.Close()
-		cleanupClients()
+		s.Close()
 		return nil, err
 	}
-	s.input = input
 
 	if err := pty.RequestPty("xterm-256color", cfg.Rows, cfg.Cols, ssh.TerminalModes{
 		ssh.ECHO:          1,
@@ -476,25 +652,36 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 		if agentCleanup != nil {
 			agentCleanup()
 		}
-		stopKeep()
 		pty.Close()
-		cleanupClients()
+		s.Close()
 		return nil, fmt.Errorf("远端拒绝分配交互终端：%w", err)
 	}
 	if err := pty.Shell(); err != nil {
 		if agentCleanup != nil {
 			agentCleanup()
 		}
-		stopKeep()
 		pty.Close()
-		cleanupClients()
+		s.Close()
 		return nil, fmt.Errorf("启动远端 shell 失败：%w", err)
 	}
 
-	s.latencyMs.Store(initialRTT)
-	if cb.Latency != nil {
-		cb.Latency(initialRTT)
+	s.ptyMu.Lock()
+	if s.closed.Load() {
+		s.ptyMu.Unlock()
+		if agentCleanup != nil {
+			agentCleanup()
+		}
+		pty.Close()
+		s.markPTYReady()
+		return nil, context.Canceled
 	}
+	s.pty = pty
+	s.agentCleanup = agentCleanup
+	s.write.Lock()
+	s.input = input
+	s.write.Unlock()
+	s.ptyMu.Unlock()
+	s.markPTYReady()
 
 	if cmd := strings.TrimSpace(cfg.StartupCommand); cmd != "" {
 		go func() {
@@ -532,6 +719,15 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 }
 
 func (s *Session) keepAliveLoop(ctx context.Context, interval time.Duration, onLatency func(int64)) {
+	runClientKeepAlive(ctx, s.client, interval, &s.closed, s.Close, func(ms int64) {
+		s.latencyMs.Store(ms)
+		if onLatency != nil {
+			onLatency(ms)
+		}
+	})
+}
+
+func runClientKeepAlive(ctx context.Context, client *ssh.Client, interval time.Duration, closed *atomic.Bool, onDead func(), onLatency func(int64)) {
 	if interval < 5*time.Second {
 		interval = 5 * time.Second
 	}
@@ -551,13 +747,13 @@ func (s *Session) keepAliveLoop(ctx context.Context, interval time.Duration, onL
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if s.closed.Load() {
+			if closed.Load() {
 				return
 			}
 			start := time.Now()
 			done := make(chan error, 1)
 			go func() {
-				_, _, err := s.client.SendRequest("keepalive@openssh.com", true, nil)
+				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 				done <- err
 			}()
 			probeTimer.Reset(10 * time.Second)
@@ -574,7 +770,7 @@ func (s *Session) keepAliveLoop(ctx context.Context, interval time.Duration, onL
 				if err != nil {
 					missed++
 					if missed >= 3 {
-						s.Close()
+						onDead()
 						return
 					}
 				} else {
@@ -583,7 +779,6 @@ func (s *Session) keepAliveLoop(ctx context.Context, interval time.Duration, onL
 					if ms < 1 {
 						ms = 1
 					}
-					s.latencyMs.Store(ms)
 					if onLatency != nil {
 						onLatency(ms)
 					}
@@ -591,11 +786,117 @@ func (s *Session) keepAliveLoop(ctx context.Context, interval time.Duration, onL
 			case <-probeTimer.C:
 				missed++
 				if missed >= 2 {
-					s.Close()
+					onDead()
 					return
 				}
 			}
 		}
+	}
+}
+
+// Client returns the underlying live *ssh.Client for jump-host transport reuse, or nil if closed.
+func (s *Session) Client() *ssh.Client {
+	if s == nil || s.closed.Load() {
+		return nil
+	}
+	return s.client
+}
+
+// IsClosed reports whether the session has been closed.
+func (s *Session) IsClosed() bool {
+	return s == nil || s.closed.Load()
+}
+
+func (s *Session) markPTYReady() {
+	if s.ptyReady != nil {
+		s.ptyReadyOnce.Do(func() { close(s.ptyReady) })
+	}
+}
+
+func (s *Session) waitPTY() error {
+	if s.ptyReady != nil {
+		<-s.ptyReady
+	}
+	if s.closed.Load() {
+		return net.ErrClosed
+	}
+	return nil
+}
+
+func (s *Session) startWarmExecWorkerAsync() {
+	if s == nil || s.client == nil || s.closed.Load() || s.noPersistentExec.Load() {
+		return
+	}
+	s.warmMu.Lock()
+	if s.warmStarted {
+		s.warmMu.Unlock()
+		return
+	}
+	s.warmStarted = true
+	done := make(chan struct{})
+	s.warmDone = done
+	s.warmMu.Unlock()
+	go s.runWarmExecWorker(done)
+}
+
+// WarmExecWorker pre-opens the persistent multiplexed `sh -s` exec channel so the first
+// Exec / ExecDetailed call completes in 1 RTT. If warming is already running, it waits for it.
+func (s *Session) WarmExecWorker() {
+	if s == nil || s.client == nil || s.closed.Load() || s.noPersistentExec.Load() {
+		return
+	}
+	s.warmMu.Lock()
+	if s.warmStarted {
+		done := s.warmDone
+		s.warmMu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return
+	}
+	s.warmStarted = true
+	done := make(chan struct{})
+	s.warmDone = done
+	s.warmMu.Unlock()
+	s.runWarmExecWorker(done)
+}
+
+func (s *Session) runWarmExecWorker(done chan struct{}) {
+	defer close(done)
+	if s.closed.Load() || s.noPersistentExec.Load() {
+		return
+	}
+	if !s.execWorkerMu.TryLock() {
+		return
+	}
+	defer s.execWorkerMu.Unlock()
+	if s.closed.Load() || s.noPersistentExec.Load() || (s.execWorker != nil && !s.execWorker.isClosed()) {
+		return
+	}
+	w, err := startExecWorker(s.client)
+	if err != nil {
+		if !s.closed.Load() {
+			s.noPersistentExec.Store(true)
+		}
+		return
+	}
+	if s.closed.Load() {
+		w.close()
+		return
+	}
+	s.execWorker = w
+}
+
+func (s *Session) waitWarmInFlight(ctx context.Context) {
+	s.warmMu.Lock()
+	done := s.warmDone
+	s.warmMu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -611,17 +912,29 @@ func (s *Session) Exec(ctx context.Context, command string, maxBytes int64) (str
 
 // ExecDetailed runs a non-interactive command and returns separated stdout, stderr, exit code, and timing.
 // It uses a persistent multiplexed `sh -s` worker channel for 1-RTT execution when idle,
-// and falls back seamlessly to a fresh SSH channel for concurrent calls or non-POSIX remotes.
+// coordinates cleanly with any in-flight WarmExecWorker(), and falls back seamlessly to a
+// fresh SSH channel for concurrent calls or non-POSIX remotes.
 func (s *Session) ExecDetailed(ctx context.Context, command string, maxBytes int64) (ExecResult, error) {
 	if s.closed.Load() {
 		return ExecResult{}, net.ErrClosed
+	}
+	if !s.noPersistentExec.Load() {
+		s.waitWarmInFlight(ctx)
+		if err := ctx.Err(); err != nil {
+			return ExecResult{}, err
+		}
+		if s.closed.Load() {
+			return ExecResult{}, net.ErrClosed
+		}
 	}
 	if !s.noPersistentExec.Load() && s.execWorkerMu.TryLock() {
 		defer s.execWorkerMu.Unlock()
 		if s.execWorker == nil || s.execWorker.isClosed() {
 			w, err := startExecWorker(s.client)
 			if err != nil {
-				s.noPersistentExec.Store(true)
+				if !s.closed.Load() {
+					s.noPersistentExec.Store(true)
+				}
 				return s.execOneShot(ctx, command, maxBytes)
 			}
 			s.execWorker = w
@@ -667,6 +980,9 @@ func validSize(cols, rows int) bool {
 }
 
 func (s *Session) Write(b []byte) error {
+	if err := s.waitPTY(); err != nil {
+		return err
+	}
 	s.write.Lock()
 	defer s.write.Unlock()
 	if s.closed.Load() || s.input == nil {
@@ -683,16 +999,23 @@ func (s *Session) Resize(cols, rows int) error {
 	if !validSize(cols, rows) {
 		return errors.New("终端尺寸无效")
 	}
-	if s.closed.Load() || s.pty == nil {
+	if err := s.waitPTY(); err != nil {
+		return err
+	}
+	s.ptyMu.Lock()
+	pty := s.pty
+	s.ptyMu.Unlock()
+	if s.closed.Load() || pty == nil {
 		return net.ErrClosed
 	}
-	return s.pty.WindowChange(rows, cols)
+	return pty.WindowChange(rows, cols)
 }
 
 func (s *Session) Close() {
 	if !s.closed.CompareAndSwap(false, true) {
 		return
 	}
+	s.markPTYReady()
 	if s.stopKeep != nil {
 		s.stopKeep()
 	}
@@ -709,12 +1032,28 @@ func (s *Session) Close() {
 			st()
 		}
 	}
-	if s.agentCleanup != nil {
-		s.agentCleanup()
+	s.ptyMu.Lock()
+	agentCleanup := s.agentCleanup
+	s.agentCleanup = nil
+	pty := s.pty
+	s.pty = nil
+	s.ptyMu.Unlock()
+	if agentCleanup != nil {
+		agentCleanup()
 	}
-	s.client.Close()
+	if pty != nil {
+		pty.Close()
+	}
+	if s.client != nil {
+		s.client.Close()
+	}
 	for i := len(s.jumpClients) - 1; i >= 0; i-- {
 		s.jumpClients[i].Close()
+	}
+	for i := len(s.releaseJumps) - 1; i >= 0; i-- {
+		if s.releaseJumps[i] != nil {
+			s.releaseJumps[i]()
+		}
 	}
 	s.fileMu.Lock()
 	if s.files != nil {

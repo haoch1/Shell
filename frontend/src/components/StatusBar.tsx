@@ -49,6 +49,10 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   const latency = session.latencyMs ?? stats?.latencyMs;
 
   const barTone = (pct: number) => (pct >= 85 ? 'high' : pct >= 65 ? 'warn' : '');
+  const displayName =
+    session.profile.name && (!hideHostIp || session.profile.name !== session.profile.host)
+      ? session.profile.name
+      : session.profile.user || 'SSH 主机';
 
   return (
     <footer className="statusbar">
@@ -57,13 +61,18 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           className="status-chip"
           title={
             hideHostIp
-              ? `${session.profile.user}@${formatHostDisplay(session.profile.host, session.profile.port, true)}`
+              ? displayName
               : `${session.profile.user}@${session.profile.host}:${session.profile.port}`
           }
         >
           <span className={`tab-dot ${session.state}`} />
-          <span className="mono">
-            {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port, hideHostIp)}
+          <span
+            className={`status-host-text ${hideHostIp ? '' : 'mono'}`}
+            data-ip-hidden={hideHostIp ? 'true' : undefined}
+          >
+            {hideHostIp
+              ? displayName
+              : `${session.profile.user}@${formatHostDisplay(session.profile.host, session.profile.port)}`}
           </span>
         </span>
         {jumpHostName && (
@@ -130,7 +139,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           <div className="telemetry-popover">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ fontWeight: 600, fontSize: 13 }}>
-                {stats.hostname || formatHostDisplay(session.profile.host, undefined, hideHostIp)}
+                {stats.hostname || (hideHostIp ? displayName : formatHostDisplay(session.profile.host))}
               </div>
               <span className="pill-badge safe">在线</span>
             </div>

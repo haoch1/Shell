@@ -21,7 +21,7 @@ func (a *App) waitVisibleConnect(ctx context.Context, p local.Profile, open func
 	result := make(chan visibleResult, 1)
 	a.mu.Lock()
 	for id, e := range a.live {
-		if e != nil && e.session != nil && sameSessionTarget(p, e.profile) {
+		if e != nil && e.session != nil && !e.session.IsClosed() && sameSessionTarget(p, e.profile) {
 			a.mu.Unlock()
 			return id, e, nil
 		}
@@ -51,7 +51,7 @@ func (a *App) finishVisibleConnect(p local.Profile, id string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	e := a.live[id]
-	if err == nil && (e == nil || e.session == nil || !sameSessionTarget(p, e.profile)) {
+	if err == nil && (e == nil || e.session == nil || e.session.IsClosed() || !sameSessionTarget(p, e.profile)) {
 		err = errors.New("前台会话已关闭")
 	}
 	for result, want := range a.visibleWaiters {

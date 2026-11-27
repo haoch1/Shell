@@ -301,37 +301,46 @@ html, body, #root {
   box-shadow: var(--shadow-sm);
 }
 
-.tab-status-bar {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 0;
-  height: 2px;
-  border-radius: 2px 2px 0 0;
-  opacity: 0.75;
-  pointer-events: none;
-  transition: opacity 140ms ease, background 140ms ease;
+.tab-item.split-tab {
+  max-width: 248px;
 }
 
-.tab-item.active .tab-status-bar {
-  opacity: 1;
+.tab-split-icon {
+  flex-shrink: 0;
+  color: var(--ink-tertiary);
 }
 
-.tab-status-bar.connected {
-  background: var(--green);
+.tab-item.active .tab-split-icon {
+  color: var(--ink-secondary);
 }
 
-.tab-status-bar.connecting {
+.tab-split-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 99px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-secondary);
+  background: var(--bg-hover);
+}
+
+.tab-connecting-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
   background: var(--orange);
+  flex-shrink: 0;
   animation: pulse 1.2s ease-in-out infinite;
 }
 
-.tab-status-bar.closed {
-  background: transparent;
-}
-
 .tab-item.state-closed {
-  opacity: 0.62;
+  opacity: 0.55;
 }
 
 .tab-dot {
@@ -778,6 +787,7 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 9px;
+  min-height: 48px;
   padding: 6.5px 9px;
   border-radius: 8.5px;
   cursor: pointer;
@@ -794,20 +804,6 @@ html, body, #root {
 
 .host-row.active {
   background: var(--bg-accent-soft);
-}
-
-.host-row.live::before {
-  content: '';
-  position: absolute;
-  left: 2px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 18px;
-  border-radius: 99px;
-  background: var(--green);
-  box-shadow: 0 0 8px rgba(52, 211, 153, 0.35);
-  pointer-events: none;
 }
 
 /* Authentic OS Brand Squircle Badge (Dual-Calibrated Light & Dark) */
@@ -939,7 +935,8 @@ html, body, #root {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  justify-content: center;
+  gap: 0;
 }
 
 .host-name-line {
@@ -951,6 +948,7 @@ html, body, #root {
 
 .host-name {
   font-size: 13px;
+  line-height: 18px;
   font-weight: 550;
   color: var(--ink-primary);
   overflow: hidden;
@@ -960,32 +958,26 @@ html, body, #root {
 
 .host-sub {
   font-size: 11.5px;
+  line-height: 15px;
+  margin-top: 2px;
   color: var(--ink-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.host-live-pill {
-  margin-left: auto;
+.host-live-dot {
+  width: 5.5px;
+  height: 5.5px;
+  border-radius: 50%;
+  background: var(--green);
+  opacity: 0.85;
   flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
-  padding: 3px 6px;
-  border-radius: 99px;
-  color: var(--green);
-  background: rgba(52, 199, 89, 0.12);
-  border: 1px solid rgba(52, 199, 89, 0.22);
+  margin-right: 2px;
   transition: opacity 120ms ease;
 }
 
-[data-theme="dark"] .host-live-pill {
-  background: rgba(52, 211, 153, 0.14);
-  border-color: rgba(52, 211, 153, 0.26);
-}
-
-.host-row:hover .host-live-pill {
+.host-row:hover .host-live-dot {
   opacity: 0;
 }
 
@@ -1064,7 +1056,41 @@ html, body, #root {
 
 .sidebar-footer.batch-bar .btn-sm {
   height: 25px;
+  padding: 0 7px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.batch-group-popover {
+  padding: 6px;
+}
+
+.batch-group-form {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px;
+}
+
+.batch-group-form .input {
+  flex: 1;
+  min-width: 0;
+  height: 27px;
   padding: 0 8px;
+  font-size: 12px;
+}
+
+.batch-group-form .btn-sm {
+  height: 27px;
+  padding: 0 9px;
+  flex-shrink: 0;
+}
+
+.batch-group-list {
+  max-height: 168px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-empty {
@@ -1195,11 +1221,19 @@ html, body, #root {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
   padding: 0 8px;
   background: var(--bg-titlebar);
   border-bottom: 1px solid var(--border-hairline);
   font-size: 11px;
   color: var(--ink-secondary);
+}
+
+.pane-mini-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .pane-xterm-wrap {
@@ -1474,6 +1508,7 @@ html, body, #root {
   flex-direction: row;
   align-items: center;
   gap: 10px;
+  min-height: 58px;
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--border-hairline);
@@ -1499,11 +1534,13 @@ html, body, #root {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  justify-content: center;
+  gap: 0;
 }
 
 .recent-card-name {
   font-size: 13px;
+  line-height: 18px;
   font-weight: 600;
   color: var(--ink-primary);
   overflow: hidden;
@@ -1513,10 +1550,46 @@ html, body, #root {
 
 .recent-card-sub {
   font-size: 11.5px;
+  line-height: 16px;
+  margin-top: 2px;
   color: var(--ink-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Smooth IP privacy collapse transitions (zero layout shift / flicker) */
+.ip-collapsible {
+  max-height: 16px;
+  opacity: 1;
+  overflow: hidden;
+  transition: max-height 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 140ms ease, margin 180ms ease;
+}
+
+.ip-collapsible.is-hidden {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.ip-inline-collapsible {
+  display: inline-block;
+  max-width: 280px;
+  opacity: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: bottom;
+  transition: max-width 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 140ms ease;
+}
+
+.ip-inline-collapsible.is-hidden {
+  max-width: 0;
+  opacity: 0;
+}
+
+.status-host-text {
+  transition: opacity 150ms ease;
 }
 
 /* Collapsible Advanced Settings Fold */
@@ -1919,7 +1992,7 @@ html, body, #root {
 
 /* Keep HostModal identical height when switching between Basic & Jump/Proxy tabs */
 #connectDialog .modal-sheet {
-  height: min(530px, calc(100vh - 48px));
+  height: min(620px, calc(100vh - 44px));
 }
 
 #connectDialog .modal-sheet > form {
@@ -1946,7 +2019,7 @@ html, body, #root {
   margin: auto;
   padding: 0;
   width: min(440px, calc(100vw - 32px));
-  height: min(472px, calc(100vh - 48px));
+  height: min(432px, calc(100vh - 48px));
   color: var(--ink-primary);
 }
 .host-export:not([open]) { display: none; }
@@ -2048,6 +2121,11 @@ html, body, #root {
   max-width: 52%;
   font-size: 11.5px;
   color: var(--ink-tertiary);
+  transition: opacity 140ms ease, max-width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.host-export-list label small.is-hidden {
+  opacity: 0;
+  max-width: 0;
 }
 .host-export-meta {
   display: flex;

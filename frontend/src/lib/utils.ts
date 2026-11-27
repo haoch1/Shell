@@ -56,27 +56,15 @@ export function formatRelativeTime(unixSec?: number): string {
 }
 
 /**
- * Masks an IPv4, IPv6, or hostname/domain for privacy mode (screenshots / screen-sharing).
- * - Empty/whitespace -> ''
- * - IPv4 -> '•••.•••.•••.•••'
- * - IPv6 (contains ':') -> '••••:••••:••••'
- * - Hostname / domain -> '••••••••'
+ * Returns an empty string for plain-text IP privacy hiding (no dot placeholders).
  */
-export function maskHostAddress(host: string): string {
-  const clean = (host || '').trim().replace(/^\[|\]$/g, '');
-  if (!clean) return '';
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(clean)) {
-    return '•••.•••.•••.•••';
-  }
-  if (clean.includes(':')) {
-    return '••••:••••:••••';
-  }
-  return '••••••••';
+export function maskHostAddress(_host: string): string {
+  return '';
 }
 
 /**
  * Formats an IPv4, IPv6, or long hostname for clean single-line display in cards and sidebars.
- * - When hideIp is true: returns maskHostAddress(host) (intentionally omits custom port to prevent leakage)
+ * - When hideIp is true: returns '' so host IPs/ports are completely omitted without dot placeholders
  * - IPv4: shown in full ("56.10.113.238" or "56.10.113.238:58222")
  * - IPv6: middle-elided cleanly on colon boundaries ("2406:da18…4e21" or "2406:da18…4e21 :58222")
  * - Long domain (>22 chars): clean middle-elide preserving prefix & domain suffix
@@ -85,7 +73,7 @@ export function formatHostDisplay(host: string, port?: number, hideIp?: boolean)
   const clean = (host || '').trim().replace(/^\[|\]$/g, '');
   if (!clean) return '';
   if (hideIp) {
-    return maskHostAddress(clean);
+    return '';
   }
   const hasCustomPort = Boolean(port && port !== 22);
   const colonCount = (clean.match(/:/g) || []).length;

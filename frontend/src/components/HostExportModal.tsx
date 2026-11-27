@@ -2,12 +2,11 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { errorMessage, getApi } from '../lib/bridge';
 import { formatHostDisplay } from '../lib/utils';
-import type { HostExportFormat, HostExportResult, Profile } from '../types/shell';
+import type { HostExportResult, Profile } from '../types/shell';
 
 export function HostExportModal({ profiles, initialIds, hideHostIp = false, onClose }: {
   profiles: Profile[]; initialIds: string[]; hideHostIp?: boolean; onClose: () => void;
 }) {
-  const [format, setFormat] = useState<HostExportFormat>('openssh');
   const [selected, setSelected] = useState<Set<string>>(() =>
     new Set(initialIds.length > 0 ? initialIds : profiles.map(p => p.id)),
   );
@@ -20,7 +19,7 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
   const ids = profiles.filter(p => selected.has(p.id)).map(p => p.id);
   const allSelected = profiles.length > 0 && ids.length === profiles.length;
   const savedIds = useMemo(() => new Set(profiles.map(p => p.id)), [profiles]);
-  const includesJumpHost = format === 'openssh' && profiles.some(p =>
+  const includesJumpHost = profiles.some(p =>
     selected.has(p.id) && p.jumpHostId && savedIds.has(p.jumpHostId) && !selected.has(p.jumpHostId));
 
   useLayoutEffect(() => {
@@ -50,7 +49,7 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
     setCanceled(false);
     try {
       const exportIds = ids.length === profiles.length ? [] : ids;
-      const saved = await getApi().ExportHosts(exportIds, format);
+      const saved = await getApi().ExportHosts(exportIds, 'openssh');
       if (saved.path) setResult(saved);
       else setCanceled(true);
     } catch (err) {
@@ -93,14 +92,6 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
             </div>
           ) : (
             <>
-              <div className="field-group">
-                <label className="field-label" htmlFor="hostExportFormat">文件格式</label>
-                <select className="select" id="hostExportFormat" autoFocus value={format} disabled={busy}
-                  onChange={event => setFormat(event.target.value as HostExportFormat)}>
-                  <option value="openssh">OpenSSH config</option>
-                  <option value="putty">PuTTY 注册表 (.reg)</option>
-                </select>
-              </div>
               <div className="host-export-list-section">
                 <div className="host-export-list-head">
                   <div className="host-export-list-title">
@@ -111,6 +102,7 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
                     type="button"
                     id="toggleExportSelectAll"
                     className="host-export-select-all"
+                    autoFocus
                     disabled={busy}
                     onClick={toggleSelectAll}
                   >
@@ -119,12 +111,23 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
                 </div>
                 <div className="host-export-list" role="group" aria-label="选择要导出的主机">
                   {profiles.map(p => {
-                    const addr = `${p.user}@${formatHostDisplay(p.host, p.port, hideHostIp)}`;
+                    const displayName =
+                      p.name && (!hideHostIp || p.name !== p.host)
+                        ? p.name
+                        : hideHostIp
+                          ? p.user || 'SSH 主机'
+                          : formatHostDisplay(p.host, p.port);
+                    const addr = hideHostIp ? '' : `${p.user}@${formatHostDisplay(p.host, p.port)}`;
                     return (
-                      <label key={p.id} title={addr}>
+                      <label key={p.id} title={hideHostIp ? displayName : addr}>
                         <input type="checkbox" value={p.id} checked={selected.has(p.id)} disabled={busy} onChange={() => toggle(p.id)} />
-                        <span>{p.name || formatHostDisplay(p.host, p.port, hideHostIp)}</span>
-                        <small className="mono">{addr}</small>
+                        <span>{displayName}</span>
+                        <small
+                          className={`mono host-export-addr ${hideHostIp ? 'is-hidden' : ''}`}
+                          data-ip-hidden={hideHostIp ? 'true' : undefined}
+                        >
+                          {addr}
+                        </small>
                       </label>
                     );
                   })}
@@ -133,7 +136,7 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
               <div className="host-export-meta">
                 <p className="host-export-note">
                   {includesJumpHost && <span id="exportJumpNotice">文件还会包含连接所需的跳板机。</span>}
-                  仅导出连接配置。密码和私钥内容不会写入文件。
+                  导出为 OpenSSH 配置文件，密码和私钥内容不会写入文件。
                 </p>
                 {error && <p className="error-text" role="alert">{error}</p>}
                 {canceled && <p className="host-export-note" role="status">已取消保存</p>}

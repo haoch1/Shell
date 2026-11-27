@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -28,6 +29,18 @@ type AISettings struct {
 	CLICommand string `json:"cliCommand,omitempty"`
 	CLIArgs    string `json:"cliArgs,omitempty"`
 	CLIModel   string `json:"cliModel,omitempty"`
+}
+
+// AIConfigInput carries AI configuration fields from the settings form (including optional keepKey reuse).
+type AIConfigInput struct {
+	Mode       string `json:"mode"`
+	Endpoint   string `json:"endpoint"`
+	Model      string `json:"model"`
+	APIKey     string `json:"apiKey"`
+	KeepKey    bool   `json:"keepKey"`
+	CLICommand string `json:"cliCommand"`
+	CLIArgs    string `json:"cliArgs"`
+	CLIModel   string `json:"cliModel"`
 }
 
 // AIResult is a structured command suggestion with safety classification.
@@ -113,7 +126,16 @@ func isAnthropicEndpoint(endpoint string) bool {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	return host == "api.anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
+	return host == "anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
+}
+
+func isGeminiEndpoint(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "generativelanguage.googleapis.com" || strings.HasSuffix(host, ".generativelanguage.googleapis.com")
 }
 
 type message struct {
@@ -507,4 +529,447 @@ func readCommand(data []byte) (string, error) {
 		return "", errors.New("AI 回复需要是一条完整的单行命令，请调整问题后重试")
 	}
 	return command, nil
+}
+
+var nonChatModelSubstrings = []string{
+	"embedding",
+	"embed",
+	"whisper",
+	"tts-",
+	"dall-e",
+	"moderation",
+	"text-moderation",
+	"omni-moderation",
+	"babbage",
+	"davinci",
+	"gpt-image",
+	"imagen",
+	"veo",
+	"lyria",
+	"aqa",
+	"realtime",
+	"transcribe",
+	"audio-preview",
+	"sora",
+}
+
+func normalizeModelsBaseURL(raw string) (*url.URL, string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	u, err := url.Parse(trimmed)
+	if err != nil || trimmed == "" || len(trimmed) > 2048 || u.Hostname() == "" || u.User != nil ||
+		strings.ContainsAny(trimmed, "\\?#") || strings.IndexFunc(trimmed, unicode.IsSpace) >= 0 {
+		return nil, "", errors.New("请填写完整的服务地址，例如 https://api.openai.com/v1")
+	}
+	ip, _ := netip.ParseAddr(u.Hostname())
+	if u.Scheme != "https" && !(u.Scheme == "http" && (strings.EqualFold(u.Hostname(), "localhost") || ip.IsLoopback())) {
+		return nil, "", errors.New("远程 AI 服务需要 HTTPS，本机回环地址可以使用 HTTP")
+	}
+	base := strings.TrimRight(u.String(), "/")
+	if strings.HasSuffix(strings.ToLower(base), "/chat/completions") {
+		base = base[:len(base)-len("/chat/completions")]
+	}
+	return u, base, nil
+}
+
+func resolveAIModelFetchKey(input AIConfigInput) (string, error) {
+	key := strings.TrimSpace(input.APIKey)
+	if key == "" && input.KeepKey {
+		old, err := LoadAI()
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimRight(strings.TrimSpace(old.Endpoint), "/") == strings.TrimRight(strings.TrimSpace(input.Endpoint), "/") {
+			key = strings.TrimSpace(old.APIKey)
+		}
+	}
+	if len(key) > 4096 || strings.IndexFunc(key, func(c rune) bool { return c < 0x21 || c > 0x7e }) >= 0 {
+		return "", errors.New("API 密钥格式无效，请检查空格或换行")
+	}
+	return key, nil
+}
+
+func appendModelsPath(base string) string {
+	if strings.HasSuffix(strings.ToLower(base), "/models") {
+		return base
+	}
+	return base + "/models"
+}
+
+func modelFetchNetworkError(ctx context.Context, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("获取模型列表超时，请检查网络或代理设置：%w", context.DeadlineExceeded)
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("已取消获取模型列表：%w", ctx.Err())
+	}
+	return fmt.Errorf("获取模型列表失败，请检查网络、证书和服务地址：%w", err)
+}
+
+func modelFetchStatusError(status int) error {
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return errors.New("API 密钥无效或未填写，请检查密钥及访问权限")
+	case status == http.StatusNotFound:
+		return errors.New("该接口不支持自动拉取模型列表，请手动输入")
+	case status == http.StatusTooManyRequests:
+		return errors.New("请求过于频繁，请稍后重试")
+	case status >= 300 && status < 400:
+		return errors.New("接口发生重定向，请在设置中填写重定向后的最终服务地址")
+	default:
+		return fmt.Errorf("获取模型列表失败（HTTP %d），请检查服务地址及状态", status)
+	}
+}
+
+func doModelsGET(ctx context.Context, reqURL string, headers map[string]string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	for k, v := range headers {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
+	}
+	resp, err := aiClient.Do(req)
+	if err != nil {
+		return 0, nil, modelFetchNetworkError(ctx, err)
+	}
+	defer resp.Body.Close()
+
+	const limit = 4 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return resp.StatusCode, nil, modelFetchNetworkError(ctx, err)
+	}
+	if len(data) > limit {
+		return resp.StatusCode, nil, errors.New("模型列表响应过大，请手动输入模型名称")
+	}
+	return resp.StatusCode, data, nil
+}
+
+func supportsGenerateContent(methods []string) bool {
+	if len(methods) == 0 {
+		return true
+	}
+	for _, m := range methods {
+		if strings.EqualFold(strings.TrimSpace(m), "generateContent") {
+			return true
+		}
+	}
+	return false
+}
+
+func parseOpenAIOrOllamaModels(data []byte, stripModelsPrefix bool) []string {
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []struct {
+			ID                         string   `json:"id"`
+			Name                       string   `json:"name"`
+			Model                      string   `json:"model"`
+			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+		} `json:"models"`
+	}
+	if !utf8.Valid(data) || json.Unmarshal(data, &payload) != nil {
+		return nil
+	}
+	if len(payload.Data) > 0 {
+		out := make([]string, 0, len(payload.Data))
+		for _, item := range payload.Data {
+			id := strings.TrimSpace(item.ID)
+			if stripModelsPrefix {
+				id = strings.TrimPrefix(id, "models/")
+			}
+			if id != "" {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	if len(payload.Models) > 0 {
+		out := make([]string, 0, len(payload.Models))
+		for _, item := range payload.Models {
+			if !supportsGenerateContent(item.SupportedGenerationMethods) {
+				continue
+			}
+			id := strings.TrimSpace(item.ID)
+			if id == "" {
+				id = strings.TrimSpace(item.Name)
+			}
+			if id == "" {
+				id = strings.TrimSpace(item.Model)
+			}
+			if stripModelsPrefix || len(item.SupportedGenerationMethods) > 0 {
+				id = strings.TrimPrefix(id, "models/")
+			}
+			if id != "" {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func parseGeminiNativeModels(data []byte) []string {
+	var payload struct {
+		Models []struct {
+			Name                       string   `json:"name"`
+			ID                         string   `json:"id"`
+			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+		} `json:"models"`
+	}
+	if !utf8.Valid(data) || json.Unmarshal(data, &payload) != nil || len(payload.Models) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(payload.Models))
+	for _, item := range payload.Models {
+		if !supportsGenerateContent(item.SupportedGenerationMethods) {
+			continue
+		}
+		id := strings.TrimSpace(item.Name)
+		if id == "" {
+			id = strings.TrimSpace(item.ID)
+		}
+		id = strings.TrimPrefix(id, "models/")
+		if id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func isNonChatModel(id string) bool {
+	lower := strings.ToLower(id)
+	for _, needle := range nonChatModelSubstrings {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+type modelToken struct {
+	isNum bool
+	text  string // digits trimmed of leading zeros when isNum, lowercase text otherwise
+}
+
+func tokenizeModelID(id string) []modelToken {
+	lower := strings.ToLower(id)
+	tokens := make([]modelToken, 0, 8)
+	for i := 0; i < len(lower); {
+		isDigit := lower[i] >= '0' && lower[i] <= '9'
+		j := i + 1
+		for j < len(lower) && ((lower[j] >= '0' && lower[j] <= '9') == isDigit) {
+			j++
+		}
+		seg := lower[i:j]
+		if isDigit {
+			seg = strings.TrimLeft(seg, "0")
+		}
+		tokens = append(tokens, modelToken{isNum: isDigit, text: seg})
+		i = j
+	}
+	return tokens
+}
+
+func compareModelIDs(a, b string) int {
+	ta, tb := tokenizeModelID(a), tokenizeModelID(b)
+	n := len(ta)
+	if len(tb) < n {
+		n = len(tb)
+	}
+	for i := 0; i < n; i++ {
+		xa, xb := ta[i], tb[i]
+		if xa.isNum != xb.isNum {
+			if xa.isNum {
+				return -1
+			}
+			return 1
+		}
+		if xa.isNum {
+			if len(xa.text) != len(xb.text) {
+				if len(xa.text) > len(xb.text) {
+					return -1
+				}
+				return 1
+			}
+			if xa.text != xb.text {
+				if xa.text > xb.text {
+					return -1
+				}
+				return 1
+			}
+		} else if xa.text != xb.text {
+			if xa.text < xb.text {
+				return -1
+			}
+			return 1
+		}
+	}
+	if len(ta) != len(tb) {
+		if len(ta) < len(tb) {
+			return -1
+		}
+		return 1
+	}
+	return strings.Compare(a, b)
+}
+
+func filterAndOrderModels(raw []string, sortDesc bool) []string {
+	seen := make(map[string]struct{}, len(raw))
+	deduped := make([]string, 0, len(raw))
+	for _, item := range raw {
+		id := strings.TrimSpace(item)
+		if id == "" || utf8.RuneCountInString(id) > 256 || strings.IndexFunc(id, unicode.IsControl) >= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		deduped = append(deduped, id)
+	}
+	if len(deduped) == 0 {
+		return nil
+	}
+	filtered := make([]string, 0, len(deduped))
+	for _, id := range deduped {
+		if !isNonChatModel(id) {
+			filtered = append(filtered, id)
+		}
+	}
+	result := filtered
+	if len(result) == 0 {
+		result = deduped
+	}
+	if sortDesc {
+		sort.Slice(result, func(i, j int) bool {
+			return compareModelIDs(result[i], result[j]) < 0
+		})
+	}
+	return result
+}
+
+// FetchAIModels queries the configured provider endpoint for available text/chat model IDs.
+func FetchAIModels(ctx context.Context, input AIConfigInput) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, modelFetchNetworkError(ctx, err)
+	}
+	u, base, err := normalizeModelsBaseURL(input.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	apiKey, err := resolveAIModelFetchKey(input)
+	if err != nil {
+		return nil, err
+	}
+
+	if isAnthropicEndpoint(base) {
+		var reqURL string
+		switch {
+		case u.Path == "" || u.Path == "/":
+			reqURL = base + "/v1/models?limit=100"
+		case strings.HasSuffix(strings.ToLower(base), "/models"):
+			reqURL = base + "?limit=100"
+		default:
+			reqURL = base + "/models?limit=100"
+		}
+		headers := map[string]string{
+			"anthropic-version": "2023-06-01",
+		}
+		if apiKey != "" {
+			headers["x-api-key"] = apiKey
+		}
+		status, data, err := doModelsGET(ctx, reqURL, headers)
+		if err != nil {
+			return nil, err
+		}
+		if status < 200 || status >= 300 {
+			return nil, modelFetchStatusError(status)
+		}
+		models := filterAndOrderModels(parseOpenAIOrOllamaModels(data, false), false)
+		if len(models) == 0 {
+			return nil, errors.New("未从接口获取到可用模型，请手动输入")
+		}
+		return models, nil
+	}
+
+	if isGeminiEndpoint(base) {
+		if strings.Contains(strings.ToLower(u.Path), "/openai") {
+			headers := map[string]string{}
+			if apiKey != "" {
+				headers["Authorization"] = "Bearer " + apiKey
+			}
+			status, data, err := doModelsGET(ctx, appendModelsPath(base), headers)
+			if err != nil {
+				return nil, err
+			}
+			if status >= 200 && status < 300 {
+				if models := filterAndOrderModels(parseOpenAIOrOllamaModels(data, true), true); len(models) > 0 {
+					return models, nil
+				}
+			}
+			if ctx.Err() != nil {
+				return nil, modelFetchNetworkError(ctx, ctx.Err())
+			}
+			nativeURL := u.Scheme + "://" + u.Host + "/v1beta/models?pageSize=100"
+			nativeHeaders := map[string]string{}
+			if apiKey != "" {
+				nativeHeaders["x-goog-api-key"] = apiKey
+			}
+			nStatus, nData, nErr := doModelsGET(ctx, nativeURL, nativeHeaders)
+			if nErr != nil {
+				return nil, nErr
+			}
+			if nStatus < 200 || nStatus >= 300 {
+				return nil, modelFetchStatusError(nStatus)
+			}
+			models := filterAndOrderModels(parseGeminiNativeModels(nData), true)
+			if len(models) == 0 {
+				return nil, errors.New("未从接口获取到可用模型，请手动输入")
+			}
+			return models, nil
+		}
+
+		nativeHeaders := map[string]string{}
+		if apiKey != "" {
+			nativeHeaders["x-goog-api-key"] = apiKey
+		}
+		status, data, err := doModelsGET(ctx, appendModelsPath(base)+"?pageSize=100", nativeHeaders)
+		if err != nil {
+			return nil, err
+		}
+		if status < 200 || status >= 300 {
+			return nil, modelFetchStatusError(status)
+		}
+		raw := parseGeminiNativeModels(data)
+		if len(raw) == 0 {
+			raw = parseOpenAIOrOllamaModels(data, true)
+		}
+		models := filterAndOrderModels(raw, true)
+		if len(models) == 0 {
+			return nil, errors.New("未从接口获取到可用模型，请手动输入")
+		}
+		return models, nil
+	}
+
+	headers := map[string]string{}
+	if apiKey != "" {
+		headers["Authorization"] = "Bearer " + apiKey
+	}
+	status, data, err := doModelsGET(ctx, appendModelsPath(base), headers)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, modelFetchStatusError(status)
+	}
+	models := filterAndOrderModels(parseOpenAIOrOllamaModels(data, false), true)
+	if len(models) == 0 {
+		return nil, errors.New("未从接口获取到可用模型，请手动输入")
+	}
+	return models, nil
 }

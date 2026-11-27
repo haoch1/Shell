@@ -174,4 +174,60 @@ export async function verifySplitWorkspace({ call, evaluate, until, click }) {
   await page(() => window.splitFixture.finishSidebar());
   await until(() => aligned('x', 0, 4), 'sidebar moved the original session to the right');
   assert.deepEqual(await state(), beforeSidebar, 'Rearranging an existing session must not dial or disconnect');
+
+  // Verify split tab title/count and detaching a split pane into an independent tab preserves live session & scrollback.
+  const splitTabMeta = await page((tabId) => {
+    const el = document.querySelector('[role=tab][data-tab-id="' + tabId + '"]');
+    return {
+      hasSplitIcon: !!el?.querySelector('.tab-split-icon'),
+      count: el?.querySelector('.tab-split-count')?.textContent?.trim(),
+      label: el?.querySelector('.tab-label')?.textContent?.trim() || '',
+    };
+  }, initial.tab);
+  assert.equal(splitTabMeta.hasSplitIcon, true, 'Split tab must render split icon');
+  assert.equal(splitTabMeta.count, '5', 'Split tab must render pane count badge');
+  assert.ok(splitTabMeta.label.includes('Fixture source') && splitTabMeta.label.includes('Fixture drag'), 'Split tab must join host names, got ' + splitTabMeta.label);
+
+  await page(() => {
+    const f = window.splitFixture;
+    const btn = document.querySelector('[data-session-id="' + f.moved + '"] .pane-mini-bar button[aria-label="移出为独立标签页"]');
+    if (!btn) throw new Error('Missing detach button in split pane mini-bar');
+    btn.click();
+  });
+  await wait('detached pane becomes standalone tab', () => document.querySelectorAll('[role=tab][data-tab-id]').length === 2);
+  const afterDetach = await state();
+  assert.equal(afterDetach.tabs, 2);
+  assert.equal(afterDetach.panes, 5);
+  assert.notEqual(afterDetach.tab, initial.tab);
+  assert.deepEqual(afterDetach.dials, beforeSidebar.dials, 'Detaching a pane must not dial a new SSH connection');
+  assert.equal(afterDetach.disconnects, 0, 'Detaching a pane must not disconnect the live session');
+  assert.deepEqual(
+    await page((origTab, detachedTab) => {
+      const ids = [...document.querySelectorAll('[role=tab][data-tab-id]')].map(el => el.dataset.tabId);
+      const origCount = document.querySelector('[role=tab][data-tab-id="' + origTab + '"] .tab-split-count')?.textContent?.trim();
+      const detachedHasMiniBar = !!document.querySelector('[data-session-id="' + window.splitFixture.moved + '"] .pane-mini-bar');
+      const sameTerm = document.querySelector('[data-session-id="' + window.splitFixture.moved + '"] .xterm') === window.splitFixture.originalTerminal;
+      return { adjacent: ids[0] === origTab && ids[1] === detachedTab, origCount, detachedHasMiniBar, sameTerm };
+    }, initial.tab, afterDetach.tab),
+    { adjacent: true, origCount: '4', detachedHasMiniBar: false, sameTerm: true },
+    'Detached pane must appear adjacent as a standalone tab reusing the exact xterm DOM instance',
+  );
+  await checkHistory();
+
+  // Also verify Netcatty-style tab right-click menu can detach an individual pane from a split tab.
+  await page((tabId) => {
+    const tab = document.querySelector('[role=tab][data-tab-id="' + tabId + '"]');
+    const r = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 12, clientY: r.y + 12 }));
+  }, initial.tab);
+  await wait('tab context menu detach item', () => {
+    const item = [...document.querySelectorAll('.context-menu-item')].find(el => el.textContent.trim() === '移出 Fixture New');
+    if (!item) return false;
+    item.click();
+    return true;
+  });
+  await wait('second detached tab created', () => document.querySelectorAll('[role=tab][data-tab-id]').length === 3);
+  const afterCtxDetach = await state();
+  assert.equal(afterCtxDetach.disconnects, 0);
+  assert.deepEqual(afterCtxDetach.dials, beforeSidebar.dials);
 }

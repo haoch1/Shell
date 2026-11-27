@@ -95,3 +95,45 @@ func TestConcurrentSavesAndDamagedFile(t *testing.T) {
 		t.Fatalf("damaged file modified: %v", err)
 	}
 }
+
+func TestSetProfilesGroup(t *testing.T) {
+	isolated(t)
+	p1, err := SaveProfile(Profile{Name: "web-1", Host: "10.0.0.1", User: "root", Auth: "agent", Group: "Old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := SaveProfile(Profile{Name: "web-2", Host: "10.0.0.2", User: "root", Auth: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p3, err := SaveProfile(Profile{Name: "db-1", Host: "10.0.0.3", User: "root", Auth: "agent", Group: "DB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetProfilesGroup([]string{p1.ID, p2.ID}, "  Prod  "); err != nil {
+		t.Fatalf("SetProfilesGroup assign failed: %v", err)
+	}
+	for _, id := range []string{p1.ID, p2.ID} {
+		got, ok, err := GetProfile(id)
+		if err != nil || !ok || got.Group != "Prod" {
+			t.Fatalf("profile %s group = %q, ok=%v, err=%v", id, got.Group, ok, err)
+		}
+	}
+	if got, ok, err := GetProfile(p3.ID); err != nil || !ok || got.Group != "DB" {
+		t.Fatalf("unselected profile group changed: %q, ok=%v, err=%v", got.Group, ok, err)
+	}
+
+	// Ungroup selected hosts
+	if err := SetProfilesGroup([]string{p1.ID}, ""); err != nil {
+		t.Fatalf("SetProfilesGroup ungroup failed: %v", err)
+	}
+	if got, ok, err := GetProfile(p1.ID); err != nil || !ok || got.Group != "" {
+		t.Fatalf("profile p1 was not ungrouped: %q, ok=%v, err=%v", got.Group, ok, err)
+	}
+
+	// Reject control characters
+	if err := SetProfilesGroup([]string{p2.ID}, "bad\ngroup"); err == nil {
+		t.Fatal("expected error for control character in group name")
+	}
+}

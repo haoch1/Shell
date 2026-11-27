@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/haoch1/Shell/internal/remote"
 	"github.com/haoch1/Shell/internal/security"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/crypto/ssh"
 )
 
 // AgentStatusView describes the running state and config of Shell's Agent/MCP bridge.
@@ -228,6 +232,7 @@ func (a *App) CommitImportedHosts(entries []local.ImportedHost, overrideGroup st
 	if err != nil {
 		return nil, err
 	}
+	a.invalidateProfileCache()
 	out := make([]ProfileView, 0, len(saved))
 	for _, p := range saved {
 		if v, err := view(p); err == nil {
@@ -332,7 +337,7 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 		},
 		{
 			Name:        "shell_connect",
-			Description: "Connect to a saved host by ID, display name, or IP and wait until ready, returning sessionId directly (headless in silent mode or GUI tab in visible mode).",
+			Description: "Optional: pre-connect to a saved host by ID, display name, or IP and return sessionId (reuses active sessions/jump hosts and pre-warms the exec channel). You do NOT need to call shell_connect before shell_exec, shell_sftp_*, or shell_server_stats—pass host directly to those tools in a single call to save a round-trip.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -343,12 +348,12 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 		},
 		{
 			Name:        "shell_exec",
-			Description: "Execute a shell command over a fast persistent SSH exec channel. Accepts either sessionId or host (auto-connects if needed). Output is automatically redacted.",
+			Description: "Execute a shell command over a fast persistent 1-RTT SSH exec channel. Preferred single-call pattern: pass host directly (auto-reuses existing sessions & jump hosts or auto-connects—no need to call shell_connect first), or pass sessionId. Output is automatically redacted.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId":  map[string]any{"type": "string", "description": "Active sessionId (optional if host is provided or only one session is open)"},
-					"host":       map[string]any{"type": "string", "description": "Optional saved host name, IP, or profile ID (reuses or auto-connects)"},
+					"host":       map[string]any{"type": "string", "description": "Saved host name, IP, or profile ID (preferred: auto-reuses or auto-connects in one call without calling shell_connect first)"},
 					"command":    map[string]any{"type": "string", "description": "POSIX shell command or multi-line script to run"},
 					"timeoutSec": map[string]any{"type": "integer", "description": "Optional timeout in seconds (default 30, max 120)"},
 				},
@@ -383,24 +388,24 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 		},
 		{
 			Name:        "shell_sftp_list",
-			Description: "List files and directories at a remote path over SFTP (accepts sessionId or host).",
+			Description: "List files and directories at a remote path over SFTP. Pass host directly in a single call (auto-connects/reuses—no need to call shell_connect first) or pass sessionId.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId": map[string]any{"type": "string"},
-					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
+					"host":      map[string]any{"type": "string", "description": "Saved host name, IP, or profile ID (auto-connects/reuses in one call)"},
 					"path":      map[string]any{"type": "string", "description": "Remote directory path (default '.')"},
 				},
 			},
 		},
 		{
 			Name:        "shell_sftp_read",
-			Description: "Read a UTF-8 remote text file over SFTP (accepts sessionId or host; sensitive paths blocked & secrets redacted).",
+			Description: "Read a UTF-8 remote text file over SFTP (sensitive paths blocked & secrets redacted). Pass host directly in a single call (auto-connects/reuses—no need to call shell_connect first) or pass sessionId.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId": map[string]any{"type": "string"},
-					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
+					"host":      map[string]any{"type": "string", "description": "Saved host name, IP, or profile ID (auto-connects/reuses in one call)"},
 					"path":      map[string]any{"type": "string", "description": "Remote file path"},
 				},
 				"required": []string{"path"},
@@ -408,12 +413,12 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 		},
 		{
 			Name:        "shell_sftp_write",
-			Description: "Write or update a UTF-8 remote text file atomically over SFTP (accepts sessionId or host).",
+			Description: "Write or update a UTF-8 remote text file atomically over SFTP. Pass host directly in a single call (auto-connects/reuses—no need to call shell_connect first) or pass sessionId.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId": map[string]any{"type": "string"},
-					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
+					"host":      map[string]any{"type": "string", "description": "Saved host name, IP, or profile ID (auto-connects/reuses in one call)"},
 					"path":      map[string]any{"type": "string", "description": "Remote file path"},
 					"content":   map[string]any{"type": "string", "description": "Full text content to save"},
 				},
@@ -422,12 +427,12 @@ func (a *App) ListTools() []agentbridge.ToolSpec {
 		},
 		{
 			Name:        "shell_server_stats",
-			Description: "Fetch live CPU, memory, root disk, load average, uptime, and network metrics (accepts sessionId or host).",
+			Description: "Fetch live CPU, memory, root disk, load average, uptime, and network metrics. Pass host directly in a single call (auto-connects/reuses—no need to call shell_connect first) or pass sessionId.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"sessionId": map[string]any{"type": "string"},
-					"host":      map[string]any{"type": "string", "description": "Optional host name, IP, or profile ID"},
+					"host":      map[string]any{"type": "string", "description": "Saved host name, IP, or profile ID (auto-connects/reuses in one call)"},
 				},
 			},
 		},
@@ -483,12 +488,599 @@ func formatMirrorLines(s string) string {
 	return s
 }
 
-func findSavedProfile(target string) (*local.Profile, error) {
+const defaultJumpIdleTimeout = 10 * time.Minute
+
+type pooledJump struct {
+	key       string
+	profileID string
+	client    *ssh.Client
+	closeFn   func()
+	refCount  int
+	retired   bool
+	closed    bool
+	idleTimer *time.Timer
+	lastUsed  time.Time
+}
+
+type jumpDialAttempt struct {
+	done  chan struct{}
+	entry *pooledJump
+	err   error
+	retry bool
+}
+
+type profileCacheState struct {
+	loaded  bool
+	path    string
+	missing bool
+	modTime time.Time
+	size    int64
+	list    []local.Profile
+	byID    map[string]local.Profile
+}
+
+type settingsCacheState struct {
+	loaded  bool
+	path    string
+	missing bool
+	modTime time.Time
+	size    int64
+	val     local.AppSettings
+}
+
+func shellStoreFilePath(name string) (string, error) {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "Shell", name), nil
+}
+
+func (a *App) invalidateProfileCache() {
+	a.cacheMu.Lock()
+	a.profGen++
+	a.profCache = profileCacheState{}
+	a.cacheMu.Unlock()
+}
+
+func (a *App) invalidateSettingsCache() {
+	a.cacheMu.Lock()
+	a.settingsGen++
+	a.settingsCache = settingsCacheState{}
+	a.cacheMu.Unlock()
+}
+
+func (a *App) loadProfileCache() (profileCacheState, error) {
+	pPath, pathErr := shellStoreFilePath("profiles.json")
+	if pathErr == nil {
+		info, statErr := os.Stat(pPath)
+		missing := errors.Is(statErr, os.ErrNotExist)
+		if statErr == nil || missing {
+			a.cacheMu.RLock()
+			c := a.profCache
+			a.cacheMu.RUnlock()
+			if c.loaded && c.path == pPath && c.missing == missing &&
+				(missing || (c.size == info.Size() && c.modTime.Equal(info.ModTime()))) {
+				return c, nil
+			}
+		}
+	}
+
+	a.cacheMu.RLock()
+	startGen := a.profGen
+	a.cacheMu.RUnlock()
+
+	var beforeInfo os.FileInfo
+	var beforeErr error
+	if pathErr == nil {
+		beforeInfo, beforeErr = os.Stat(pPath)
+	}
+
+	rows, err := local.Profiles()
+	if err != nil {
+		return profileCacheState{}, err
+	}
+	byID := make(map[string]local.Profile, len(rows))
+	for _, p := range rows {
+		byID[p.ID] = p
+	}
+	next := profileCacheState{
+		loaded: true,
+		path:   pPath,
+		list:   rows,
+		byID:   byID,
+	}
+
+	canCache := false
+	if pathErr == nil {
+		afterInfo, afterErr := os.Stat(pPath)
+		beforeMissing := errors.Is(beforeErr, os.ErrNotExist)
+		afterMissing := errors.Is(afterErr, os.ErrNotExist)
+		if beforeMissing && afterMissing {
+			next.missing = true
+			canCache = true
+		} else if beforeErr == nil && afterErr == nil &&
+			beforeInfo.Size() == afterInfo.Size() && beforeInfo.ModTime().Equal(afterInfo.ModTime()) {
+			next.size = afterInfo.Size()
+			next.modTime = afterInfo.ModTime()
+			canCache = true
+		}
+	}
+
+	if canCache {
+		a.cacheMu.Lock()
+		if a.profGen == startGen {
+			a.profCache = next
+		}
+		a.cacheMu.Unlock()
+	}
+	return next, nil
+}
+
+func (a *App) getCachedProfiles() ([]local.Profile, error) {
+	c, err := a.loadProfileCache()
+	if err != nil {
+		return nil, err
+	}
+	return append([]local.Profile(nil), c.list...), nil
+}
+
+func (a *App) getCachedProfileByID(id string) (local.Profile, bool, error) {
+	c, err := a.loadProfileCache()
+	if err != nil {
+		return local.Profile{}, false, err
+	}
+	p, ok := c.byID[id]
+	return p, ok, nil
+}
+
+func (a *App) getCachedSettings() (local.AppSettings, error) {
+	sPath, pathErr := shellStoreFilePath("settings.json")
+	if pathErr == nil {
+		info, statErr := os.Stat(sPath)
+		missing := errors.Is(statErr, os.ErrNotExist)
+		if statErr == nil || missing {
+			a.cacheMu.RLock()
+			c := a.settingsCache
+			a.cacheMu.RUnlock()
+			if c.loaded && c.path == sPath && c.missing == missing &&
+				(missing || (c.size == info.Size() && c.modTime.Equal(info.ModTime()))) {
+				return c.val, nil
+			}
+		}
+	}
+
+	a.cacheMu.RLock()
+	startGen := a.settingsGen
+	a.cacheMu.RUnlock()
+
+	var beforeInfo os.FileInfo
+	var beforeErr error
+	if pathErr == nil {
+		beforeInfo, beforeErr = os.Stat(sPath)
+	}
+
+	val, err := local.LoadSettings()
+	if err != nil {
+		return val, err
+	}
+
+	if pathErr == nil {
+		afterInfo, afterErr := os.Stat(sPath)
+		beforeMissing := errors.Is(beforeErr, os.ErrNotExist)
+		afterMissing := errors.Is(afterErr, os.ErrNotExist)
+		next := settingsCacheState{
+			loaded: true,
+			path:   sPath,
+			val:    val,
+		}
+		canCache := false
+		if beforeMissing && afterMissing {
+			next.missing = true
+			canCache = true
+		} else if beforeErr == nil && afterErr == nil &&
+			beforeInfo.Size() == afterInfo.Size() && beforeInfo.ModTime().Equal(afterInfo.ModTime()) {
+			next.size = afterInfo.Size()
+			next.modTime = afterInfo.ModTime()
+			canCache = true
+		}
+		if canCache {
+			a.cacheMu.Lock()
+			if a.settingsGen == startGen {
+				a.settingsCache = next
+			}
+			a.cacheMu.Unlock()
+		}
+	}
+	return val, nil
+}
+
+func jumpTargetKey(cfg remote.Config) string {
+	port := cfg.Port
+	if port == 0 {
+		port = 22
+	}
+	var b strings.Builder
+	b.WriteString(cfg.ProfileID)
+	b.WriteByte('|')
+	b.WriteString(strings.ToLower(strings.TrimSpace(cfg.Host)))
+	b.WriteByte(':')
+	b.WriteString(strconv.Itoa(port))
+	b.WriteByte('|')
+	b.WriteString(strings.TrimSpace(cfg.User))
+	b.WriteByte('|')
+	b.WriteString(strings.ToLower(strings.TrimSpace(cfg.Auth)))
+	b.WriteByte('|')
+	b.WriteString(cfg.KeyPath)
+	b.WriteByte('|')
+	b.WriteString(strings.ToLower(strings.TrimSpace(cfg.Proxy.Type)))
+	b.WriteByte('|')
+	b.WriteString(strings.ToLower(strings.TrimSpace(cfg.Proxy.Host)))
+	b.WriteByte(':')
+	b.WriteString(strconv.Itoa(cfg.Proxy.Port))
+	b.WriteByte('|')
+	b.WriteString(cfg.Proxy.User)
+	if cfg.Jump != nil {
+		b.WriteString("->")
+		b.WriteString(jumpTargetKey(*cfg.Jump))
+	}
+	return b.String()
+}
+
+func (a *App) isDeadJumpClient(c *ssh.Client) bool {
+	if c == nil {
+		return true
+	}
+	a.jumpMu.Lock()
+	_, dead := a.deadJumpClients[c]
+	a.jumpMu.Unlock()
+	return dead
+}
+
+// findLiveJumpClient returns an existing live *ssh.Client from a.live or a.headless matching the jump profile.
+func (a *App) findLiveJumpClient(profileID string) *ssh.Client {
+	if profileID == "" {
+		return nil
+	}
+	jp, ok, err := a.getCachedProfileByID(profileID)
+	if err != nil || !ok {
+		return nil
+	}
+	a.mu.Lock()
+	var candidates []*ssh.Client
+	for _, e := range a.live {
+		if e != nil && e.session != nil && sameSessionTarget(jp, e.profile) {
+			if c := e.session.Client(); c != nil {
+				candidates = append(candidates, c)
+			}
+		}
+	}
+	for _, e := range a.headless {
+		if e != nil && e.session != nil && sameSessionTarget(jp, e.profile) {
+			if c := e.session.Client(); c != nil {
+				candidates = append(candidates, c)
+			}
+		}
+	}
+	a.mu.Unlock()
+	for _, c := range candidates {
+		if !a.isDeadJumpClient(c) {
+			return c
+		}
+	}
+	return nil
+}
+
+func (a *App) borrowPooledJumpLocked(e *pooledJump) {
+	e.refCount++
+	e.lastUsed = time.Now()
+	if e.idleTimer != nil {
+		e.idleTimer.Stop()
+		e.idleTimer = nil
+	}
+}
+
+func (a *App) makeJumpRelease(e *pooledJump) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			a.releasePooledJump(e)
+		})
+	}
+}
+
+func (a *App) releasePooledJump(e *pooledJump) {
+	var toClose func()
+	a.jumpMu.Lock()
+	if e.refCount > 0 {
+		e.refCount--
+	}
+	e.lastUsed = time.Now()
+	if e.refCount == 0 && !e.closed {
+		if e.retired {
+			e.closed = true
+			if a.jumpPool[e.key] == e {
+				delete(a.jumpPool, e.key)
+			}
+			toClose = e.closeFn
+		} else {
+			timeout := a.jumpIdleTimeout
+			if timeout <= 0 {
+				timeout = defaultJumpIdleTimeout
+			}
+			if e.idleTimer != nil {
+				e.idleTimer.Stop()
+			}
+			e.idleTimer = time.AfterFunc(timeout, func() {
+				a.evictIdleJumpEntry(e)
+			})
+		}
+	}
+	a.jumpMu.Unlock()
+	if toClose != nil {
+		toClose()
+	}
+}
+
+func (a *App) evictIdleJumpEntry(e *pooledJump) {
+	var toClose func()
+	a.jumpMu.Lock()
+	if !e.closed && e.refCount == 0 {
+		e.closed = true
+		e.idleTimer = nil
+		if a.jumpPool[e.key] == e {
+			delete(a.jumpPool, e.key)
+		}
+		toClose = e.closeFn
+	}
+	a.jumpMu.Unlock()
+	if toClose != nil {
+		toClose()
+	}
+}
+
+func (a *App) evictJumpEntry(e *pooledJump) {
+	var toClose func()
+	a.jumpMu.Lock()
+	if a.jumpPool[e.key] == e {
+		delete(a.jumpPool, e.key)
+	}
+	if e.idleTimer != nil {
+		e.idleTimer.Stop()
+		e.idleTimer = nil
+	}
+	if !e.closed {
+		e.closed = true
+		toClose = e.closeFn
+	}
+	a.jumpMu.Unlock()
+	if toClose != nil {
+		toClose()
+	}
+}
+
+func (a *App) evictDeadJumpClient(_ remote.Config, dead *ssh.Client) bool {
+	if dead == nil {
+		return false
+	}
+	var toClose func()
+	foundInPool := false
+	a.jumpMu.Lock()
+	for k, e := range a.jumpPool {
+		if e.client == dead {
+			delete(a.jumpPool, k)
+			if e.idleTimer != nil {
+				e.idleTimer.Stop()
+				e.idleTimer = nil
+			}
+			if !e.closed {
+				e.closed = true
+				toClose = e.closeFn
+			}
+			foundInPool = true
+			break
+		}
+	}
+	if !foundInPool {
+		if a.deadJumpClients == nil {
+			a.deadJumpClients = make(map[*ssh.Client]struct{})
+		}
+		if len(a.deadJumpClients) >= 32 {
+			clear(a.deadJumpClients)
+		}
+		a.deadJumpClients[dead] = struct{}{}
+	}
+	a.jumpMu.Unlock()
+	if toClose != nil {
+		toClose()
+	}
+	return true
+}
+
+func (a *App) retirePooledJumpsByProfile(profileID string) {
+	var toClose []func()
+	a.jumpMu.Lock()
+	for k, e := range a.jumpPool {
+		if profileID == "" || e.profileID == profileID {
+			delete(a.jumpPool, k)
+			e.retired = true
+			if e.idleTimer != nil {
+				e.idleTimer.Stop()
+				e.idleTimer = nil
+			}
+			if e.refCount == 0 && !e.closed {
+				e.closed = true
+				toClose = append(toClose, e.closeFn)
+			}
+		}
+	}
+	a.jumpMu.Unlock()
+	for _, fn := range toClose {
+		if fn != nil {
+			fn()
+		}
+	}
+}
+
+func (a *App) closeAllPooledJumps() {
+	var toClose []func()
+	a.jumpMu.Lock()
+	a.jumpGen++
+	for k, e := range a.jumpPool {
+		delete(a.jumpPool, k)
+		e.retired = true
+		if e.idleTimer != nil {
+			e.idleTimer.Stop()
+			e.idleTimer = nil
+		}
+		if !e.closed {
+			e.closed = true
+			toClose = append(toClose, e.closeFn)
+		}
+	}
+	clear(a.deadJumpClients)
+	a.jumpMu.Unlock()
+	for _, fn := range toClose {
+		if fn != nil {
+			fn()
+		}
+	}
+}
+
+func (a *App) dialNewPooledJump(ctx context.Context, key string, jumpCfg remote.Config, cb remote.Callbacks) (*pooledJump, error) {
+	if jumpCfg.ProfileID != "" && (jumpCfg.Auth == "password" || jumpCfg.Auth == "key") && jumpCfg.Password == "" && jumpCfg.Passphrase == "" {
+		jp, ok, err := a.getCachedProfileByID(jumpCfg.ProfileID)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			sec, err := local.LoadSecret(jp)
+			if err != nil {
+				return nil, fmt.Errorf("读取跳板机凭据失败：%w", err)
+			}
+			if jumpCfg.Auth == "key" {
+				jumpCfg.Passphrase = sec
+			} else if jumpCfg.Auth == "password" {
+				jumpCfg.Password = sec
+			}
+		}
+	}
+	jumpCfg.DialJump = a.dialJumpClient
+	jumpCfg.OnJumpDead = a.evictDeadJumpClient
+	if jumpCfg.KeepAliveSec <= 0 {
+		jumpCfg.KeepAliveSec = 30
+	}
+
+	lifeCtx, cancelLife := context.WithCancel(a.baseContext())
+	client, rawClose, err := remote.DialClient(lifeCtx, ctx, jumpCfg, cb)
+	if err != nil {
+		cancelLife()
+		return nil, err
+	}
+	closeFn := func() {
+		cancelLife()
+		if rawClose != nil {
+			rawClose()
+		}
+	}
+	return &pooledJump{
+		key:       key,
+		profileID: jumpCfg.ProfileID,
+		client:    client,
+		closeFn:   closeFn,
+		lastUsed:  time.Now(),
+	}, nil
+}
+
+// dialJumpClient implements ControlMaster / sshpool-style jump transport reuse:
+// 1) Reuse a live GUI or headless session's *ssh.Client if already connected to the jump host.
+// 2) Otherwise reuse (or singleflight-dial into) App.jumpPool with idle eviction & liveness tracking.
+func (a *App) dialJumpClient(ctx context.Context, jumpCfg remote.Config, cb remote.Callbacks) (*ssh.Client, bool, func(), error) {
+	if liveClient := a.findLiveJumpClient(jumpCfg.ProfileID); liveClient != nil {
+		return liveClient, false, nil, nil
+	}
+
+	key := jumpTargetKey(jumpCfg)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, nil, err
+		}
+		a.jumpMu.Lock()
+		if a.jumpPool == nil {
+			a.jumpPool = make(map[string]*pooledJump)
+		}
+		if a.jumpDials == nil {
+			a.jumpDials = make(map[string]*jumpDialAttempt)
+		}
+		if entry := a.jumpPool[key]; entry != nil && !entry.closed && !entry.retired {
+			a.borrowPooledJumpLocked(entry)
+			a.jumpMu.Unlock()
+			return entry.client, false, a.makeJumpRelease(entry), nil
+		}
+		if inflight := a.jumpDials[key]; inflight != nil {
+			a.jumpMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, false, nil, ctx.Err()
+			case <-inflight.done:
+			}
+			if inflight.retry {
+				continue
+			}
+			if inflight.err != nil {
+				return nil, false, nil, inflight.err
+			}
+			a.jumpMu.Lock()
+			if entry := inflight.entry; entry != nil && !entry.closed && !entry.retired && a.jumpPool[key] == entry {
+				a.borrowPooledJumpLocked(entry)
+				a.jumpMu.Unlock()
+				return entry.client, false, a.makeJumpRelease(entry), nil
+			}
+			a.jumpMu.Unlock()
+			continue
+		}
+		startGen := a.jumpGen
+		attempt := &jumpDialAttempt{done: make(chan struct{})}
+		a.jumpDials[key] = attempt
+		a.jumpMu.Unlock()
+
+		entry, dialErr := a.dialNewPooledJump(ctx, key, jumpCfg, cb)
+		attempt.entry = entry
+		attempt.err = dialErr
+		attempt.retry = dialErr != nil && ctx.Err() != nil
+
+		a.jumpMu.Lock()
+		delete(a.jumpDials, key)
+		var release func()
+		if dialErr == nil && entry != nil {
+			a.borrowPooledJumpLocked(entry)
+			if a.jumpGen == startGen {
+				a.jumpPool[key] = entry
+			} else {
+				entry.retired = true
+			}
+			release = a.makeJumpRelease(entry)
+		}
+		close(attempt.done)
+		a.jumpMu.Unlock()
+
+		if dialErr != nil {
+			return nil, false, nil, dialErr
+		}
+		go func(e *pooledJump) {
+			_ = e.client.Wait()
+			a.evictJumpEntry(e)
+		}(entry)
+		return entry.client, false, release, nil
+	}
+}
+
+func (a *App) findSavedProfile(target string) (*local.Profile, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return nil, errors.New("未指定目标主机")
 	}
-	profs, err := local.Profiles()
+	profs, err := a.getCachedProfiles()
 	if err != nil {
 		return nil, err
 	}
@@ -530,12 +1122,12 @@ func (a *App) findExistingSessionForProfile(p local.Profile) (sid string, entry 
 	defer a.mu.Unlock()
 	// Prefer live GUI tab first
 	for id, e := range a.live {
-		if e != nil && e.session != nil && sameSessionTarget(p, e.profile) {
+		if e != nil && e.session != nil && !e.session.IsClosed() && sameSessionTarget(p, e.profile) {
 			return id, e, true
 		}
 	}
 	for id, e := range a.headless {
-		if e != nil && e.session != nil && sameSessionTarget(p, e.profile) {
+		if e != nil && e.session != nil && !e.session.IsClosed() && sameSessionTarget(p, e.profile) {
 			return id, e, false
 		}
 	}
@@ -556,7 +1148,7 @@ func (a *App) dialHeadlessProfile(ctx context.Context, p local.Profile) (string,
 			return "", nil, fmt.Errorf("读取已保存的凭据失败：%w", err)
 		}
 	}
-	settings, _ := local.LoadSettings()
+	settings, _ := a.getCachedSettings()
 	keepAlive := p.KeepAliveSec
 	if keepAlive == 0 && settings.DefaultKeepAlive > 0 {
 		keepAlive = settings.DefaultKeepAlive
@@ -565,7 +1157,7 @@ func (a *App) dialHeadlessProfile(ctx context.Context, p local.Profile) (string,
 	if p.ID != "" {
 		visited[p.ID] = true
 	}
-	jumpCfg, err := resolveJumpChain(p.JumpHostID, settings, visited, 1)
+	jumpCfg, err := a.resolveJumpChain(p.JumpHostID, settings, visited, 1)
 	if err != nil {
 		return "", nil, err
 	}
@@ -595,6 +1187,9 @@ func (a *App) dialHeadlessProfile(ctx context.Context, p local.Profile) (string,
 		ForwardAgent: p.ForwardAgent,
 		Proxy:        effectiveProxyConfig(p, settings),
 		Jump:         jumpCfg,
+		ProfileID:    p.ID,
+		DialJump:     a.dialJumpClient,
+		OnJumpDead:   a.evictDeadJumpClient,
 	}
 	if p.Auth == "key" {
 		cfg.Passphrase = secret
@@ -670,10 +1265,10 @@ func (a *App) resolveSessionByIDOrSingle(requestedID string) (string, *liveSessi
 	defer a.mu.Unlock()
 	requestedID = strings.TrimSpace(requestedID)
 	if requestedID != "" {
-		if e := a.live[requestedID]; e != nil && e.session != nil {
+		if e := a.live[requestedID]; e != nil && e.session != nil && !e.session.IsClosed() {
 			return requestedID, e, true, nil
 		}
-		if e := a.headless[requestedID]; e != nil && e.session != nil {
+		if e := a.headless[requestedID]; e != nil && e.session != nil && !e.session.IsClosed() {
 			return requestedID, e, false, nil
 		}
 		return "", nil, false, fmt.Errorf("未找到活动的 SSH 会话：%s", requestedID)
@@ -683,7 +1278,7 @@ func (a *App) resolveSessionByIDOrSingle(requestedID string) (string, *liveSessi
 	chosenGUI := false
 	count := 0
 	for id, e := range a.live {
-		if e != nil && e.session != nil {
+		if e != nil && e.session != nil && !e.session.IsClosed() {
 			chosenID = id
 			chosen = e
 			chosenGUI = true
@@ -691,7 +1286,7 @@ func (a *App) resolveSessionByIDOrSingle(requestedID string) (string, *liveSessi
 		}
 	}
 	for id, e := range a.headless {
-		if e != nil && e.session != nil {
+		if e != nil && e.session != nil && !e.session.IsClosed() {
 			chosenID = id
 			chosen = e
 			chosenGUI = false
@@ -728,7 +1323,7 @@ func (a *App) resolveOrConnectSession(ctx context.Context, reqSessionID, reqHost
 	}
 
 	if reqHost != "" {
-		prof, err := findSavedProfile(reqHost)
+		prof, err := a.findSavedProfile(reqHost)
 		if err != nil {
 			return "", nil, false, err
 		}
@@ -766,7 +1361,7 @@ func (a *App) useLiveAgentSession(ctx context.Context, sid string, entry *liveSe
 		return "", nil, false, errors.New("该主机已禁止 Agent 访问")
 	}
 	if p.ID != "" {
-		current, ok, err := local.GetProfile(p.ID)
+		current, ok, err := a.getCachedProfileByID(p.ID)
 		if err != nil {
 			return "", nil, false, err
 		}
@@ -864,19 +1459,19 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 	switch toolName {
 	case "shell_list_hosts":
 		audit.Summary = "list saved hosts"
-		profs, err := local.Profiles()
+		profs, err := a.getCachedProfiles()
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
 		activeByProfile := make(map[string]string)
 		a.mu.Lock()
 		for id, e := range a.headless {
-			if e != nil && e.session != nil && e.profile.ID != "" {
+			if e != nil && e.session != nil && !e.session.IsClosed() && e.profile.ID != "" {
 				activeByProfile[e.profile.ID] = id
 			}
 		}
 		for id, e := range a.live {
-			if e != nil && e.session != nil && e.profile.ID != "" {
+			if e != nil && e.session != nil && !e.session.IsClosed() && e.profile.ID != "" {
 				activeByProfile[e.profile.ID] = id
 			}
 		}
@@ -950,7 +1545,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		audit.Phases = &security.AuditPhases{}
 		target := strings.TrimSpace(strArg(args, "host"))
 		audit.Summary = "connect " + target
-		matched, err := findSavedProfile(target)
+		matched, err := a.findSavedProfile(target)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -970,21 +1565,34 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			}
 		}
 		sessionStart := time.Now()
-		existingID, _, _ := a.findExistingSessionForProfile(*matched)
+		existingID, existingEntry, existingGUI := a.findExistingSessionForProfile(*matched)
 		var sid string
+		var entry *liveSession
 		var connErr error
 		mode := cfg.ExecMode
 		if mode == "" {
 			mode = "silent"
 		}
-		if mode == "visible" {
-			sid, _, connErr = a.connectVisibleProfile(ctx, *matched)
+		reused := false
+		if existingEntry != nil && (mode != "visible" || existingGUI) {
+			sid = existingID
+			entry = existingEntry
+			reused = true
+			if mode == "visible" && a.ctx != nil {
+				a.ShowMainWindow()
+				runtime.EventsEmit(a.ctx, "agent:focus_session", sid)
+			}
+		} else if mode == "visible" {
+			sid, entry, connErr = a.connectVisibleProfile(ctx, *matched)
 		} else {
-			sid, _, connErr = a.connectHeadlessProfile(ctx, *matched)
+			sid, entry, connErr = a.connectHeadlessProfile(ctx, *matched)
 		}
 		audit.Phases.SessionMs = elapsedMs(sessionStart)
 		if connErr != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: connErr.Error(), IsError: true, Risk: eval.Risk, Decision: decLabel})
+		}
+		if entry != nil && entry.session != nil {
+			go entry.session.WarmExecWorker()
 		}
 		audit.SessionID = sid
 		return finish(agentbridge.ToolCallOutcome{
@@ -995,7 +1603,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 				"port":      matched.Port,
 				"user":      matched.User,
 				"mode":      mode,
-				"reused":    existingID == sid,
+				"reused":    reused || existingID == sid,
 			}),
 			Risk:     eval.Risk,
 			Decision: decLabel,

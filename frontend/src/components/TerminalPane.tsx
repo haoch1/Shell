@@ -7,6 +7,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import {
+  ArrowUpRight,
   Clipboard,
   Copy,
   Download,
@@ -38,6 +39,7 @@ interface TerminalPaneProps {
   onCwdChange?: (dir: string) => void;
   onReconnect: () => void;
   onClosePane: () => void;
+  onDetachPane?: () => void;
   onSplit: (dir: 'horizontal' | 'vertical') => void;
   onOpenSearch: () => void;
   onOpenSFTP: () => void;
@@ -60,6 +62,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   onCwdChange,
   onReconnect,
   onClosePane,
+  onDetachPane,
   onSplit,
   onOpenSearch,
   onOpenSFTP,
@@ -328,6 +331,14 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     setCtxMenu({ x: e.clientX, y: e.clientY, selection: sel });
   };
 
+  const hideHostIp = Boolean(settings.hideHostIp);
+  const paneDisplayName =
+    session.profile.name && (!hideHostIp || session.profile.name !== session.profile.host)
+      ? session.profile.name
+      : hideHostIp
+        ? session.profile.user || 'SSH 主机'
+        : formatHostDisplay(session.profile.host, session.profile.port);
+
   return (
     <div
       data-pane-id={paneId}
@@ -340,22 +351,46 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
         <div className="pane-mini-bar" draggable onDragStart={onDragPane} title="拖动此会话到终端边缘分屏">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <span className={`tab-dot ${session.state}`} />
-            <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {session.profile.name} ({session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port, settings.hideHostIp)})
+            <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{paneDisplayName}</span>
+              <span
+                className={`ip-inline-collapsible ${hideHostIp ? 'is-hidden' : ''}`}
+                data-ip-hidden={hideHostIp ? 'true' : undefined}
+              >
+                {hideHostIp ? '' : ` (${session.profile.user}@${formatHostDisplay(session.profile.host, session.profile.port)})`}
+              </span>
             </span>
           </div>
-          <button
-            type="button"
-            className="host-action-btn"
-            style={{ width: 20, height: 20 }}
-            title="关闭此分屏"
-            onClick={(e) => {
-              e.stopPropagation();
-              onClosePane();
-            }}
-          >
-            <X size={11} />
-          </button>
+          <div className="pane-mini-actions">
+            {onDetachPane && (
+              <button
+                type="button"
+                className="host-action-btn"
+                style={{ width: 20, height: 20 }}
+                title="移出为独立标签页"
+                aria-label="移出为独立标签页"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDetachPane();
+                }}
+              >
+                <ArrowUpRight size={11.5} />
+              </button>
+            )}
+            <button
+              type="button"
+              className="host-action-btn"
+              style={{ width: 20, height: 20 }}
+              title="关闭此分屏"
+              aria-label="关闭此分屏"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClosePane();
+              }}
+            >
+              <X size={11} />
+            </button>
+          </div>
         </div>
       )}
 
@@ -370,7 +405,9 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
         <div className="pane-connecting-bar">
           <Loader2 size={13} className="spin" />
           <span className="mono">
-            正在连接 {session.profile.user}@{formatHostDisplay(session.profile.host, session.profile.port, settings.hideHostIp)} …
+            {hideHostIp
+              ? `正在连接 ${paneDisplayName} …`
+              : `正在连接 ${session.profile.user}@${formatHostDisplay(session.profile.host, session.profile.port)} …`}
           </span>
         </div>
       )}
@@ -501,6 +538,19 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
               <SplitSquareVertical size={13} />
               向下分屏
             </button>
+            {multiPane && onDetachPane && (
+              <button
+                type="button"
+                className="context-menu-item"
+                onClick={() => {
+                  onDetachPane();
+                  setCtxMenu(null);
+                }}
+              >
+                <ArrowUpRight size={13} />
+                移出为独立标签页
+              </button>
+            )}
             {session.state === 'connected' && (
               <button
                 type="button"

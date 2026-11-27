@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -15,14 +16,30 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/haoch1/Shell/internal/local"
 	"github.com/haoch1/Shell/internal/remote"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/sys/windows"
+)
+
+var (
+	modUpdaterOle32   = windows.NewLazySystemDLL("ole32.dll")
+	procCoInitEx      = modUpdaterOle32.NewProc("CoInitializeEx")
+	procCoUninit      = modUpdaterOle32.NewProc("CoUninitialize")
+	procShellExecuteW = modShell32.NewProc("ShellExecuteW")
+)
+
+const (
+	coinitApartmentThreaded = 0x2
+	coinitDisableOLE1DDE    = 0x4
+	seErrAccessDenied       = 5
 )
 
 const (
@@ -383,7 +400,7 @@ func downloadVerifiedExecutable(
 
 	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
-		return fmt.Errorf("无法写入更新文件（请确认程序所在目录有写入权限）：%w", err)
+		return fmt.Errorf("无法创建更新暂存文件：%w", err)
 	}
 	success := false
 	defer func() {
@@ -460,23 +477,618 @@ func downloadVerifiedExecutable(
 	return nil
 }
 
+func isAccessDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, os.ErrPermission) ||
+		errors.Is(err, syscall.EACCES) ||
+		errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
+		errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD) ||
+		errors.Is(err, windows.ERROR_ELEVATION_REQUIRED)
+}
+
+func isRetryableMoveErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
+		errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||
+		errors.Is(err, windows.ERROR_LOCK_VIOLATION)
+}
+
+func isProcessElevated() bool {
+	return windows.GetCurrentProcessToken().IsElevated()
+}
+
+func isDirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".shell-writecheck-*.tmp")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
+}
+
+func sanitizeVersionForFilename(v string) string {
+	v = strings.TrimSpace(v)
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' {
+			b.WriteByte(c)
+		}
+	}
+	if b.Len() == 0 {
+		return "latest"
+	}
+	return b.String()
+}
+
+func updateStagingDirPath() string {
+	if root, err := os.UserCacheDir(); err == nil && root != "" {
+		return filepath.Join(root, "Shell", "updates")
+	}
+	if tmp := os.TempDir(); tmp != "" {
+		return filepath.Join(tmp, "Shell", "updates")
+	}
+	return ""
+}
+
+func ensureUpdateStagingDir() (string, error) {
+	if root, err := os.UserCacheDir(); err == nil && root != "" {
+		dir := filepath.Join(root, "Shell", "updates")
+		if mkErr := os.MkdirAll(dir, 0700); mkErr == nil && isDirWritable(dir) {
+			return dir, nil
+		}
+	}
+	fallback := filepath.Join(os.TempDir(), "Shell", "updates")
+	if err := os.MkdirAll(fallback, 0700); err != nil {
+		return "", fmt.Errorf("无法创建更新暂存目录：%w", err)
+	}
+	return fallback, nil
+}
+
+func sameFilePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ca := filepath.Clean(a)
+	cb := filepath.Clean(b)
+	if ra, err := filepath.EvalSymlinks(ca); err == nil && ra != "" {
+		ca = filepath.Clean(ra)
+	}
+	if rb, err := filepath.EvalSymlinks(cb); err == nil && rb != "" {
+		cb = filepath.Clean(rb)
+	}
+	return strings.EqualFold(ca, cb)
+}
+
+func validatePEFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	var hdr [2]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return errors.New("更新文件头部不完整")
+	}
+	if fi.Size() < 64 || hdr[0] != 'M' || hdr[1] != 'Z' {
+		return errors.New("更新文件不是有效的 Windows 可执行程序")
+	}
+	return nil
+}
+
+func copyFileStrict(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	success := false
+	defer func() {
+		_ = out.Close()
+		if !success {
+			_ = os.Remove(dst)
+		}
+	}()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	success = true
+	return nil
+}
+
+func setFileHidden(path string, hidden bool) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	attrs, err := windows.GetFileAttributes(p)
+	if err != nil {
+		return
+	}
+	if hidden {
+		attrs |= windows.FILE_ATTRIBUTE_HIDDEN
+	} else {
+		attrs &^= windows.FILE_ATTRIBUTE_HIDDEN
+		if attrs == 0 {
+			attrs = windows.FILE_ATTRIBUTE_NORMAL
+		}
+	}
+	_ = windows.SetFileAttributes(p, attrs)
+}
+
+func clearReadOnlyAttr(path string) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	attrs, err := windows.GetFileAttributes(p)
+	if err != nil || attrs&windows.FILE_ATTRIBUTE_READONLY == 0 {
+		return
+	}
+	attrs &^= windows.FILE_ATTRIBUTE_READONLY
+	if attrs == 0 {
+		attrs = windows.FILE_ATTRIBUTE_NORMAL
+	}
+	_ = windows.SetFileAttributes(p, attrs)
+}
+
+func scheduleDeleteOnReboot(path string) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	_ = windows.MoveFileEx(p, nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT)
+}
+
+// delayDeleteOnReboot schedules best-effort deletion of a still-locked file on next reboot.
+// Overridable in tests so unit tests never write to HKLM PendingFileRenameOperations.
+var delayDeleteOnReboot = scheduleDeleteOnReboot
+
+func moveFileExOnce(from, to string) error {
+	fromPtr, err := windows.UTF16PtrFromString(from)
+	if err != nil {
+		return err
+	}
+	toPtr, err := windows.UTF16PtrFromString(to)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(fromPtr, toPtr, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+func moveFileWithRetry(from, to string, attempts int, baseDelay, maxDelay time.Duration) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		lastErr = moveFileExOnce(from, to)
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryableMoveErr(lastErr) || i == attempts-1 {
+			return lastErr
+		}
+		delay := baseDelay * time.Duration(i+1)
+		if maxDelay > 0 && delay > maxDelay {
+			delay = maxDelay
+		}
+		time.Sleep(delay)
+	}
+	return lastErr
+}
+
+func uniqueOldBackupPath(exePath string) string {
+	candidate := fmt.Sprintf("%s.old.%d", exePath, os.Getpid())
+	if _, err := os.Stat(candidate); err == nil {
+		// If a same-PID backup already exists and cannot be removed, disambiguate with a timestamp.
+		if os.Remove(candidate) != nil {
+			return fmt.Sprintf("%s.old.%d.%d", exePath, os.Getpid(), time.Now().UnixNano())
+		}
+	}
+	return candidate
+}
+
 // swapExecutableAtomically replaces exePath with newPath on Windows using rename-in-place.
-// Windows allows renaming a currently executing .exe while blocking direct overwrite/delete.
+// It uses a unique per-PID backup filename so a stale/locked legacy .old file never blocks updates,
+// and uses MoveFileEx with short retry backoff for transient Defender/sharing locks.
 func swapExecutableAtomically(exePath, newPath string) (oldPath string, err error) {
-	oldPath = exePath + ".old"
-	_ = os.Remove(oldPath)
-	if err := os.Rename(exePath, oldPath); err != nil {
+	oldPath = uniqueOldBackupPath(exePath)
+	if err := moveFileWithRetry(exePath, oldPath, 6, 100*time.Millisecond, 300*time.Millisecond); err != nil {
 		return "", fmt.Errorf("无法替换运行中的程序文件（目录可能受系统保护）：%w", err)
 	}
-	if err := os.Rename(newPath, exePath); err != nil {
+	if err := moveFileWithRetry(newPath, exePath, 6, 100*time.Millisecond, 300*time.Millisecond); err != nil {
 		// Roll back immediately so the user never ends up with a missing executable.
-		_ = os.Rename(oldPath, exePath)
+		_ = moveFileWithRetry(oldPath, exePath, 6, 100*time.Millisecond, 300*time.Millisecond)
 		return "", fmt.Errorf("应用新版本文件失败，已自动回滚：%w", err)
 	}
 	return oldPath, nil
 }
 
-// cleanupPreviousExecutable removes any leftover Shell.exe.old created during an in-app self-update.
+func joinWindowsArgs(args []string) string {
+	parts := make([]string, len(args))
+	for i, arg := range args {
+		parts[i] = syscall.EscapeArg(arg)
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellExecuteElevated(exePath string, args []string) error {
+	errCh := make(chan error, 1)
+	go func() {
+		goruntime.LockOSThread()
+		defer goruntime.UnlockOSThread()
+
+		hr, _, _ := procCoInitEx.Call(0, coinitApartmentThreaded|coinitDisableOLE1DDE)
+		if hr == 0 || hr == 1 { // S_OK or S_FALSE
+			defer procCoUninit.Call()
+		}
+
+		verbPtr, err := windows.UTF16PtrFromString("runas")
+		if err != nil {
+			errCh <- err
+			return
+		}
+		filePtr, err := windows.UTF16PtrFromString(exePath)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		argsPtr, err := windows.UTF16PtrFromString(joinWindowsArgs(args))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		dirPtr, err := windows.UTF16PtrFromString(filepath.Dir(exePath))
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		r1, _, e1 := procShellExecuteW.Call(
+			0,
+			uintptr(unsafe.Pointer(verbPtr)),
+			uintptr(unsafe.Pointer(filePtr)),
+			uintptr(unsafe.Pointer(argsPtr)),
+			uintptr(unsafe.Pointer(dirPtr)),
+			uintptr(windows.SW_HIDE),
+		)
+		if r1 <= 32 {
+			if r1 == seErrAccessDenied || r1 == uintptr(windows.ERROR_CANCELLED) ||
+				errors.Is(e1, windows.ERROR_CANCELLED) || errors.Is(e1, windows.ERROR_ACCESS_DENIED) {
+				errCh <- errors.New("已取消管理员授权，未能替换受保护目录中的程序文件")
+				return
+			}
+			if errno, ok := e1.(syscall.Errno); ok && errno != 0 {
+				errCh <- fmt.Errorf("无法以管理员权限启动更新程序：%w", errno)
+				return
+			}
+			errCh <- fmt.Errorf("无法以管理员权限启动更新程序（错误码 %d）", r1)
+			return
+		}
+		errCh <- nil
+	}()
+	return <-errCh
+}
+
+func launchDetachedUpdater(stagedPath string, args []string) error {
+	cmd := exec.Command(stagedPath, args...)
+	cmd.Dir = filepath.Dir(stagedPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
+	}
+	return cmd.Start()
+}
+
+func relaunchExecutable(targetExe string, elevated bool) error {
+	if elevated {
+		// Launch through explorer.exe so the restarted Shell runs at standard desktop
+		// integrity rather than remaining elevated as Administrator.
+		explorer := "explorer.exe"
+		if sysRoot := os.Getenv("SystemRoot"); sysRoot != "" {
+			candidate := filepath.Join(sysRoot, "explorer.exe")
+			if _, err := os.Stat(candidate); err == nil {
+				explorer = candidate
+			}
+		}
+		cmd := exec.Command(explorer, targetExe)
+		cmd.Dir = filepath.Dir(targetExe)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+		}
+		if err := cmd.Start(); err == nil {
+			return nil
+		}
+	}
+	cmd := exec.Command(targetExe, "--updated-cleanup")
+	cmd.Dir = filepath.Dir(targetExe)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	}
+	return cmd.Start()
+}
+
+func waitForProcessExit(pid int, timeout time.Duration) {
+	if pid <= 0 || pid == os.Getpid() {
+		return
+	}
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		// If the process already exited before we started, OpenProcess fails with
+		// ERROR_INVALID_PARAMETER. If access is denied, pause briefly and let the
+		// replacement retry loop handle any transient file locks.
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			time.Sleep(500 * time.Millisecond)
+		}
+		return
+	}
+	defer windows.CloseHandle(h)
+
+	ms := uint32(timeout / time.Millisecond)
+	if ms == 0 {
+		ms = 1
+	}
+	ev, _ := windows.WaitForSingleObject(h, ms)
+	if ev == windows.WAIT_OBJECT_0 {
+		// Give the OS kernel a brief moment to release the mapped image handle.
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func applyStagedUpdate(parentPID int, stagedExe, targetExe string, relaunch bool) error {
+	targetExe = strings.TrimSpace(targetExe)
+	stagedExe = strings.TrimSpace(stagedExe)
+	if targetExe == "" {
+		return errors.New("未指定目标程序路径")
+	}
+	if stagedExe == "" {
+		return errors.New("未指定暂存更新文件路径")
+	}
+	targetExe = filepath.Clean(targetExe)
+	stagedExe = filepath.Clean(stagedExe)
+	if resolved, err := filepath.EvalSymlinks(targetExe); err == nil && resolved != "" {
+		targetExe = resolved
+	}
+	if err := validatePEFile(stagedExe); err != nil {
+		return err
+	}
+
+	waitForProcessExit(parentPID, 20*time.Second)
+
+	if !sameFilePath(stagedExe, targetExe) {
+		targetDir := filepath.Dir(targetExe)
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			return fmt.Errorf("无法访问目标程序目录：%w", err)
+		}
+		sameDirTemp := fmt.Sprintf("%s.new.%d", targetExe, os.Getpid())
+		if err := copyFileStrict(stagedExe, sameDirTemp); err != nil {
+			return fmt.Errorf("复制更新文件至目标目录失败：%w", err)
+		}
+		// Keep temporary staging file hidden while swapping so Explorer stays clean.
+		setFileHidden(sameDirTemp, true)
+		replaced := false
+		defer func() {
+			if !replaced {
+				_ = os.Remove(sameDirTemp)
+			}
+		}()
+
+		clearReadOnlyAttr(targetExe)
+
+		// Phase 1: Direct atomic replacement (ZERO .old file created in normal updates!).
+		// Retry with short backoff for transient OS teardown or AV scanning locks.
+		var lastErr error
+		const directAttempts = 8
+		for attempt := 0; attempt < directAttempts; attempt++ {
+			lastErr = moveFileExOnce(sameDirTemp, targetExe)
+			if lastErr == nil {
+				setFileHidden(targetExe, false)
+				replaced = true
+				break
+			}
+			if !isRetryableMoveErr(lastErr) {
+				break
+			}
+			if attempt < directAttempts-1 {
+				delay := time.Duration(100+50*attempt) * time.Millisecond
+				if delay > 250*time.Millisecond {
+					delay = 250 * time.Millisecond
+				}
+				time.Sleep(delay)
+			}
+		}
+
+		// Phase 2: Rare fallback only when another process (e.g. Shell.exe --mcp) still holds
+		// targetExe open after direct retries. Rename target aside into a hidden file, place the
+		// new executable, immediately clear HIDDEN on target, and delete (or delay-delete) the aside file.
+		if !replaced && isRetryableMoveErr(lastErr) {
+			const fallbackAttempts = 17
+			for attempt := 0; attempt < fallbackAttempts; attempt++ {
+				if err := moveFileExOnce(sameDirTemp, targetExe); err == nil {
+					setFileHidden(targetExe, false)
+					replaced = true
+					break
+				} else if !isRetryableMoveErr(err) {
+					lastErr = err
+					break
+				} else {
+					lastErr = err
+				}
+
+				asidePath := uniqueOldBackupPath(targetExe)
+				if moveFileExOnce(targetExe, asidePath) == nil {
+					setFileHidden(asidePath, true)
+					if err := moveFileExOnce(sameDirTemp, targetExe); err == nil {
+						setFileHidden(targetExe, false)
+						if os.Remove(asidePath) != nil {
+							delayDeleteOnReboot(asidePath)
+						}
+						replaced = true
+						break
+					} else {
+						lastErr = err
+					}
+					_ = moveFileWithRetry(asidePath, targetExe, 6, 100*time.Millisecond, 300*time.Millisecond)
+					setFileHidden(targetExe, false)
+				}
+				if attempt < fallbackAttempts-1 {
+					time.Sleep(250 * time.Millisecond)
+				}
+			}
+		}
+		if !replaced {
+			return fmt.Errorf("替换目标程序失败：%w", lastErr)
+		}
+
+		// Clean up any pre-existing legacy *.old* / *.new* files in the install directory
+		// right away (including while elevated for protected directories like Program Files).
+		_ = cleanupStaleUpdateFiles(targetDir, filepath.Base(targetExe))
+	}
+
+	if relaunch {
+		if err := relaunchExecutable(targetExe, isProcessElevated()); err != nil {
+			return fmt.Errorf("重启更新后的程序失败：%w", err)
+		}
+	}
+	return nil
+}
+
+func runApplyUpdateCLI(args []string) int {
+	fs := flag.NewFlagSet("apply-update", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	applyFlag := fs.Bool("apply-update", false, "")
+	pid := fs.Int("pid", 0, "")
+	target := fs.String("target", "", "")
+	relaunch := fs.Bool("relaunch", false, "")
+
+	if err := fs.Parse(args); err != nil || !*applyFlag || strings.TrimSpace(*target) == "" {
+		return 2
+	}
+	selfExe, err := os.Executable()
+	if err != nil || selfExe == "" {
+		fmt.Fprintln(os.Stderr, "无法定位当前更新程序路径")
+		return 1
+	}
+	if resolved, err := filepath.EvalSymlinks(selfExe); err == nil && resolved != "" {
+		selfExe = resolved
+	}
+	if err := applyStagedUpdate(*pid, selfExe, *target, *relaunch); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+func isStaleExeSibling(name, exeBase string) bool {
+	lowerName := strings.ToLower(name)
+	lowerBase := strings.ToLower(exeBase)
+	if lowerName == "" || lowerBase == "" || lowerName == lowerBase {
+		return false
+	}
+	if lowerName == lowerBase+".old" || strings.HasPrefix(lowerName, lowerBase+".old.") {
+		return true
+	}
+	if lowerName == lowerBase+".new" || strings.HasPrefix(lowerName, lowerBase+".new.") {
+		return true
+	}
+	if strings.HasPrefix(lowerName, ".shell-writecheck-") && strings.HasSuffix(lowerName, ".tmp") {
+		return true
+	}
+	return false
+}
+
+// cleanupStaleUpdateFiles removes leftover .old*, .new*, and write-check probe files
+// next to exeBase inside dir without touching exeBase itself.
+// It returns true if no matching stale files remain.
+func cleanupStaleUpdateFiles(dir, exeBase string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	allRemoved := true
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if !isStaleExeSibling(entry.Name(), exeBase) {
+			continue
+		}
+		fullPath := filepath.Join(dir, entry.Name())
+		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+			clearReadOnlyAttr(fullPath)
+			if retryErr := os.Remove(fullPath); retryErr != nil && !os.IsNotExist(retryErr) {
+				allRemoved = false
+			}
+		}
+	}
+	return allRemoved
+}
+
+func isStagedUpdateFilename(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasPrefix(lower, "shell-update-") && strings.HasSuffix(lower, ".exe")
+}
+
+// cleanupUpdateStagingDir removes stale staged update executables older than minAge
+// (never removing currentExe). It returns true if no staged update files remain.
+func cleanupUpdateStagingDir(stageDir, currentExe string, minAge time.Duration) bool {
+	if stageDir == "" {
+		return true
+	}
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		return true
+	}
+	remaining := false
+	for _, entry := range entries {
+		if entry.IsDir() || !isStagedUpdateFilename(entry.Name()) {
+			continue
+		}
+		fullPath := filepath.Join(stageDir, entry.Name())
+		if sameFilePath(fullPath, currentExe) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if minAge > 0 && time.Since(info.ModTime()) < minAge {
+			remaining = true
+			continue
+		}
+		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+			remaining = true
+		}
+	}
+	return !remaining
+}
+
+// cleanupPreviousExecutable removes any leftover .old*/.new.* files next to the running binary
+// as well as stale staged update binaries in %LOCALAPPDATA%\Shell\updates.
+// It retries for up to 60s so files briefly held by exiting background processes (e.g. --mcp)
+// are cleaned up automatically without user intervention.
 func cleanupPreviousExecutable() {
 	exePath, err := os.Executable()
 	if err != nil || exePath == "" {
@@ -485,16 +1097,26 @@ func cleanupPreviousExecutable() {
 	if resolved, err := filepath.EvalSymlinks(exePath); err == nil && resolved != "" {
 		exePath = resolved
 	}
-	oldPath := exePath + ".old"
-	if _, err := os.Stat(oldPath); err != nil {
-		return
-	}
+	dir := filepath.Dir(exePath)
+	base := filepath.Base(exePath)
+	stageDir := updateStagingDirPath()
+
 	go func() {
-		for i := 0; i < 15; i++ {
-			if os.Remove(oldPath) == nil {
+		deadline := time.Now().Add(60 * time.Second)
+		for attempt := 0; ; attempt++ {
+			exeClean := cleanupStaleUpdateFiles(dir, base)
+			stageClean := cleanupUpdateStagingDir(stageDir, exePath, 3*time.Second)
+			if exeClean && stageClean {
 				return
 			}
-			time.Sleep(350 * time.Millisecond)
+			if time.Now().After(deadline) {
+				return
+			}
+			if attempt < 12 {
+				time.Sleep(400 * time.Millisecond)
+			} else {
+				time.Sleep(2 * time.Second)
+			}
 		}
 	}()
 }
@@ -507,7 +1129,9 @@ func (a *App) CheckForUpdate() (UpdateInfo, error) {
 	return checkReleaseFromAPI(ctx, newUpdaterHTTPClient(15*time.Second), apiURL, appVersion)
 }
 
-// DownloadAndApplyUpdate downloads the latest Shell-Windows-x64.exe, verifies SHA-256, swaps the binary, and restarts Shell.
+// DownloadAndApplyUpdate downloads the latest Shell-Windows-x64.exe into a user-writable
+// staging directory, verifies PE header & SHA-256, and hands off replacement to the staged
+// binary (--apply-update) before quitting so the install directory never accumulates .old files.
 func (a *App) DownloadAndApplyUpdate() error {
 	a.updateMu.Lock()
 	if a.updating {
@@ -546,34 +1170,51 @@ func (a *App) DownloadAndApplyUpdate() error {
 		return errors.New("当前已是最新版本，无需更新")
 	}
 
-	newPath := exePath + ".new"
+	// 1. Always stage & verify in user-writable %LOCALAPPDATA%\Shell\updates\ first.
+	stageDir, err := ensureUpdateStagingDir()
+	if err != nil {
+		emit(UpdateProgress{Phase: "error", Message: err.Error()})
+		return err
+	}
+	stagedPath := filepath.Join(
+		stageDir,
+		fmt.Sprintf("Shell-update-%s-%d.exe", sanitizeVersionForFilename(info.LatestVersion), os.Getpid()),
+	)
+
 	ctx, cancel := context.WithTimeout(a.baseContext(), 5*time.Minute)
 	defer cancel()
 
-	if err := downloadVerifiedExecutable(ctx, newUpdaterHTTPClient(5*time.Minute), info, newPath, emit); err != nil {
+	if err := downloadVerifiedExecutable(ctx, newUpdaterHTTPClient(5*time.Minute), info, stagedPath, emit); err != nil {
 		emit(UpdateProgress{Phase: "error", Message: err.Error()})
 		return err
 	}
 
-	emit(UpdateProgress{Phase: "applying", Percent: 100, Message: "正在替换程序文件…"})
-	if _, err := swapExecutableAtomically(exePath, newPath); err != nil {
-		_ = os.Remove(newPath)
-		emit(UpdateProgress{Phase: "error", Message: err.Error()})
-		return err
+	// 2. Always hand off to the verified staged binary via --apply-update so this process exits
+	// cleanly first and targetExe is replaced directly in place without leaving any .old file.
+	applyArgs := []string{
+		"--apply-update",
+		"--pid", strconv.Itoa(os.Getpid()),
+		"--target", exePath,
+		"--relaunch",
+	}
+	dirWritable := isDirWritable(filepath.Dir(exePath))
+	var launchErr error
+	if !dirWritable && !isProcessElevated() {
+		emit(UpdateProgress{Phase: "applying", Percent: 100, Message: "正在请求管理员权限以替换程序文件…"})
+		launchErr = shellExecuteElevated(stagedPath, applyArgs)
+	} else {
+		emit(UpdateProgress{Phase: "applying", Percent: 100, Message: "正在准备替换程序文件…"})
+		launchErr = launchDetachedUpdater(stagedPath, applyArgs)
+	}
+	if launchErr != nil {
+		_ = os.Remove(stagedPath)
+		emit(UpdateProgress{Phase: "error", Message: launchErr.Error()})
+		return launchErr
 	}
 
 	emit(UpdateProgress{Phase: "restarting", Percent: 100, Message: fmt.Sprintf("已更新至 v%s，正在重启…", info.LatestVersion)})
-
-	// Launch updated executable detached, then gracefully close current process.
-	cmd := exec.Command(exePath, "--updated-cleanup")
-	cmd.Dir = filepath.Dir(exePath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("新版本已就绪但自动重启失败，请手动重新打开 Shell：%w", err)
-	}
-
 	go func() {
-		time.Sleep(350 * time.Millisecond)
+		time.Sleep(120 * time.Millisecond)
 		a.QuitApp()
 	}()
 	return nil

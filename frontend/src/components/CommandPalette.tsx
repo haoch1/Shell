@@ -96,8 +96,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     if (splitSource) {
       const currentLabel = '当前主机';
       if (!q || `${currentLabel} ${splitSource.name} ${splitSource.host}`.toLowerCase().includes(q)) {
-        out.push({id: 'split-current', label: currentLabel, subtitle: `${splitSource.user}@${formatHostDisplay(splitSource.host, splitSource.port, hideHostIp)}`,
-          category: '分屏', icon: <HostIcon profile={splitSource} size="sm" />, run: () => onConnectProfile(splitSource)});
+        out.push({
+          id: 'split-current',
+          label: currentLabel,
+          subtitle: hideHostIp
+            ? splitSource.group || splitSource.user
+            : `${splitSource.user}@${formatHostDisplay(splitSource.host, splitSource.port)}`,
+          category: '分屏',
+          icon: <HostIcon profile={splitSource} size="sm" />,
+          run: () => onConnectProfile(splitSource),
+        });
       }
       if (!q || '新建 SSH 主机'.toLowerCase().includes(q)) {
         out.push({id: 'split-new', label: '新建 SSH 主机', category: '分屏', icon: <Plus size={14} />, run: onNewHost});
@@ -107,10 +115,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       if (splitSource && sameSessionTarget(splitSource, p)) continue;
       const hay = `${p.name} ${p.host} ${p.user} ${p.group ?? ''} ${(p.tags ?? []).join(' ')}`.toLowerCase();
       if (!q || hay.includes(q)) {
+        const displayName =
+          p.name && (!hideHostIp || p.name !== p.host)
+            ? p.name
+            : hideHostIp
+              ? p.user || 'SSH 主机'
+              : formatHostDisplay(p.host, p.port);
         out.push({
           id: `host-${p.id}`,
-          label: p.name,
-          subtitle: `${p.user}@${formatHostDisplay(p.host, p.port, hideHostIp)}${p.group ? ' · ' + p.group : ''}`,
+          label: displayName,
+          subtitle: hideHostIp
+            ? p.group || p.user
+            : `${p.user}@${formatHostDisplay(p.host, p.port)}${p.group ? ' · ' + p.group : ''}`,
           category: '主机',
           icon: <HostIcon profile={p} size="sm" />,
           run: () => onConnectProfile(p),

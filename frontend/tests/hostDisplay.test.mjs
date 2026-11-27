@@ -2,16 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { formatHostDisplay, maskHostAddress } from '../src/lib/utils.ts';
 
-test('maskHostAddress masks IPv4, IPv6, hostnames, and empty values', () => {
+test('maskHostAddress returns empty string with no dot placeholders', () => {
   assert.equal(maskHostAddress(''), '');
   assert.equal(maskHostAddress('   '), '');
-  assert.equal(maskHostAddress('56.10.113.238'), '•••.•••.•••.•••');
-  assert.equal(maskHostAddress(' 10.0.0.1 '), '•••.•••.•••.•••');
-  assert.equal(maskHostAddress('2406:da18:b15:8000:4839:f12a:9c3b:4e21'), '••••:••••:••••');
-  assert.equal(maskHostAddress('[2406:da18::1]'), '••••:••••:••••');
-  assert.equal(maskHostAddress('::1'), '••••:••••:••••');
-  assert.equal(maskHostAddress('prod.example.com'), '••••••••');
-  assert.equal(maskHostAddress('bastion-01'), '••••••••');
+  assert.equal(maskHostAddress('56.10.113.238'), '');
+  assert.equal(maskHostAddress(' 10.0.0.1 '), '');
+  assert.equal(maskHostAddress('2406:da18:b15:8000:4839:f12a:9c3b:4e21'), '');
+  assert.equal(maskHostAddress('[2406:da18::1]'), '');
+  assert.equal(maskHostAddress('::1'), '');
+  assert.equal(maskHostAddress('prod.example.com'), '');
+  assert.equal(maskHostAddress('bastion-01'), '');
 });
 
 test('formatHostDisplay preserves standard formatting when hideIp is omitted or false', () => {
@@ -44,22 +44,22 @@ test('formatHostDisplay preserves standard formatting when hideIp is omitted or 
   );
 });
 
-test('formatHostDisplay masks address and omits port when hideIp is true', () => {
+test('formatHostDisplay completely omits host and port without dots when hideIp is true', () => {
   assert.equal(formatHostDisplay('', 2222, true), '');
   assert.equal(formatHostDisplay('   ', 22, true), '');
 
   // IPv4 default & custom port
-  assert.equal(formatHostDisplay('56.10.113.238', 22, true), '•••.•••.•••.•••');
-  assert.equal(formatHostDisplay('56.10.113.238', 58222, true), '•••.•••.•••.•••');
-  assert.equal(formatHostDisplay('192.168.1.10', undefined, true), '•••.•••.•••.•••');
+  assert.equal(formatHostDisplay('56.10.113.238', 22, true), '');
+  assert.equal(formatHostDisplay('56.10.113.238', 58222, true), '');
+  assert.equal(formatHostDisplay('192.168.1.10', undefined, true), '');
 
   // IPv6 default & custom port
-  assert.equal(formatHostDisplay('2406:da18:b15:8000:4839:f12a:9c3b:4e21', 22, true), '••••:••••:••••');
-  assert.equal(formatHostDisplay('2406:da18:b15:8000:4839:f12a:9c3b:4e21', 58222, true), '••••:••••:••••');
-  assert.equal(formatHostDisplay('[::1]', 2222, true), '••••:••••:••••');
+  assert.equal(formatHostDisplay('2406:da18:b15:8000:4839:f12a:9c3b:4e21', 22, true), '');
+  assert.equal(formatHostDisplay('2406:da18:b15:8000:4839:f12a:9c3b:4e21', 58222, true), '');
+  assert.equal(formatHostDisplay('[::1]', 2222, true), '');
 
   // Domains default & custom port
-  assert.equal(formatHostDisplay('prod.example.com', 22, true), '••••••••');
-  assert.equal(formatHostDisplay('prod.example.com', 2222, true), '••••••••');
-  assert.equal(formatHostDisplay('very-long-production-host.internal.example.com', 60022, true), '••••••••');
+  assert.equal(formatHostDisplay('prod.example.com', 22, true), '');
+  assert.equal(formatHostDisplay('prod.example.com', 2222, true), '');
+  assert.equal(formatHostDisplay('very-long-production-host.internal.example.com', 60022, true), '');
 });

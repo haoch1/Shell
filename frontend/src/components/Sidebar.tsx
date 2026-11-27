@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUpDown,
   Check,
@@ -10,6 +10,8 @@ import {
   Download,
   Eye,
   EyeOff,
+  Folder,
+  FolderMinus,
   KeyRound,
   Moon,
   Pencil,
@@ -67,6 +69,7 @@ interface SidebarProps {
   onDuplicateHost: (profile: Profile) => void;
   onDeleteHost: (profile: Profile) => void;
   onBatchDeleteHosts: (ids: string[]) => Promise<void>;
+  onBatchGroupHosts?: (ids: string[], group: string) => Promise<void>;
   onTogglePin: (profile: Profile) => void;
   onOpenImportSSH: () => void;
   onOpenExportHosts: (ids: string[]) => void;
@@ -95,6 +98,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   onDuplicateHost,
   onDeleteHost,
   onBatchDeleteHosts,
+  onBatchGroupHosts,
   onTogglePin,
   onOpenImportSSH,
   onOpenExportHosts,
@@ -111,15 +115,22 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [deletingBatch, setDeletingBatch] = useState(false);
+  const [groupMenuPos, setGroupMenuPos] = useState<{ left: number; bottom: number } | null>(null);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [groupingBatch, setGroupingBatch] = useState(false);
+  const groupInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!sortMenuPos) return;
+    if (!sortMenuPos && !groupMenuPos) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSortMenuPos(null);
+      if (e.key === 'Escape') {
+        setSortMenuPos(null);
+        setGroupMenuPos(null);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sortMenuPos]);
+  }, [sortMenuPos, groupMenuPos]);
 
   const changeSortMode = (next: HostSortMode) => {
     setSortMode(next);
@@ -202,14 +213,30 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
     () => filtered.filter((p) => selectedIds[p.id]).map((p) => p.id),
     [filtered, selectedIds],
   );
-  const exportIds = useMemo(
-    () => profiles.filter((p) => selectedIds[p.id]).map((p) => p.id),
-    [profiles, selectedIds],
+  const existingGroups = useMemo(
+    () =>
+      [...new Set(profiles.map((p) => p.group?.trim()).filter((g): g is string => Boolean(g)))].sort((a, b) =>
+        a.localeCompare(b, 'zh-CN'),
+      ),
+    [profiles],
   );
 
   const exitSelectMode = () => {
     setSelectMode(false);
     setSelectedIds({});
+    setGroupMenuPos(null);
+    setNewGroupName('');
+  };
+
+  const commitBatchGroup = async (group: string) => {
+    if (!chosenIds.length || groupingBatch || !onBatchGroupHosts) return;
+    setGroupingBatch(true);
+    try {
+      await onBatchGroupHosts(chosenIds, group.trim());
+      exitSelectMode();
+    } finally {
+      setGroupingBatch(false);
+    }
   };
 
   const toggleSelectAll = () => {
@@ -350,6 +377,12 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                   const source = livePanes.get(p.id)?.source;
                   const isLive = !!source;
                   const checked = Boolean(selectedIds[p.id]);
+                  const displayName =
+                    p.name && (!hideHostIp || p.name !== p.host)
+                      ? p.name
+                      : hideHostIp
+                        ? p.user || 'SSH 主机'
+                        : formatHostDisplay(p.host, p.port);
                   return (
                     <div
                       key={p.id}
@@ -371,7 +404,11 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                         e.preventDefault();
                         setCtxMenu({ x: e.clientX, y: e.clientY, profile: p });
                       }}
-                      title={`${p.user}@${hideHostIp ? formatHostDisplay(p.host, p.port, true) : `${p.host}:${p.port}`}${p.notes ? '\n' + p.notes : ''}`}
+                      title={
+                        hideHostIp
+                          ? `${displayName}${p.notes ? '\n' + p.notes : ''}`
+                          : `${p.user}@${p.host}:${p.port}${p.notes ? '\n' + p.notes : ''}`
+                      }
                     >
                       {selectMode && (
                         <input
@@ -384,13 +421,16 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                       <HostIcon profile={p} size="md" />
                       <div className="host-meta">
                         <div className="host-name-line">
-                          <span className="host-name">{p.name}</span>
-                          {isLive && !selectMode && <span className="host-live-pill">在线</span>}
+                          <span className="host-name">{displayName}</span>
                         </div>
-                        <div className="host-sub mono">
-                          {formatHostDisplay(p.host, p.port, hideHostIp)}
+                        <div
+                          className={`host-sub mono ip-collapsible ${hideHostIp ? 'is-hidden' : ''}`}
+                          data-ip-hidden={hideHostIp ? 'true' : undefined}
+                        >
+                          {hideHostIp ? '' : formatHostDisplay(p.host, p.port)}
                         </div>
                       </div>
+                      {isLive && !selectMode && <span className="host-live-dot" aria-label="在线" />}
                       {!selectMode && (
                         <div className="host-actions">
                           <button
@@ -433,19 +473,32 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <button
+              id="batchGroupBtn"
               type="button"
               className="btn btn-sm"
-              title="导出已选主机"
-              aria-label="导出已选主机"
-              disabled={!exportIds.length}
-              onClick={() => onOpenExportHosts(exportIds)}
+              disabled={!chosenIds.length || groupingBatch || deletingBatch}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (groupMenuPos) {
+                  setGroupMenuPos(null);
+                  return;
+                }
+                const rect = e.currentTarget.getBoundingClientRect();
+                const menuW = 216;
+                setGroupMenuPos({
+                  left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)),
+                  bottom: window.innerHeight - rect.top + 6,
+                });
+                setNewGroupName('');
+                requestAnimationFrame(() => groupInputRef.current?.focus());
+              }}
             >
-              <Upload size={13} />
+              分组
             </button>
             <button
               type="button"
               className="btn btn-sm btn-danger"
-              disabled={!chosenIds.length || deletingBatch}
+              disabled={!chosenIds.length || deletingBatch || groupingBatch}
               onClick={() => void commitBatchDelete()}
             >
               删除 ({chosenIds.length})
@@ -537,6 +590,86 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             </button>
           </div>
         </div>
+      )}
+
+      {groupMenuPos && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 139 }}
+            onClick={() => setGroupMenuPos(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setGroupMenuPos(null);
+            }}
+          />
+          <div
+            id="batchGroupPopover"
+            className="context-menu batch-group-popover"
+            style={{
+              left: groupMenuPos.left,
+              bottom: groupMenuPos.bottom,
+              top: 'auto',
+              width: 216,
+            }}
+          >
+            <form
+              className="batch-group-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const trimmed = newGroupName.trim();
+                if (trimmed) void commitBatchGroup(trimmed);
+              }}
+            >
+              <input
+                ref={groupInputRef}
+                id="batchGroupInput"
+                className="input"
+                placeholder="输入新分组名…"
+                value={newGroupName}
+                disabled={groupingBatch}
+                onChange={(e) => setNewGroupName(e.target.value)}
+              />
+              <button
+                type="submit"
+                className="btn btn-primary btn-sm"
+                disabled={!newGroupName.trim() || groupingBatch}
+              >
+                确定
+              </button>
+            </form>
+            {existingGroups.length > 0 && (
+              <>
+                <div className="context-menu-sep" />
+                <div className="batch-group-list">
+                  {existingGroups.map((g) => (
+                    <button
+                      key={g}
+                      type="button"
+                      className="context-menu-item"
+                      disabled={groupingBatch}
+                      onClick={() => void commitBatchGroup(g)}
+                    >
+                      <Folder size={13} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {g}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            <div className="context-menu-sep" />
+            <button
+              type="button"
+              className="context-menu-item"
+              disabled={groupingBatch}
+              onClick={() => void commitBatchGroup('')}
+            >
+              <FolderMinus size={13} />
+              <span>移出分组（默认）</span>
+            </button>
+          </div>
+        </>
       )}
 
       {sortMenuPos && (

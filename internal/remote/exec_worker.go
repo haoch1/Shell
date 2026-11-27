@@ -234,7 +234,7 @@ func ConnectHeadless(ctx context.Context, cfg Config, cb Callbacks) (*Session, e
 	defer cancel()
 
 	t0 := time.Now()
-	client, jumps, stops, err := dialSSHClient(ctx, setup, cfg, cb, nil, 0)
+	client, ownedJumps, releaseJumps, stops, err := dialSSHClient(ctx, setup, cfg, cb, nil, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -242,16 +242,20 @@ func ConnectHeadless(ctx context.Context, cfg Config, cb Callbacks) (*Session, e
 
 	keepCtx, stopKeep := context.WithCancel(ctx)
 	s := &Session{
-		client:      client,
-		jumpClients: jumps,
-		stops:       stops,
-		stopKeep:    stopKeep,
-		tunnels:     make(map[string]*activeTunnel),
+		client:       client,
+		jumpClients:  ownedJumps,
+		releaseJumps: releaseJumps,
+		stops:        stops,
+		stopKeep:     stopKeep,
+		tunnels:      make(map[string]*activeTunnel),
 	}
 	s.latencyMs.Store(initialRTT)
 	if cb.Latency != nil {
 		cb.Latency(initialRTT)
 	}
+	// Pre-warm the persistent `sh -s` worker concurrently while returning to the caller.
+	s.startWarmExecWorkerAsync()
+
 	keepSec := cfg.KeepAliveSec
 	if keepSec <= 0 {
 		keepSec = 30

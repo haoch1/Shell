@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeftRight,
+  ArrowUpRight,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Code2,
+  Columns2,
   Command,
   CopyPlus,
   FolderOpen,
@@ -23,14 +25,15 @@ import { getRuntime } from '../lib/bridge';
 import { HostIcon } from './HostIcon';
 import type { usePaneDrag } from '../lib/usePaneDrag';
 
-function tabLabel(tab: WorkspaceTab, profile?: Profile, hideHostIp = false) {
-  if (tab.root.type === 'leaf' && profile) {
-    if (profile.name && (!hideHostIp || profile.name !== profile.host)) {
-      return profile.name;
-    }
-    return formatHostDisplay(profile.host, undefined, hideHostIp) || profile.name || profile.host;
+function profileDisplayName(profile?: Profile, hideHostIp = false): string {
+  if (!profile) return '';
+  if (profile.name && (!hideHostIp || profile.name !== profile.host)) {
+    return profile.name;
   }
-  return tab.title;
+  if (hideHostIp) {
+    return profile.user || 'SSH 主机';
+  }
+  return formatHostDisplay(profile.host) || profile.name || profile.host;
 }
 
 interface TitlebarProps {
@@ -47,6 +50,7 @@ interface TitlebarProps {
   onCloseTab: (tabId: string) => void;
   onCloseOtherTabs: (tabId: string) => void;
   onCloneTab: (tabId: string) => void;
+  onDetachPane: (tabId: string, paneId: string) => void;
   onNewConnection: () => void;
   onSplit: (dir: 'horizontal' | 'vertical', tabId?: string) => void;
   onToggleBroadcast: () => void;
@@ -69,6 +73,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onCloseTab,
   onCloseOtherTabs,
   onCloneTab,
+  onDetachPane,
   onNewConnection,
   onSplit,
   onToggleBroadcast,
@@ -172,13 +177,22 @@ export const Titlebar: React.FC<TitlebarProps> = ({
     return 'closed';
   };
 
-  const tabProfile = (tab: WorkspaceTab): Profile | undefined => {
-    const leaves = collectLeaves(tab.root);
-    const leaf = leaves.find((l) => l.paneId === tab.activePaneId) ?? leaves[0];
-    const sess = leaf ? sessions[leaf.sessionId] : undefined;
+  const sessionProfile = (sessionId: string): Profile | undefined => {
+    const sess = sessions[sessionId];
     if (!sess) return undefined;
     // Prefer latest profile from profiles state so auto-detected OS icons reflect immediately.
     return (sess.profile.id ? profileById.get(sess.profile.id) : undefined) ?? sess.profile;
+  };
+
+  const tabInfo = (tab: WorkspaceTab) => {
+    const leaves = collectLeaves(tab.root);
+    const activeLeafForTab = leaves.find((l) => l.paneId === tab.activePaneId) ?? leaves[0];
+    const prof = activeLeafForTab ? sessionProfile(activeLeafForTab.sessionId) : undefined;
+    const isSplit = leaves.length > 1;
+    const title = isSplit
+      ? leaves.map((l) => profileDisplayName(sessionProfile(l.sessionId), hideHostIp) || '终端').join(' / ')
+      : profileDisplayName(prof, hideHostIp) || tab.title;
+    return { leaves, prof, isSplit, title };
   };
 
   const hasOverflow = canScrollLeft || canScrollRight;
@@ -239,9 +253,11 @@ export const Titlebar: React.FC<TitlebarProps> = ({
         >
           {tabs.map((tab) => {
             const st = tabState(tab);
-            const prof = tabProfile(tab);
-            const title = tabLabel(tab, prof, hideHostIp);
+            const { leaves, prof, isSplit, title } = tabInfo(tab);
             const active = tab.id === (paneDrag.hoverTab ?? activeTabId);
+            const tooltip = isSplit
+              ? `${title} (${leaves.length} 个分屏)\n拖动当前会话到终端边缘分屏`
+              : (prof && !hideHostIp ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port)})` : title) + '\n拖动当前会话到终端边缘分屏';
             return (
               <div
                 key={tab.id}
@@ -253,7 +269,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 onDragLeave={e => paneDrag.leaveTab(e, tab.id)}
                 role="tab"
                 aria-selected={active}
-                className={`tab-item state-${st} ${active ? 'active' : ''}`}
+                className={`tab-item state-${st} ${active ? 'active' : ''} ${isSplit ? 'split-tab' : ''}`}
                 onClick={() => onSelectTab(tab.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -266,10 +282,16 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                     onCloseTab(tab.id);
                   }
                 }}
-                title={(prof ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port, hideHostIp)})` : title) + '\n拖动当前会话到终端边缘分屏'}
+                title={tooltip}
               >
-                <HostIcon profile={prof} size="xs" />
+                {isSplit ? (
+                  <Columns2 size={12} strokeWidth={1.8} className="tab-split-icon" aria-hidden="true" />
+                ) : (
+                  <HostIcon profile={prof} size="xs" />
+                )}
+                {st === 'connecting' && <span className="tab-connecting-dot" aria-hidden="true" />}
                 <span className="tab-label">{title}</span>
+                {isSplit && <span className="tab-split-count tabular">{leaves.length}</span>}
                 <button
                   type="button"
                   className="tab-close"
@@ -281,7 +303,6 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 >
                   <X size={11} strokeWidth={2} />
                 </button>
-                <span className={`tab-status-bar ${st}`} aria-hidden="true" />
               </div>
             );
           })}
@@ -496,29 +517,33 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           >
             {tabs.map((tab) => {
               const st = tabState(tab);
-              const prof = tabProfile(tab);
-              const title = tabLabel(tab, prof, hideHostIp);
+              const { leaves, prof, isSplit, title } = tabInfo(tab);
               const active = tab.id === activeTabId;
               return (
                 <div
                   key={tab.id}
                   className={`context-menu-item ${active ? 'active-row' : ''}`}
                   style={{ justifyContent: 'space-between', paddingRight: 6 }}
-                  title={prof ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port, hideHostIp)})` : title}
+                  title={isSplit ? `${title} (${leaves.length} 个分屏)` : prof && !hideHostIp ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port)})` : title}
                   onClick={() => {
                     onSelectTab(tab.id);
                     setAllTabsMenu(null);
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 1, opacity: st === 'closed' ? 0.62 : 1 }}>
-                    <HostIcon profile={prof} size="xs" />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 1, opacity: st === 'closed' ? 0.55 : 1 }}>
+                    {isSplit ? (
+                      <Columns2 size={12} strokeWidth={1.8} className="tab-split-icon" aria-hidden="true" />
+                    ) : (
+                      <HostIcon profile={prof} size="xs" />
+                    )}
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {title}
                     </span>
-                    {st !== 'closed' && (
+                    {isSplit && <span className="tab-split-count tabular" style={{ marginLeft: 'auto' }}>{leaves.length}</span>}
+                    {st === 'connecting' && (
                       <span
-                        className={`tab-dot ${st}`}
-                        style={{ width: 5, height: 5, marginLeft: 'auto', flexShrink: 0 }}
+                        className="tab-connecting-dot"
+                        style={{ marginLeft: isSplit ? 0 : 'auto' }}
                         aria-hidden="true"
                       />
                     )}
@@ -542,7 +567,11 @@ export const Titlebar: React.FC<TitlebarProps> = ({
         </>
       )}
 
-      {tabMenu && (
+      {tabMenu && (() => {
+        const menuTab = tabs.find((t) => t.id === tabMenu.tabId);
+        const menuLeaves = menuTab ? collectLeaves(menuTab.root) : [];
+        const estHeight = 200 + (menuLeaves.length > 1 ? menuLeaves.length * 32 + 12 : 0);
+        return (
         <>
           <div
             style={{ position: 'fixed', inset: 0, zIndex: 139 }}
@@ -554,7 +583,10 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           />
           <div
             className="context-menu"
-            style={{ left: Math.min(tabMenu.x, window.innerWidth - 190), top: Math.min(tabMenu.y, window.innerHeight - 200) }}
+            style={{
+              left: Math.min(tabMenu.x, window.innerWidth - 210),
+              top: Math.max(8, Math.min(tabMenu.y, window.innerHeight - estHeight)),
+            }}
           >
             <button
               type="button"
@@ -589,6 +621,30 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               <SplitSquareVertical size={13} />
               向下分屏
             </button>
+            {menuLeaves.length > 1 && (
+              <>
+                <div className="context-menu-sep" />
+                {menuLeaves.map((leaf) => {
+                  const name = profileDisplayName(sessionProfile(leaf.sessionId), hideHostIp) || '终端';
+                  return (
+                    <button
+                      key={leaf.paneId}
+                      type="button"
+                      className="context-menu-item"
+                      onClick={() => {
+                        onDetachPane(tabMenu.tabId, leaf.paneId);
+                        setTabMenu(null);
+                      }}
+                    >
+                      <ArrowUpRight size={13} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        移出 {name}
+                      </span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
             <div className="context-menu-sep" />
             {tabs.length > 1 && (
               <button
@@ -616,7 +672,8 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             </button>
           </div>
         </>
-      )}
+        );
+      })()}
     </header>
   );
 };

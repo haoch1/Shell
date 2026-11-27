@@ -7,8 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/sys/windows"
 )
@@ -98,4 +101,44 @@ func writeAtomic(path string, data []byte) error {
 		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
 	}
 	return moveErr
+}
+
+// SetProfilesGroup updates Group atomically for all matching profile IDs under a single store lock.
+func SetProfilesGroup(ids []string, group string) error {
+	group = strings.TrimSpace(group)
+	if utf8.RuneCountInString(group) > 128 {
+		return errors.New("分组名称最多 128 字符")
+	}
+	if strings.IndexFunc(group, unicode.IsControl) >= 0 {
+		return errors.New("连接资料中不能包含控制字符")
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	target := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			target[id] = true
+		}
+	}
+	if len(target) == 0 {
+		return nil
+	}
+	return withStore(func(dir string) error {
+		list, err := readProfiles(dir)
+		if err != nil {
+			return err
+		}
+		changed := false
+		for i := range list {
+			if target[list[i].ID] && list[i].Group != group {
+				list[i].Group = group
+				changed = true
+			}
+		}
+		if !changed {
+			return nil
+		}
+		return writeProfiles(dir, list)
+	})
 }

@@ -1,4 +1,4 @@
-import type { Profile, SessionRecord, SplitNode, WorkspaceTab } from '../types/shell';
+import type { Profile, ProfileColor, SessionRecord, SplitNode, WorkspaceTab } from '../types/shell';
 import { sameSessionTarget } from './sessionAttempt.ts';
 import { collectLeaves, removePaneNode } from './utils.ts';
 
@@ -70,6 +70,41 @@ export function movePane(tabs: WorkspaceTab[], source: PaneSource, target: PaneS
     return [{...tab, root, activePaneId: tab.activePaneId === moved.paneId ? collectLeaves(root)[0].paneId : tab.activePaneId,
       broadcast: root.type === 'split' && tab.broadcast}];
   });
+}
+
+export function detachPaneToTab(
+  tabs: WorkspaceTab[],
+  tabId: string,
+  paneId: string,
+  newTabId: string,
+  title: string,
+  color?: ProfileColor,
+): WorkspaceTab[] {
+  const idx = tabs.findIndex(t => t.id === tabId);
+  if (idx < 0) return tabs;
+  const source = tabs[idx];
+  const leaves = collectLeaves(source.root);
+  if (leaves.length <= 1) return tabs;
+  const target = leaves.find(l => l.paneId === paneId);
+  if (!target) return tabs;
+  const nextRoot = removePaneNode(source.root, paneId);
+  if (!nextRoot) return tabs;
+  const remainingLeaves = collectLeaves(nextRoot);
+  const updatedSource: WorkspaceTab = {
+    ...source,
+    root: nextRoot,
+    activePaneId: source.activePaneId === paneId ? remainingLeaves[0].paneId : source.activePaneId,
+    broadcast: nextRoot.type === 'split' && source.broadcast,
+  };
+  const detachedTab: WorkspaceTab = {
+    id: newTabId,
+    title,
+    color,
+    root: {type: 'leaf', paneId: target.paneId, sessionId: target.sessionId},
+    activePaneId: target.paneId,
+    broadcast: false,
+  };
+  return [...tabs.slice(0, idx), updatedSource, detachedTab, ...tabs.slice(idx + 1)];
 }
 
 // Keep every terminal mounted in one flat React list. The split tree only determines geometry.

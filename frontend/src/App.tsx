@@ -33,7 +33,7 @@ import { Titlebar } from './components/Titlebar';
 import { Sidebar } from './components/Sidebar';
 import { WelcomeView } from './components/WelcomeView';
 import { SplitWorkspace } from './components/SplitWorkspace';
-import { movePane } from './lib/paneLayout';
+import { detachPaneToTab, movePane } from './lib/paneLayout';
 import { usePaneDrag } from './lib/usePaneDrag';
 import { StatusBar } from './components/StatusBar';
 import { SftpDrawer } from './components/SftpDrawer';
@@ -523,7 +523,7 @@ export const App: React.FC = () => {
       }),
       onDesktopEvent<[string, boolean?]>('agent:connect_profile', async (profileId, fromMcp) => {
         let target = profilesRef.current.find((p) => p.id === profileId);
-        if (fromMcp || !target) {
+        if (!target) {
           const saved = await getApi().Profiles().catch(() => []);
           target = saved?.find((p) => p.id === profileId);
         }
@@ -882,6 +882,23 @@ export const App: React.FC = () => {
     [closeSessionBackend, handleCloseTab],
   );
 
+  const handleDetachPane = useCallback((tabId: string, paneId: string) => {
+    const tab = tabsRef.current.find((t) => t.id === tabId);
+    if (!tab) return;
+    const leaves = collectLeaves(tab.root);
+    if (leaves.length <= 1) return;
+    const target = leaves.find((l) => l.paneId === paneId);
+    if (!target) return;
+    const sess = sessionsRef.current[target.sessionId];
+    const title = sess ? sess.profile.name || sess.profile.host : tab.title;
+    const color = sess?.profile.color;
+    const newTabId = randomId();
+    setTabs((prev) => detachPaneToTab(prev, tabId, paneId, newTabId, title, color));
+    setActiveTabId(newTabId);
+    setSearchOpen(false);
+    requestAnimationFrame(() => terminalBus.get(target.sessionId)?.focus());
+  }, []);
+
   const handleReconnectPane = useCallback(
     (tabId: string, paneId: string, oldSessionId: string) => {
       const old = sessionsRef.current[oldSessionId];
@@ -1041,6 +1058,24 @@ export const App: React.FC = () => {
     toast(`已批量删除 ${ids.length} 台主机`);
   };
 
+  const handleBatchGroupHosts = async (ids: string[], group: string) => {
+    if (!ids.length) return;
+    const clean = group.trim();
+    const api = getApi();
+    if (typeof api.SetProfilesGroup === 'function') {
+      await api.SetProfilesGroup(ids, clean);
+    } else {
+      const idSet = new Set(ids);
+      for (const p of profilesRef.current) {
+        if (idSet.has(p.id)) {
+          await api.SaveProfile({ ...p, group: clean });
+        }
+      }
+    }
+    await reloadData();
+    toast(clean ? `已将 ${ids.length} 台主机移至分组「${clean}」` : `已将 ${ids.length} 台主机移出分组`);
+  };
+
   const paneDrag = usePaneDrag(tabs, (source, target, edge) => {
     const splitId = randomId();
     setTabs(prev => movePane(prev, source, target, edge, splitId));
@@ -1082,6 +1117,7 @@ export const App: React.FC = () => {
         onCloseTab={handleCloseTab}
         onCloseOtherTabs={handleCloseOtherTabs}
         onCloneTab={handleCloneTab}
+        onDetachPane={handleDetachPane}
         onNewConnection={() => setHostModal({ open: true, profile: null })}
         onSplit={(dir, tabId) => {
           const tab = tabId ? tabs.find(t => t.id === tabId) : activeTab;
@@ -1118,6 +1154,7 @@ export const App: React.FC = () => {
           }}
           onDeleteHost={(p) => setConfirmDelete(p)}
           onBatchDeleteHosts={handleBatchDeleteHosts}
+          onBatchGroupHosts={handleBatchGroupHosts}
           onTogglePin={async (p) => {
             await getApi().SaveProfile({ ...p, pinned: !p.pinned });
             await reloadData();
@@ -1190,6 +1227,7 @@ export const App: React.FC = () => {
                   onPaneCwdChange={handlePaneCwdChange}
                   onReconnectPane={handleReconnectPane}
                   onClosePane={handleClosePane}
+                  onDetachPane={handleDetachPane}
                   onSplitPane={handleSplitPane}
                   onOpenSearch={() => setSearchOpen(true)}
                   onOpenSFTP={() => setDrawer('sftp')}

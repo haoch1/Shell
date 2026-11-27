@@ -15,12 +15,14 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/haoch1/Shell/internal/agentbridge"
 	"github.com/haoch1/Shell/internal/local"
 	"github.com/haoch1/Shell/internal/remote"
 	"github.com/haoch1/Shell/internal/security"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/crypto/ssh"
 )
 
 type liveSession struct {
@@ -50,6 +52,17 @@ type App struct {
 	agentCfgMu       sync.RWMutex
 	agentCfg         local.AgentConfig
 	agentCfgLoaded   bool
+	jumpMu           sync.Mutex
+	jumpPool         map[string]*pooledJump
+	jumpDials        map[string]*jumpDialAttempt
+	deadJumpClients  map[*ssh.Client]struct{}
+	jumpIdleTimeout  time.Duration
+	jumpGen          uint64
+	cacheMu          sync.RWMutex
+	profCache        profileCacheState
+	profGen          uint64
+	settingsCache    settingsCacheState
+	settingsGen      uint64
 	updateMu         sync.Mutex
 	updating         bool
 }
@@ -71,6 +84,10 @@ func newApp() *App {
 		approvals:        make(map[string]chan string),
 		sessionApprovals: make(map[string]bool),
 		transfers:        make(map[string]context.CancelFunc),
+		jumpPool:         make(map[string]*pooledJump),
+		jumpDials:        make(map[string]*jumpDialAttempt),
+		deadJumpClients:  make(map[*ssh.Client]struct{}),
+		jumpIdleTimeout:  defaultJumpIdleTimeout,
 	}
 	a.bridge = agentbridge.New(a, appVersion)
 	return a
@@ -131,6 +148,7 @@ func (a *App) saveWindowBounds(ctx context.Context) {
 		}
 		return nil
 	})
+	a.invalidateSettingsCache()
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
@@ -138,7 +156,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	if a.quitting.Load() || os.Getenv("SHELL_EXIT_ON_CLOSE") == "1" {
 		return false
 	}
-	if st, err := local.LoadSettings(); err == nil && st.CloseToTray {
+	if st, err := a.getCachedSettings(); err == nil && st.CloseToTray {
 		runtime.WindowHide(ctx)
 		return true
 	}
@@ -197,6 +215,7 @@ func (a *App) DisconnectAllSessions() {
 			}
 		}
 	}
+	a.closeAllPooledJumps()
 	total := len(ids) + len(headlessList)
 	if a.ctx != nil && total > 0 {
 		runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("已断开 %d 个 SSH 会话", total))
@@ -231,6 +250,7 @@ func (a *App) ToggleCloseToTray() {
 	if err != nil {
 		return
 	}
+	a.invalidateSettingsCache()
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "shell:settings_updated", saved)
 	}
@@ -279,6 +299,7 @@ func (a *App) shutdown(context.Context) {
 			}
 		}
 	}
+	a.closeAllPooledJumps()
 }
 
 type AppInfoView struct {
@@ -366,7 +387,7 @@ func view(p local.Profile) (ProfileView, error) {
 }
 
 func (a *App) Profiles() ([]ProfileView, error) {
-	rows, err := local.Profiles()
+	rows, err := a.getCachedProfiles()
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +437,8 @@ func (a *App) SaveProfile(p local.Profile) (ProfileView, error) {
 	if err != nil {
 		return ProfileView{}, err
 	}
+	a.invalidateProfileCache()
+	a.retirePooledJumpsByProfile(saved.ID)
 	return view(saved)
 }
 
@@ -423,7 +446,7 @@ func (a *App) GetProfileSecret(id string) (string, error) {
 	if strings.TrimSpace(id) == "" {
 		return "", nil
 	}
-	p, ok, err := local.GetProfile(id)
+	p, ok, err := a.getCachedProfileByID(id)
 	if err != nil || !ok {
 		return "", err
 	}
@@ -448,6 +471,8 @@ func (a *App) SaveProfileWithSecret(p local.Profile, secret string, remember boo
 	if err != nil {
 		return ProfileView{}, err
 	}
+	a.invalidateProfileCache()
+	a.retirePooledJumpsByProfile(saved.ID)
 	if remember && (saved.Auth == "password" || saved.Auth == "key") && carriedSecret != "" {
 		err = local.RememberSecret(saved, carriedSecret)
 	} else {
@@ -464,13 +489,53 @@ func (a *App) DuplicateProfile(id string) (ProfileView, error) {
 	if err != nil {
 		return ProfileView{}, err
 	}
+	a.invalidateProfileCache()
 	return view(cloned)
 }
 
-func (a *App) DeleteProfile(id string) error     { return local.DeleteProfile(id) }
-func (a *App) DeleteProfiles(ids []string) error { return local.DeleteProfiles(ids) }
-func (a *App) ClearRecentHosts() error           { return local.ClearRecentProfiles() }
-func (a *App) ForgetSecret(id string) error      { return local.ForgetSecret(id) }
+func (a *App) DeleteProfile(id string) error {
+	err := local.DeleteProfile(id)
+	if err == nil {
+		a.invalidateProfileCache()
+		a.retirePooledJumpsByProfile(id)
+	}
+	return err
+}
+
+func (a *App) DeleteProfiles(ids []string) error {
+	err := local.DeleteProfiles(ids)
+	if err == nil {
+		a.invalidateProfileCache()
+		for _, id := range ids {
+			a.retirePooledJumpsByProfile(id)
+		}
+	}
+	return err
+}
+
+func (a *App) SetProfilesGroup(ids []string, group string) error {
+	err := local.SetProfilesGroup(ids, group)
+	if err == nil {
+		a.invalidateProfileCache()
+	}
+	return err
+}
+
+func (a *App) ClearRecentHosts() error {
+	err := local.ClearRecentProfiles()
+	if err == nil {
+		a.invalidateProfileCache()
+	}
+	return err
+}
+
+func (a *App) ForgetSecret(id string) error {
+	err := local.ForgetSecret(id)
+	if err == nil {
+		a.retirePooledJumpsByProfile(id)
+	}
+	return err
+}
 
 func (a *App) PickKey() (string, error) {
 	home, _ := os.UserHomeDir()
@@ -495,6 +560,7 @@ func (a *App) ImportSSHConfig(entries []local.SSHConfigHost, group string) ([]Pr
 	if err != nil {
 		return nil, err
 	}
+	a.invalidateProfileCache()
 	out := make([]ProfileView, 0, len(saved))
 	for _, p := range saved {
 		v, err := view(p)
@@ -633,7 +699,7 @@ func (a *App) DetectSystemProxy() remote.SystemProxyInfo {
 	return remote.DetectSystemProxy()
 }
 
-func resolveJumpChain(jumpID string, settings local.AppSettings, visited map[string]bool, depth int) (*remote.Config, error) {
+func (a *App) resolveJumpChain(jumpID string, settings local.AppSettings, visited map[string]bool, depth int) (*remote.Config, error) {
 	if jumpID == "" {
 		return nil, nil
 	}
@@ -644,37 +710,33 @@ func resolveJumpChain(jumpID string, settings local.AppSettings, visited map[str
 		return nil, errors.New("检测到跳板机循环引用，请检查主机配置")
 	}
 	visited[jumpID] = true
-	jp, ok, err := local.GetProfile(jumpID)
+	jp, ok, err := a.getCachedProfileByID(jumpID)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, errors.New("未找到所配置的跳板机主机资料")
 	}
-	var secret string
-	if jp.Auth == "password" || jp.Auth == "key" {
-		secret, err = local.LoadSecret(jp)
-		if err != nil {
-			return nil, fmt.Errorf("读取跳板机凭据失败：%w", err)
-		}
-	}
-	parent, err := resolveJumpChain(jp.JumpHostID, settings, visited, depth+1)
+	parent, err := a.resolveJumpChain(jp.JumpHostID, settings, visited, depth+1)
 	if err != nil {
 		return nil, err
 	}
-	rc := &remote.Config{
-		Host:    jp.Host,
-		Port:    jp.Port,
-		User:    jp.User,
-		Auth:    jp.Auth,
-		KeyPath: jp.KeyPath,
-		Proxy:   effectiveProxyConfig(jp, settings),
-		Jump:    parent,
+	keepAlive := jp.KeepAliveSec
+	if keepAlive == 0 && settings.DefaultKeepAlive > 0 {
+		keepAlive = settings.DefaultKeepAlive
 	}
-	if jp.Auth == "key" {
-		rc.Passphrase = secret
-	} else if jp.Auth == "password" {
-		rc.Password = secret
+	rc := &remote.Config{
+		ProfileID:    jp.ID,
+		Host:         jp.Host,
+		Port:         jp.Port,
+		User:         jp.User,
+		Auth:         jp.Auth,
+		KeyPath:      jp.KeyPath,
+		KeepAliveSec: keepAlive,
+		Proxy:        effectiveProxyConfig(jp, settings),
+		Jump:         parent,
+		DialJump:     a.dialJumpClient,
+		OnJumpDead:   a.evictDeadJumpClient,
 	}
 	return rc, nil
 }
@@ -690,7 +752,7 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 			return err
 		}
 	}
-	settings, _ := local.LoadSettings()
+	settings, _ := a.getCachedSettings()
 	keepAlive := p.KeepAliveSec
 	if keepAlive == 0 && settings.DefaultKeepAlive > 0 {
 		keepAlive = settings.DefaultKeepAlive
@@ -699,7 +761,7 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 	if p.ID != "" {
 		visited[p.ID] = true
 	}
-	jumpCfg, err := resolveJumpChain(p.JumpHostID, settings, visited, 1)
+	jumpCfg, err := a.resolveJumpChain(p.JumpHostID, settings, visited, 1)
 	if err != nil {
 		return err
 	}
@@ -737,6 +799,9 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 		StartupCommand: p.StartupCommand,
 		Proxy:          effectiveProxyConfig(p, settings),
 		Jump:           jumpCfg,
+		ProfileID:      p.ID,
+		DialJump:       a.dialJumpClient,
+		OnJumpDead:     a.evictDeadJumpClient,
 	}
 	if p.Auth == "key" {
 		cfg.Passphrase = secret
@@ -751,14 +816,29 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 		Challenge: func(user, instruction string, questions []string, echo []bool) ([]string, error) {
 			return a.challenge(ctx, id, p.Host, user, instruction, questions, echo)
 		},
+		OnReady: func(ready *remote.Session) {
+			a.mu.Lock()
+			active := a.live[id] == entry
+			if active {
+				entry.session = ready
+			}
+			a.mu.Unlock()
+			if active {
+				a.finishVisibleConnect(p, id, nil)
+			}
+		},
 		Output: func(data []byte) {
 			if a.ws != nil && a.ws.SendOutput(id, data) {
 				return
 			}
-			runtime.EventsEmit(a.ctx, "ssh:data", id, base64.StdEncoding.EncodeToString(data))
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "ssh:data", id, base64.StdEncoding.EncodeToString(data))
+			}
 		},
 		Latency: func(ms int64) {
-			runtime.EventsEmit(a.ctx, "ssh:latency", id, ms)
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "ssh:latency", id, ms)
+			}
 		},
 		End: func(err error) {
 			message := "连接已关闭"
@@ -769,7 +849,9 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 			if a.ws != nil {
 				a.ws.CloseSession(id)
 			}
-			runtime.EventsEmit(a.ctx, "ssh:end", id, message)
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "ssh:end", id, message)
+			}
 		},
 	})
 	if err != nil {
@@ -790,7 +872,9 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 	// Run disk persistence & auto-start tunnels asynchronously so Connect returns immediately and typing is unblocked.
 	go func(prof local.Profile, sec string, rem bool, sess *remote.Session) {
 		if prof.ID != "" {
-			_ = local.TouchProfile(prof.ID)
+			if err := local.TouchProfile(prof.ID); err == nil {
+				a.invalidateProfileCache()
+			}
 		}
 		if rem && sec != "" && prof.ID != "" && prof.Auth != "agent" {
 			if err := local.RememberSecret(prof, sec); err != nil {
@@ -1177,9 +1261,14 @@ func (a *App) Snippets() ([]local.Snippet, error)                 { return local
 func (a *App) SaveSnippet(s local.Snippet) (local.Snippet, error) { return local.SaveSnippet(s) }
 func (a *App) DeleteSnippet(id string) error                      { return local.DeleteSnippet(id) }
 
-func (a *App) GetSettings() (local.AppSettings, error) { return local.LoadSettings() }
+func (a *App) GetSettings() (local.AppSettings, error) { return a.getCachedSettings() }
 func (a *App) SaveSettings(s local.AppSettings) (local.AppSettings, error) {
-	return local.SaveSettings(s)
+	saved, err := local.SaveSettings(s)
+	if err == nil {
+		a.invalidateSettingsCache()
+		a.retirePooledJumpsByProfile("")
+	}
+	return saved, err
 }
 
 func (a *App) UpdatePreferences(changes map[string]any) (local.AppSettings, error) {
@@ -1187,7 +1276,7 @@ func (a *App) UpdatePreferences(changes map[string]any) (local.AppSettings, erro
 	if err != nil {
 		return local.AppSettings{}, err
 	}
-	return local.UpdateSettings(func(current *local.AppSettings) error {
+	saved, err := local.UpdateSettings(func(current *local.AppSettings) error {
 		s := *current
 		if err := json.Unmarshal(data, &s); err != nil {
 			return err
@@ -1198,6 +1287,19 @@ func (a *App) UpdatePreferences(changes map[string]any) (local.AppSettings, erro
 		*current = s
 		return nil
 	})
+	if err == nil {
+		a.invalidateSettingsCache()
+		if _, p1 := changes["proxyMode"]; p1 {
+			a.retirePooledJumpsByProfile("")
+		} else if _, p2 := changes["proxyHost"]; p2 {
+			a.retirePooledJumpsByProfile("")
+		} else if _, p3 := changes["proxyPort"]; p3 {
+			a.retirePooledJumpsByProfile("")
+		} else if _, p4 := changes["proxyUser"]; p4 {
+			a.retirePooledJumpsByProfile("")
+		}
+	}
+	return saved, err
 }
 
 func (a *App) KnownHosts() ([]local.KnownHostEntry, error) { return local.ListKnownHosts() }
@@ -1269,7 +1371,13 @@ func (a *App) ImportBackup(passphrase string) (local.ImportSummary, error) {
 	if err != nil || src == "" {
 		return local.ImportSummary{}, err
 	}
-	return local.ImportFromFile(src, passphrase)
+	summary, err := local.ImportFromFile(src, passphrase)
+	if err == nil {
+		a.invalidateProfileCache()
+		a.invalidateSettingsCache()
+		a.retirePooledJumpsByProfile("")
+	}
+	return summary, err
 }
 
 // --- AI Assistant ---

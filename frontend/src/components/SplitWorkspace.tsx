@@ -17,6 +17,7 @@ interface SplitWorkspaceProps {
   onPaneCwdChange: (sessionId: string, dir: string) => void;
   onReconnectPane: (tabId: string, paneId: string, sessionId: string) => void;
   onClosePane: (tabId: string, paneId: string) => void;
+  onDetachPane: (tabId: string, paneId: string) => void;
   onSplitPane: (tabId: string, paneId: string, dir: 'horizontal' | 'vertical') => void;
   onOpenSearch: () => void;
   onOpenSFTP: () => void;
@@ -63,6 +64,7 @@ export const SplitWorkspace: React.FC<SplitWorkspaceProps> = (props) => {
               onCwdChange={dir => props.onPaneCwdChange(session.id, dir)}
               onReconnect={() => props.onReconnectPane(tab.id, leaf.paneId, session.id)}
               onClosePane={() => props.onClosePane(tab.id, leaf.paneId)}
+              onDetachPane={() => props.onDetachPane(tab.id, leaf.paneId)}
               onSplit={dir => props.onSplitPane(tab.id, leaf.paneId, dir)}
               onOpenSearch={props.onOpenSearch}
               onOpenSFTP={props.onOpenSFTP}

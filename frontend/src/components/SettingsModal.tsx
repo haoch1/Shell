@@ -1,14 +1,16 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   Bot,
   Check,
+  ChevronDown,
   Copy,
   ExternalLink,
   Info,
   KeyRound,
   Loader2,
   Palette,
+  RefreshCw,
   Search,
   Shield,
   Sparkles,
@@ -53,11 +55,41 @@ interface SettingsModalProps {
 }
 
 const AI_PRESETS = [
-  { id: 'claude', label: 'Claude', sub: 'api.anthropic.com', endpoint: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-6' },
-  { id: 'chatgpt', label: 'ChatGPT', sub: 'api.openai.com', endpoint: 'https://api.openai.com/v1', model: 'gpt-5-mini' },
-  { id: 'gemini', label: 'Gemini', sub: 'generativelanguage.googleapis.com', endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
-  { id: 'deepseek', label: 'DeepSeek', sub: 'api.deepseek.com', endpoint: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  {
+    id: 'claude',
+    label: 'Claude',
+    sub: 'api.anthropic.com',
+    endpoint: 'https://api.anthropic.com/v1',
+    model: 'claude-sonnet-5-5',
+    models: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2', 'claude-haiku-5-5'],
+  },
+  {
+    id: 'chatgpt',
+    label: 'ChatGPT',
+    sub: 'api.openai.com',
+    endpoint: 'https://api.openai.com/v1',
+    model: 'gpt-6.2-sol',
+    models: ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-terra', 'gpt-6-luna'],
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini',
+    sub: 'generativelanguage.googleapis.com',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    model: 'gemini-4-neon',
+    models: ['gemini-4-neon', 'gemini-4-carbon', 'gemini-4-hydrogen', 'gemini-4-argon', 'gemini-3.5-flash-lite'],
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    sub: 'api.deepseek.com',
+    endpoint: 'https://api.deepseek.com/v1',
+    model: 'deepseek-flash',
+    models: ['deepseek-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
+  },
 ];
+
+const normalizeEndpoint = (ep: string) => ep.trim().replace(/\/+$/, '');
 
 const AI_CLI_PRESETS = [
   { id: 'claude', label: 'Claude Code', command: 'claude', modelHint: '留空使用默认，如 sonnet / opus' },
@@ -134,6 +166,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [aiMsg, setAiMsg] = useState('');
   const [aiErr, setAiErr] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [fetchedModels, setFetchedModels] = useState<{ endpoint: string; models: string[] } | null>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modelFilterActive, setModelFilterActive] = useState(false);
+  const [modelHighlightIdx, setModelHighlightIdx] = useState(-1);
+  const modelComboRef = useRef<HTMLDivElement>(null);
+  const modelInputRef = useRef<HTMLInputElement>(null);
 
   // Backup state
   const [vaultPass, setVaultPass] = useState('');
@@ -152,8 +191,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .then((c) => {
         setAiCfg(c);
         setAiMode(c.mode === 'cli' ? 'cli' : 'api');
-        setAiEndpoint(c.endpoint || '');
-        setAiModel(c.model || '');
+        if (!c.endpoint && !c.model) {
+          setAiEndpoint(AI_PRESETS[0].endpoint);
+          setAiModel(AI_PRESETS[0].model);
+        } else {
+          setAiEndpoint(c.endpoint || '');
+          setAiModel(c.model || '');
+        }
         if (c.cliCommand) setCliCommand(c.cliCommand);
         setCliModel(c.cliModel || '');
         setCliArgs(c.cliArgs || '');
@@ -163,11 +207,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (modelMenuOpen) {
+          e.stopPropagation();
+          setModelMenuOpen(false);
+          setModelHighlightIdx(-1);
+          return;
+        }
+        onClose();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, modelMenuOpen]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (modelComboRef.current && !modelComboRef.current.contains(e.target as Node)) {
+        setModelMenuOpen(false);
+        setModelHighlightIdx(-1);
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [modelMenuOpen]);
 
   const patch = (partial: Partial<AppSettings>) => {
     void onUpdateSettings(partial);
@@ -242,8 +306,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  const normalizedAiEndpoint = normalizeEndpoint(aiEndpoint);
+
+  const matchedAIPreset = useMemo(
+    () => AI_PRESETS.find((p) => normalizeEndpoint(p.endpoint) === normalizedAiEndpoint) || null,
+    [normalizedAiEndpoint],
+  );
+
+  const liveModels = useMemo(
+    () => (fetchedModels && fetchedModels.endpoint === normalizedAiEndpoint ? fetchedModels.models : null),
+    [fetchedModels, normalizedAiEndpoint],
+  );
+
+  const availableModels = useMemo(
+    () => liveModels ?? matchedAIPreset?.models ?? AI_PRESETS.flatMap((p) => p.models),
+    [liveModels, matchedAIPreset],
+  );
+
+  const filteredModels = useMemo(() => {
+    const q = aiModel.trim().toLowerCase();
+    if (!modelFilterActive || !q) return availableModels;
+    return availableModels.filter((m) => m.toLowerCase().includes(q));
+  }, [availableModels, aiModel, modelFilterActive]);
+
+  const hasSavedKeyForEndpoint = Boolean(
+    aiCfg?.hasKey && normalizeEndpoint(aiCfg.endpoint) === normalizedAiEndpoint,
+  );
+
   const buildAIInput = () => {
-    const keep = !aiKey.trim() && !clearAiKey && Boolean(aiCfg?.hasKey && aiCfg.endpoint === aiEndpoint.trim());
+    const keep = !aiKey.trim() && !clearAiKey && hasSavedKeyForEndpoint;
     return {
       mode: aiMode,
       endpoint: aiEndpoint.trim(),
@@ -254,6 +345,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       cliArgs: cliArgs.trim(),
       cliModel: cliModel.trim(),
     };
+  };
+
+  const handleFetchModels = async () => {
+    if (!normalizedAiEndpoint) {
+      setAiErr('请先填写 API 地址');
+      return;
+    }
+    const fetchFn = getApi().FetchAIModels;
+    if (!fetchFn) {
+      setAiErr('当前版本暂不支持自动刷新模型列表');
+      return;
+    }
+    setFetchingModels(true);
+    setAiErr('');
+    setAiMsg('');
+    try {
+      const list = await fetchFn(buildAIInput());
+      const clean = Array.isArray(list)
+        ? list.filter((m): m is string => typeof m === 'string' && m.trim() !== '')
+        : [];
+      if (clean.length === 0) {
+        setAiErr('未从接口获取到可用模型，请手动输入');
+        return;
+      }
+      setFetchedModels({ endpoint: normalizedAiEndpoint, models: clean });
+      setModelFilterActive(false);
+      setModelMenuOpen(true);
+      setModelHighlightIdx(-1);
+      if (!aiModel.trim()) {
+        setAiModel(clean[0]);
+      }
+      onToast(`已获取 ${clean.length} 个模型`);
+    } catch (ex) {
+      setAiErr(errorMessage(ex));
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
+  const selectModelOption = (modelId: string) => {
+    setAiModel(modelId);
+    setModelFilterActive(false);
+    setModelMenuOpen(false);
+    setModelHighlightIdx(-1);
+    setAiErr('');
   };
 
   const saveAI = async (e: React.FormEvent) => {
@@ -910,7 +1046,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="pref-section-title">常用模型预设</div>
                       <div className="provider-grid">
                         {AI_PRESETS.map((p) => {
-                          const active = aiEndpoint.trim() === p.endpoint;
+                          const active = normalizedAiEndpoint === normalizeEndpoint(p.endpoint);
                           return (
                             <button
                               key={p.id}
@@ -920,6 +1056,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 setAiEndpoint(p.endpoint);
                                 setAiModel(p.model);
                                 setAiKey('');
+                                setClearAiKey(false);
+                                setFetchedModels(null);
+                                setModelMenuOpen(false);
+                                setModelFilterActive(false);
+                                setModelHighlightIdx(-1);
+                                setAiErr('');
+                                setAiMsg('');
                               }}
                             >
                               <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ink-primary)' }}>{p.label}</span>
@@ -946,16 +1089,193 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             placeholder="https://api.openai.com/v1（兼容任意 OpenAI 格式接口）"
                           />
                         </div>
-                        <div className="field-group">
+                        <div className="field-group" ref={modelComboRef}>
                           <label className="field-label" htmlFor="model">模型名称</label>
-                          <input
-                            id="model"
-                            className="input mono"
-                            required
-                            value={aiModel}
-                            onChange={(e) => setAiModel(e.target.value)}
-                            placeholder="claude-sonnet-4-6 / gpt-5-mini / gemini-2.5-flash / deepseek-chat"
-                          />
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <div className="input-with-action" style={{ flex: 1, position: 'relative' }}>
+                              <input
+                                ref={modelInputRef}
+                                id="model"
+                                className="input mono"
+                                required
+                                autoComplete="off"
+                                role="combobox"
+                                aria-expanded={modelMenuOpen}
+                                aria-controls="aiModelMenu"
+                                aria-autocomplete="list"
+                                value={aiModel}
+                                onFocus={() => {
+                                  setModelFilterActive(false);
+                                  setModelMenuOpen(true);
+                                  setModelHighlightIdx(-1);
+                                }}
+                                onClick={() => {
+                                  if (!modelMenuOpen) {
+                                    setModelFilterActive(false);
+                                    setModelMenuOpen(true);
+                                    setModelHighlightIdx(-1);
+                                  }
+                                }}
+                                onChange={(e) => {
+                                  setAiModel(e.target.value);
+                                  setModelFilterActive(true);
+                                  setModelMenuOpen(true);
+                                  setModelHighlightIdx(-1);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'ArrowDown') {
+                                    e.preventDefault();
+                                    if (!modelMenuOpen) {
+                                      setModelMenuOpen(true);
+                                      setModelHighlightIdx(filteredModels.length > 0 ? 0 : -1);
+                                    } else if (filteredModels.length > 0) {
+                                      setModelHighlightIdx((idx) => (idx + 1) % filteredModels.length);
+                                    }
+                                  } else if (e.key === 'ArrowUp') {
+                                    e.preventDefault();
+                                    if (modelMenuOpen && filteredModels.length > 0) {
+                                      setModelHighlightIdx((idx) => (idx <= 0 ? filteredModels.length - 1 : idx - 1));
+                                    }
+                                  } else if (e.key === 'Enter' && modelMenuOpen && modelHighlightIdx >= 0 && filteredModels[modelHighlightIdx]) {
+                                    e.preventDefault();
+                                    selectModelOption(filteredModels[modelHighlightIdx]);
+                                  } else if (e.key === 'Escape' && modelMenuOpen) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setModelMenuOpen(false);
+                                    setModelHighlightIdx(-1);
+                                  }
+                                }}
+                                placeholder="claude-sonnet-5-5 / gpt-6.2-sol / gemini-4-neon / deepseek-flash"
+                              />
+                              <button
+                                type="button"
+                                className="input-eye-btn"
+                                tabIndex={-1}
+                                title={modelMenuOpen ? '收起模型列表' : '展开模型列表'}
+                                aria-label={modelMenuOpen ? '收起模型列表' : '展开模型列表'}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setModelMenuOpen((open) => {
+                                    const next = !open;
+                                    if (next) {
+                                      setModelFilterActive(false);
+                                      setModelHighlightIdx(-1);
+                                      modelInputRef.current?.focus();
+                                    }
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <ChevronDown
+                                  size={13.5}
+                                  style={{
+                                    transform: modelMenuOpen ? 'rotate(180deg)' : undefined,
+                                    transition: 'transform 140ms ease',
+                                  }}
+                                />
+                              </button>
+
+                              {modelMenuOpen && (
+                                <div
+                                  id="aiModelMenu"
+                                  role="listbox"
+                                  className="context-menu"
+                                  style={{
+                                    position: 'absolute',
+                                    top: 'calc(100% + 4px)',
+                                    left: 0,
+                                    right: 0,
+                                    maxHeight: 210,
+                                    overflowY: 'auto',
+                                    zIndex: 60,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      padding: '4px 9px 5px',
+                                      fontSize: 11,
+                                      fontWeight: 500,
+                                      color: 'var(--ink-tertiary)',
+                                      borderBottom: '1px solid var(--border-hairline)',
+                                      marginBottom: 3,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'space-between',
+                                      gap: 8,
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    <span>
+                                      {liveModels
+                                        ? `已获取 ${liveModels.length} 个在线模型`
+                                        : '常用预设模型'}
+                                    </span>
+                                    {modelFilterActive && aiModel.trim() && (
+                                      <span className="mono" style={{ fontSize: 10.5 }}>
+                                        匹配 {filteredModels.length}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {filteredModels.length === 0 ? (
+                                    <div
+                                      style={{
+                                        padding: '8px 10px',
+                                        fontSize: 12,
+                                        color: 'var(--ink-tertiary)',
+                                      }}
+                                    >
+                                      无匹配预设，将使用自定义模型「{aiModel.trim()}」
+                                    </div>
+                                  ) : (
+                                    filteredModels.map((m, idx) => {
+                                      const selected = aiModel.trim() === m;
+                                      const highlighted = idx === modelHighlightIdx;
+                                      return (
+                                        <button
+                                          key={m}
+                                          type="button"
+                                          role="option"
+                                          aria-selected={selected}
+                                          className={`context-menu-item mono ${selected ? 'active-row' : ''}`}
+                                          style={{
+                                            justifyContent: 'space-between',
+                                            fontSize: 12,
+                                            padding: '6px 9px',
+                                            width: '100%',
+                                            flexShrink: 0,
+                                            background: !selected && highlighted ? 'var(--bg-hover)' : undefined,
+                                          }}
+                                          onMouseDown={(e) => e.preventDefault()}
+                                          onMouseEnter={() => setModelHighlightIdx(idx)}
+                                          onClick={() => selectModelOption(m)}
+                                        >
+                                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {m}
+                                          </span>
+                                          {selected && <Check size={12} style={{ flexShrink: 0 }} />}
+                                        </button>
+                                      );
+                                    })
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            <button
+                              id="fetchModelsBtn"
+                              type="button"
+                              className="btn"
+                              style={{ width: 32, height: 33, padding: 0, flexShrink: 0 }}
+                              disabled={fetchingModels || aiBusy}
+                              title="从当前 API 接口刷新可用模型列表"
+                              aria-label="刷新模型列表"
+                              onClick={() => void handleFetchModels()}
+                            >
+                              <RefreshCw size={13.5} className={fetchingModels ? 'spin' : ''} />
+                            </button>
+                          </div>
                         </div>
                         <div className="field-group">
                           <label className="field-label" htmlFor="apiKey">API 密钥</label>
@@ -967,14 +1287,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             value={aiKey}
                             onChange={(e) => setAiKey(e.target.value)}
                             placeholder={
-                              aiCfg?.hasKey && aiCfg.endpoint === aiEndpoint.trim()
+                              hasSavedKeyForEndpoint
                                 ? '已加密保存，留空沿用'
                                 : 'sk-...'
                             }
                           />
                         </div>
 
-                        {aiCfg?.hasKey && aiCfg.endpoint === aiEndpoint.trim() && !aiKey && (
+                        {hasSavedKeyForEndpoint && !aiKey && (
                           <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5 }}>
                             <input
                               type="checkbox"

@@ -100,27 +100,34 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
               )}
             </div>
             <div className="recent-grid">
-              {recentHosts.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  className="recent-card"
-                  title={
-                    hideHostIp
-                      ? `${p.user}@${formatHostDisplay(p.host, p.port, true)}`
-                      : `${p.user}@${p.host}:${p.port}`
-                  }
-                  onClick={() => onConnect(p)}
-                >
-                  <HostIcon profile={p} size="lg" />
-                  <div className="recent-card-meta">
-                    <div className="recent-card-name">{p.name}</div>
-                    <div className="recent-card-sub mono">
-                      {formatHostDisplay(p.host, p.port, hideHostIp)}
+              {recentHosts.map((p) => {
+                const displayName =
+                  p.name && (!hideHostIp || p.name !== p.host)
+                    ? p.name
+                    : hideHostIp
+                      ? p.user || 'SSH 主机'
+                      : formatHostDisplay(p.host, p.port);
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="recent-card"
+                    title={hideHostIp ? displayName : `${p.user}@${p.host}:${p.port}`}
+                    onClick={() => onConnect(p)}
+                  >
+                    <HostIcon profile={p} size="lg" />
+                    <div className="recent-card-meta">
+                      <div className="recent-card-name">{displayName}</div>
+                      <div
+                        className={`recent-card-sub mono ip-collapsible ${hideHostIp ? 'is-hidden' : ''}`}
+                        data-ip-hidden={hideHostIp ? 'true' : undefined}
+                      >
+                        {hideHostIp ? '' : formatHostDisplay(p.host, p.port)}
+                      </div>
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}

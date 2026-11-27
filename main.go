@@ -56,6 +56,9 @@ func runStdioMCPProxy() {
 }
 
 func main() {
+	if hasFlag("--apply-update") {
+		os.Exit(runApplyUpdateCLI(os.Args[1:]))
+	}
 	if hasFlag("--mcp") {
 		runStdioMCPProxy()
 		return

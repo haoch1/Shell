@@ -43,6 +43,7 @@ interface GoAppBindings {
   DuplicateProfile(id: string): Promise<Profile>;
   DeleteProfile(id: string): Promise<void>;
   DeleteProfiles(ids: string[]): Promise<void>;
+  SetProfilesGroup?(ids: string[], group: string): Promise<void>;
   ClearRecentHosts(): Promise<void>;
   ForgetSecret(id: string): Promise<void>;
   PickKey(): Promise<string>;
@@ -108,6 +109,7 @@ interface GoAppBindings {
   DetectAICLIs(): Promise<DetectedAICLI[]>;
   SaveAIConfig(cfg: AIConfigInput): Promise<void>;
   TestAIConfig(cfg: AIConfigInput): Promise<void>;
+  FetchAIModels?(cfg: AIConfigInput): Promise<string[]>;
   ConfigureAI(endpoint: string, model: string, key: string, keep: boolean): Promise<void>;
   TestAI(endpoint: string, model: string, key: string, keep: boolean): Promise<void>;
   CancelAI(): Promise<void>;

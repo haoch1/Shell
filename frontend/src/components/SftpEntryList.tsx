@@ -32,8 +32,8 @@ export const SftpEntryList = memo(function SftpEntryList({ entries, busy, filter
   });
   useLayoutEffect(() => {
     setSelected(-1);
-    if (viewport.current) viewport.current.scrollTop = 0;
-  }, [entries]);
+    list.scrollToOffset(0);
+  }, [entries, list]);
 
   const onKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!entries.length || event.ctrlKey || event.metaKey || event.altKey || event.target !== viewport.current) return;

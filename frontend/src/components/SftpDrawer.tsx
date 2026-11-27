@@ -365,7 +365,8 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
         {err && <p className="error-text">{err}</p>}
       </div>
 
-      <SftpEntryList key={dir} entries={visibleEntries} busy={loading && entries.length === 0}
+      <SftpEntryList key={JSON.stringify([dir, sortBy, deferredFilter, showHidden])}
+        entries={visibleEntries} busy={loading && entries.length === 0}
         filtered={Boolean(deferredFilter.trim())} onAction={handleRowAction} />
 
       {sessionTransfers.length > 0 && (

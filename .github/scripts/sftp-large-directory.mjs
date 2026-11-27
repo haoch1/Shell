@@ -61,10 +61,29 @@ export async function verifyLargeDirectory(evaluate, until, { baseline = false }
       const input = document.querySelector('.sftp-toolbar input[placeholder]');
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '');
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      const sort = document.querySelector('#filesPane select');
-      sort.value = 'size'; sort.dispatchEvent(new Event('change', { bubbles: true }));
     })()`);
-    await until(() => evaluate("document.querySelector('.sftp-grid')?.getAttribute('aria-rowcount') === '5000' && document.querySelector('.sftp-row-name')?.title === 'item-04999'"), 'size sorting');
+    async function checkOrder(first, sortBy, label) {
+      await until(async () => {
+        const state = await evaluate(`(() => {
+          const grid = document.querySelector('#filesPane .sftp-grid');
+          const firstRow = grid?.querySelector('[aria-rowindex="1"]');
+          return { sort: document.querySelector('#filesPane select')?.value,
+            filter: document.querySelector('.sftp-toolbar input[placeholder]')?.value,
+            count: grid?.getAttribute('aria-rowcount'), scroll: grid?.scrollTop,
+            first: firstRow?.querySelector('.sftp-row-name')?.title,
+            firstMountedIndex: grid?.querySelector('.sftp-row')?.getAttribute('aria-rowindex') };
+        })()`);
+        if (state.sort === sortBy && state.count === String(rows) && state.first === first && state.scroll === 0) return true;
+        throw Error(JSON.stringify(state));
+      }, label);
+    }
+    await checkOrder('item-00000', 'name', 'clearing the directory filter after End');
+    await evaluate(`(() => {
+      const sort = document.querySelector('#filesPane select[aria-label="排序方式"]');
+      sort.value = 'size';
+      sort.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await checkOrder('item-04999', 'size', 'size sorting');
     await evaluate(`document.querySelector('#filesPane button[title="显示隐藏文件"]').click()`);
     await until(() => evaluate("document.querySelector('.sftp-grid')?.getAttribute('aria-rowcount') === '5001'"), 'hidden-file toggle');
     assert.deepEqual(await evaluate('({ browse: window.sftpFixture.browseCalls, links: window.sftpFixture.linkCalls })'),

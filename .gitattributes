@@ -1,0 +1,9 @@
+* text=auto
+*.go text eol=lf
+*.js text eol=lf
+*.rc text eol=crlf
+*.yml text eol=lf
+*.ico binary
+frontend/dist/vendor/** -text
+frontend/dist/icons/** -text
+LICENSES/** -text

@@ -1,0 +1,161 @@
+name: Build & Release Windows Client
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - '**/*.md'
+    tags: ['v*']
+  pull_request:
+    paths-ignore:
+      - 'README.md'
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '可选：手动指定发布 Release 的标签（例如 v1.0.0）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: shell-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CGO_ENABLED: '0'
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Set up cached Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache-dependency-path: go.sum
+
+      - name: Verify Go dependencies
+        run: |
+          go mod download
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          go mod verify
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git diff --exit-code -- go.mod go.sum
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Run Windows unit and integration tests
+        run: |
+          go test -count=1 -timeout=3m -tags desktop,production,wv2runtime.download ./...
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Determine release version
+        id: meta
+        run: |
+          $tag = ''
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $tag = '${{ github.ref_name }}'
+          } elseif ('${{ inputs.release_tag }}') {
+            $tag = '${{ inputs.release_tag }}'
+          }
+          $ver = if ($tag) { $tag.TrimStart('v') } else { '1.0.0' }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Compile and package Windows x64 executable
+        run: ./.github/scripts/package-windows.ps1 -Version '${{ steps.meta.outputs.version }}'
+
+      - name: Exercise packaged WebView2 application (CDP Smoke Test)
+        run: |
+          $runtimes = @("${env:ProgramFiles(x86)}/Microsoft/EdgeWebView/Application/*/msedgewebview2.exe",
+                        "$env:LOCALAPPDATA/Microsoft/EdgeWebView/Application/*/msedgewebview2.exe")
+          if (!(Get-Item -Path $runtimes -ErrorAction SilentlyContinue)) {
+            $installer = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+            Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $installer
+            $signature = Get-AuthenticodeSignature -LiteralPath $installer
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*CN=Microsoft Corporation*') { throw 'Unexpected WebView2 bootstrapper signature.' }
+            $setup = Start-Process -FilePath $installer -ArgumentList '/silent','/install' -WindowStyle Hidden -Wait -PassThru
+            if ($setup.ExitCode) { throw "WebView2 setup exited $($setup.ExitCode)." }
+          }
+          node .github/scripts/smoke-windows.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Upload portable package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shell-Windows-x64
+          path: build/release/
+          if-no-files-found: error
+
+      - name: Upload UI verification screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shell-Preview
+          path: build/preview/*.png
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.meta.outputs.tag }}'
+          $notes = @'
+          ## Shell __TAG__
+
+          面向 Windows 的轻量原生 SSH / SFTP 桌面客户端（Go 1.26 + Wails v2 + xterm.js v6）。
+
+          ### 核心特性
+          - **SSH 引擎与网络传输**：支持密码 / 私钥 / Windows OpenSSH Agent / 交互式 2FA、多级跳板机（`ProxyJump`）、`ForwardAgent`、按主机配置的 SOCKS5 / HTTP `CONNECT` 代理、KeepAlive 与 RTT 延迟监控。
+          - **终端工作区与系统托盘**：支持多标签页、递归水平/垂直分屏、广播输入、`Ctrl+K` 全局命令面板、OSC 7 目录追踪；内置纯 Go Windows 原生系统托盘（关闭最小化至托盘、快速连接子菜单、活跃会话管理与 MCP 开关）。
+          - **SFTP、端口转发与状态监控**：侧边 SFTP 文件管理（拖放上传、进度队列、`chmod`、在线编辑）、`-L / -R / -D` 端口转发隧道、轻量 Linux 实时监控、Ed25519 / RSA-4096 密钥生成及 `AES-256-GCM` 加密备份。
+          - **通用配置导入**：自动识别 Xshell、MobaXterm、Termius、Tabby、Electerm、SecureCRT、PuTTY/KiTTY、WindTerm、FinalShell、OpenSSH `config` 及 CSV/JSON/纯文本，保留原有分组。
+          - **AI 助手与 MCP 集成**：支持自定义 OpenAI 兼容 API（写命令 / 查报错 / 自动运维）及内置 MCP `2025-03-26` 本地桥接服务（Streamable HTTP + `Shell.exe --mcp` stdio），配套结构化命令权限引擎、自动敏感信息脱敏、交互审批弹窗与 JSONL 审计日志。
+
+          ### 发行产物
+          - `Shell-Windows-x64.exe`：单文件便携版可执行程序（无需安装）
+          - `Shell-Windows-x64.zip`：便携压缩包（含可执行文件、说明文档与开源许可）
+          - `SHA256SUMS.txt`：SHA-256 校验值文件
+          '@
+          $notes = $notes.Replace('__TAG__', $tag)
+          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $notes | Set-Content -LiteralPath $notesFile -Encoding utf8
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag build/release/Shell-Windows-x64.exe build/release/Shell-Windows-x64.zip build/release/SHA256SUMS.txt --clobber --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            gh release edit $tag --title "Shell $tag" --notes-file $notesFile --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          } else {
+            gh release create $tag build/release/Shell-Windows-x64.exe build/release/Shell-Windows-x64.zip build/release/SHA256SUMS.txt --title "Shell $tag" --notes-file $notesFile --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }

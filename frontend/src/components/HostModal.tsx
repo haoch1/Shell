@@ -14,6 +14,10 @@ interface HostModalProps {
   onDelete?: (p: Profile) => void;
 }
 
+function credentialTarget(p: Pick<Profile, 'host' | 'port' | 'user' | 'auth' | 'keyPath'>) {
+  return JSON.stringify([p.host.trim().toLowerCase(), p.port, p.user.trim(), p.auth, p.auth === 'key' ? p.keyPath?.trim() || '' : '']);
+}
+
 export const HostModal: React.FC<HostModalProps> = ({
   profile,
   allProfiles,
@@ -29,8 +33,14 @@ export const HostModal: React.FC<HostModalProps> = ({
   const [user, setUser] = useState(profile?.user ?? 'root');
   const [auth, setAuth] = useState<AuthMode>(profile?.auth ?? 'password');
   const [keyPath, setKeyPath] = useState(profile?.keyPath ?? '');
-  const [secret, setSecret] = useState('');
-  const [secretTouched, setSecretTouched] = useState(false);
+  const [{ value: secret, touched: secretTouched }, setCredential] = useState({ value: '', touched: false });
+  const changeSecret = (value: string) => setCredential({ value, touched: true });
+  const [approvedTarget, setApprovedTarget] = useState('');
+  const target = credentialTarget({ host, port: Number(port || 22), user, auth, keyPath });
+  const hasSaved = Boolean(profile?.remembered && auth === profile.auth && auth !== 'agent' && !secretTouched);
+  const changedTarget = Boolean(hasSaved && profile && target !== credentialTarget(profile));
+  const keepExisting = hasSaved && (!changedTarget || approvedTarget === target);
+  const visibleSecret = secretTouched || keepExisting ? secret : '';
   const [showSecret, setShowSecret] = useState(false);
   const [remember, setRemember] = useState(profile?.id ? Boolean(profile.remembered) : true);
   const [group, setGroup] = useState(profile?.group ?? '');
@@ -64,7 +74,7 @@ export const HostModal: React.FC<HostModalProps> = ({
       .GetProfileSecret?.(profile.id)
       .then((val) => {
         if (!canceled && val) {
-          setSecret(val);
+          setCredential((current) => current.touched ? current : { value: val, touched: false });
         }
       })
       .catch(() => {});
@@ -134,8 +144,11 @@ export const HostModal: React.FC<HostModalProps> = ({
         lastUsedAt: profile?.lastUsedAt,
         remembered: profile?.remembered,
       };
-      const keepExisting = Boolean(profile?.remembered && !secretTouched && auth === profile?.auth);
-      await onSave(payload, secret, auth !== 'agent' && remember, keepExisting, andConnect);
+      let submittedSecret = secretTouched ? secret : '';
+      if (andConnect && keepExisting && !remember && profile) {
+        submittedSecret = secret || await getApi().GetProfileSecret(profile.id);
+      }
+      await onSave(payload, submittedSecret, auth !== 'agent' && remember, keepExisting, andConnect);
     } catch (e) {
       setErr(errorMessage(e));
     } finally {
@@ -236,10 +249,9 @@ export const HostModal: React.FC<HostModalProps> = ({
                         data-auth={m}
                         className={auth === m ? 'active' : ''}
                         onClick={() => {
-                          setAuth(m);
-                          if (m !== profile?.auth) {
-                            setSecret('');
-                            setSecretTouched(true);
+                          if (m !== auth) {
+                            setAuth(m);
+                            changeSecret('');
                           }
                         }}
                       >
@@ -260,17 +272,14 @@ export const HostModal: React.FC<HostModalProps> = ({
                       className="input"
                       autoComplete="off"
                       placeholder={
-                        profile?.remembered && !secretTouched
+                        keepExisting
                           ? '已加密保存，留空沿用'
                           : '可留空（键盘交互 / 2FA）'
                       }
-                      value={secret}
-                      onChange={(e) => {
-                        setSecret(e.target.value);
-                        setSecretTouched(true);
-                      }}
+                      value={visibleSecret}
+                      onChange={(e) => changeSecret(e.target.value)}
                     />
-                    {secret && (
+                    {visibleSecret && (
                       <button
                         type="button"
                         className="input-eye-btn"
@@ -311,15 +320,12 @@ export const HostModal: React.FC<HostModalProps> = ({
                         className="input"
                         autoComplete="off"
                         placeholder={
-                          profile?.remembered && !secretTouched ? '已加密保存，留空沿用' : '输入私钥解锁口令'
+                          keepExisting ? '已加密保存，留空沿用' : '输入私钥解锁口令'
                         }
-                        value={secret}
-                        onChange={(e) => {
-                          setSecret(e.target.value);
-                          setSecretTouched(true);
-                        }}
+                        value={visibleSecret}
+                        onChange={(e) => changeSecret(e.target.value)}
                       />
-                      {secret && (
+                      {visibleSecret && (
                         <button
                           type="button"
                           className="input-eye-btn"
@@ -338,6 +344,18 @@ export const HostModal: React.FC<HostModalProps> = ({
                 <div className="soft-card" style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>
                   将使用本机 Windows OpenSSH Agent（<span className="mono">\\.\pipe\openssh-ssh-agent</span>）中已加载的密钥进行免密认证。
                 </div>
+              )}
+
+              {changedTarget && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
+                  <input
+                    id="reuseSavedCredential"
+                    type="checkbox"
+                    checked={approvedTarget === target}
+                    onChange={(e) => setApprovedTarget(e.target.checked ? target : '')}
+                  />
+                  <span>在新连接上沿用已保存的凭据</span>
+                </label>
               )}
 
               {auth !== 'agent' && (

@@ -18,28 +18,33 @@ export const RemoteEditorModal: React.FC<RemoteEditorModalProps> = ({
   onToast,
 }) => {
   const [content, setContent] = useState('');
-  const [original, setOriginal] = useState('');
+  const [original, setOriginal] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
   useEffect(() => {
+    let current = true;
     setLoading(true);
+    setOriginal(null);
+    setContent('');
     setErr('');
     void getApi()
       .ReadRemoteText(sessionId, remotePath)
       .then((text) => {
+        if (!current) return;
         setContent(text);
         setOriginal(text);
       })
-      .catch((e) => setErr(errorMessage(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => { if (current) setErr(errorMessage(e)); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
   }, [sessionId, remotePath]);
 
-  const dirty = content !== original;
+  const dirty = original !== null && content !== original;
 
   const save = async () => {
-    if (saving || loading) return;
+    if (saving || loading || !dirty) return;
     setSaving(true);
     setErr('');
     try {
@@ -112,14 +117,14 @@ export const RemoteEditorModal: React.FC<RemoteEditorModalProps> = ({
         <div className="code-editor-wrap">
           {loading ? (
             <div style={{ margin: 'auto', color: 'var(--ink-tertiary)' }}>正在读取远端文件…</div>
-          ) : (
+          ) : original !== null ? (
             <textarea
               className="code-editor-textarea"
               spellCheck={false}
               value={content}
               onChange={(e) => setContent(e.target.value)}
             />
-          )}
+          ) : null}
         </div>
 
         <div className="modal-footer" style={{ justifyContent: 'space-between', padding: '8px 20px', fontSize: 11.5, color: 'var(--ink-tertiary)' }}>

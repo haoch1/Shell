@@ -33,6 +33,7 @@ interface GoAppBindings {
   CheckForUpdate(): Promise<UpdateInfo>;
   DownloadAndApplyUpdate(): Promise<void>;
   TermWSURL(sessionId: string): Promise<string>;
+  CancelVisibleConnect(profileId: string): Promise<void>;
   Profiles(): Promise<Profile[]>;
   SaveProfile(p: Profile): Promise<Profile>;
   GetProfileSecret(id: string): Promise<string>;

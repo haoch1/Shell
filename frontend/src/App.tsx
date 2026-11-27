@@ -20,6 +20,7 @@ import type {
 import { errorMessage, getApi, hasDesktopBridge, onDesktopEvent } from './lib/bridge';
 import { syncTerminalThemeForAppearance } from './lib/themes';
 import { decodeBase64, encodeBase64, terminalBus } from './lib/terminalBus';
+import { connectIfOpen, reconnectSecret, sameSessionTarget } from './lib/sessionAttempt';
 import {
   collectLeaves,
   randomId,
@@ -70,6 +71,7 @@ export const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatusView | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [tabs, setTabs] = useState<WorkspaceTab[]>([]);
@@ -79,10 +81,19 @@ export const App: React.FC = () => {
   const [searchOpen, setSearchOpen] = useState(false);
 
   // Modals
-  const [hostModal, setHostModal] = useState<{ open: boolean; profile: Profile | null }>({
+  const [hostModal, updateHostModal] = useState<{ open: boolean; profile: Profile | null }>({
     open: false,
     profile: null,
   });
+  const promptForVisibleConnect = useRef('');
+  const setHostModal = useCallback((next: typeof hostModal, requestedProfile = '') => {
+    const previous = promptForVisibleConnect.current;
+    promptForVisibleConnect.current = requestedProfile;
+    if (previous && previous !== requestedProfile) {
+      void getApi().CancelVisibleConnect(previous).catch(() => {});
+    }
+    updateHostModal(next);
+  }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [settingsModal, setSettingsModal] = useState<{ open: boolean; tab: SettingsTab }>({
@@ -113,6 +124,7 @@ export const App: React.FC = () => {
 
   const writeChainsRef = useRef<Map<string, Promise<void>>>(new Map());
   const wsMapRef = useRef<Map<string, WebSocket>>(new Map());
+  const connectingRef = useRef(new Map<string, { controller: AbortController; requestedProfile: string }>());
   const lastSizeRef = useRef<Map<string, string>>(new Map());
   const lastConnectAtRef = useRef<Map<string, number>>(new Map());
   const autoCheckedRef = useRef(false);
@@ -154,12 +166,15 @@ export const App: React.FC = () => {
     const [profs, snips, cfg, agSt] = await Promise.all([
       api.Profiles().catch(() => []),
       api.Snippets().catch(() => []),
-      api.GetSettings().catch(() => DEFAULT_SETTINGS),
+      api.GetSettings().catch(() => null),
       api.GetAgentStatus().catch(() => null),
     ]);
     setProfiles(profs || []);
     setSnippets(snips || []);
-    setSettings({ ...DEFAULT_SETTINGS, ...cfg });
+    if (cfg) {
+      setSettings({ ...DEFAULT_SETTINGS, ...cfg });
+      setSettingsLoaded(true);
+    }
     if (agSt) setAgentStatus(agSt);
   }, []);
 
@@ -168,12 +183,12 @@ export const App: React.FC = () => {
   }, [reloadData]);
 
   // Attach a low-latency binary WebSocket stream for a session (falls back cleanly to Wails IPC in mock mode).
-  const attachSessionWS = useCallback(async (sessionId: string) => {
+  const attachSessionWS = useCallback(async (sessionId: string, signal: AbortSignal) => {
     try {
       const api = getApi();
       if (typeof api.TermWSURL !== 'function') return;
       const url = await api.TermWSURL(sessionId);
-      if (!url) return;
+      if (!url || signal.aborted) return;
       const existing = wsMapRef.current.get(sessionId);
       if (existing) {
         existing.close();
@@ -181,6 +196,7 @@ export const App: React.FC = () => {
       }
       await new Promise<void>((resolve) => {
         const ws = new WebSocket(url);
+        wsMapRef.current.set(sessionId, ws);
         ws.binaryType = 'arraybuffer';
         let settled = false;
         const done = () => {
@@ -192,11 +208,10 @@ export const App: React.FC = () => {
         const timer = window.setTimeout(done, 120);
         ws.onopen = () => {
           window.clearTimeout(timer);
-          wsMapRef.current.set(sessionId, ws);
           done();
         };
         ws.onmessage = (ev) => {
-          if (ev.data instanceof ArrayBuffer) {
+          if (!signal.aborted && wsMapRef.current.get(sessionId) === ws && ev.data instanceof ArrayBuffer) {
             terminalBus.writeBytes(sessionId, new Uint8Array(ev.data));
           }
         };
@@ -205,6 +220,8 @@ export const App: React.FC = () => {
           done();
         };
         ws.onclose = () => {
+          window.clearTimeout(timer);
+          done();
           if (wsMapRef.current.get(sessionId) === ws) {
             wsMapRef.current.delete(sessionId);
           }
@@ -217,63 +234,73 @@ export const App: React.FC = () => {
 
   // Start an SSH connection for a newly allocated session ID
   const startSSHConnection = useCallback(
-    (sessionId: string, profile: Profile, secret: string, remember: boolean) => {
-      const api = getApi();
-      const ctrl = terminalBus.get(sessionId);
-      const cols = ctrl?.term.cols || 100;
-      const rows = ctrl?.term.rows || 32;
+    (sessionId: string, profile: Profile, secret: string, remember: boolean, requestedProfile = '') => {
+      const attempt = new AbortController();
+      connectingRef.current.set(sessionId, { controller: attempt, requestedProfile });
+      requestAnimationFrame(async () => {
+        const api = getApi();
+        const ctrl = terminalBus.get(sessionId);
+        const cols = ctrl?.term.cols || 100;
+        const rows = ctrl?.term.rows || 32;
 
-      void attachSessionWS(sessionId).then(() =>
-        api
-          .Connect(sessionId, profile, secret, remember, cols, rows)
-          .then(() => {
-            setSessions((prev) => {
-              const cur = prev[sessionId];
-              if (!cur || cur.state !== 'connecting') return prev;
-              return { ...prev, [sessionId]: { ...cur, state: 'connected', startedAt: Date.now() } };
-            });
-            const latestCtrl = terminalBus.get(sessionId);
-            if (latestCtrl) {
-              latestCtrl.fit();
-              latestCtrl.focus();
-              const nextSizeKey = `${latestCtrl.term.cols}x${latestCtrl.term.rows}`;
-              lastSizeRef.current.set(sessionId, nextSizeKey);
-              if (latestCtrl.term.cols !== cols || latestCtrl.term.rows !== rows) {
-                void api.Resize(sessionId, latestCtrl.term.cols, latestCtrl.term.rows).catch(() => {});
-              }
+        try {
+          const opened = await connectIfOpen(
+            attempt.signal,
+            () => attachSessionWS(sessionId, attempt.signal),
+            () => api.Connect(sessionId, profile, secret, remember, cols, rows),
+            () => api.Disconnect(sessionId),
+          );
+          if (!opened) return;
+          setSessions((prev) => {
+            const cur = prev[sessionId];
+            if (!cur || cur.state !== 'connecting') return prev;
+            return { ...prev, [sessionId]: { ...cur, state: 'connected', startedAt: Date.now() } };
+          });
+          const latestCtrl = terminalBus.get(sessionId);
+          if (latestCtrl) {
+            latestCtrl.fit();
+            const nextSizeKey = `${latestCtrl.term.cols}x${latestCtrl.term.rows}`;
+            lastSizeRef.current.set(sessionId, nextSizeKey);
+            if (latestCtrl.term.cols !== cols || latestCtrl.term.rows !== rows) {
+              void api.Resize(sessionId, latestCtrl.term.cols, latestCtrl.term.rows).catch(() => {});
             }
-            void api
-              .ListTunnels(sessionId)
-              .then((ts) =>
-                setTunnelsCountBySession((prev) => ({
-                  ...prev,
-                  [sessionId]: (ts || []).filter((t) => t.active).length,
-                })),
-              )
-              .catch(() => {});
-            void api.Profiles().then(setProfiles).catch(() => {});
-          })
-          .catch((err) => {
-            const msg = errorMessage(err);
-            const ws = wsMapRef.current.get(sessionId);
-            if (ws) {
-              ws.close();
-              wsMapRef.current.delete(sessionId);
-            }
-            setSessions((prev) => {
-              const cur = prev[sessionId];
-              if (!cur) return prev;
-              return { ...prev, [sessionId]: { ...cur, state: 'closed', endMessage: msg } };
-            });
-            terminalBus.writeln(sessionId, `\r\n\x1b[31m连接失败：${msg}\x1b[0m`);
-          }),
-      );
+          }
+          void api
+            .ListTunnels(sessionId)
+            .then((ts) =>
+              setTunnelsCountBySession((prev) => ({
+                ...prev,
+                [sessionId]: (ts || []).filter((t) => t.active).length,
+              })),
+            )
+            .catch(() => {});
+          void api.Profiles().then(setProfiles).catch(() => {});
+        } catch (err) {
+          if (attempt.signal.aborted) return;
+          setVerifyQueue((q) => q.filter((r) => r.id !== sessionId));
+          setChallengeQueue((q) => q.filter((r) => r.id !== sessionId));
+          const msg = errorMessage(err);
+          const ws = wsMapRef.current.get(sessionId);
+          if (ws) {
+            ws.close();
+            wsMapRef.current.delete(sessionId);
+          }
+          setSessions((prev) => {
+            const cur = prev[sessionId];
+            if (!cur) return prev;
+            return { ...prev, [sessionId]: { ...cur, state: 'closed', endMessage: msg } };
+          });
+          terminalBus.writeln(sessionId, `\r\n\x1b[31m连接失败：${msg}\x1b[0m`);
+        } finally {
+          connectingRef.current.delete(sessionId);
+        }
+      });
     },
     [attachSessionWS],
   );
 
   const openSessionInNewTab = useCallback(
-    (profile: Profile, secret = '', remember = Boolean(profile.remembered)) => {
+    (profile: Profile, secret = '', remember = Boolean(profile.remembered), requestedProfile = '') => {
       const sessionId = randomId();
       const paneId = randomId();
       const tabId = randomId();
@@ -301,22 +328,25 @@ export const App: React.FC = () => {
         },
       ]);
       setActiveTabId(tabId);
-      requestAnimationFrame(() => startSSHConnection(sessionId, profile, secret, remember));
+      startSSHConnection(sessionId, profile, secret, remember, requestedProfile);
     },
     [startSSHConnection],
   );
 
   const connectOrPromptProfile = useCallback(
-    (profile: Profile, forceNew = false) => {
+    (profile: Profile, forceNew = false, requestedProfile = '') => {
       if (!forceNew && profile.id) {
         // Focus existing live or connecting tab for this host instead of spawning duplicates on double-click.
         for (const tab of tabsRef.current) {
           const leaves = collectLeaves(tab.root);
           const match = leaves.find((l) => {
             const s = sessionsRef.current[l.sessionId];
-            return s && s.profile.id === profile.id && (s.state === 'connected' || s.state === 'connecting');
+            if (!s || !sameSessionTarget(s.profile, profile)) return false;
+            return s.state === 'connecting' || (!requestedProfile && s.state === 'connected');
           });
           if (match) {
+            const attempt = connectingRef.current.get(match.sessionId);
+            if (attempt && requestedProfile) attempt.requestedProfile = requestedProfile;
             setActiveTabId(tab.id);
             setTabs((prev) =>
               prev.map((t) => (t.id === tab.id ? { ...t, activePaneId: match.paneId } : t)),
@@ -328,19 +358,19 @@ export const App: React.FC = () => {
         // Anti-double-click guard before React commits the new tab state.
         const now = Date.now();
         const prev = lastConnectAtRef.current.get(profile.id) ?? 0;
-        if (now - prev < 750) {
+        if (!requestedProfile && now - prev < 750 && (profile.auth === 'agent' || profile.remembered)) {
           return;
         }
         lastConnectAtRef.current.set(profile.id, now);
       }
 
       if (profile.auth === 'agent' || profile.remembered) {
-        openSessionInNewTab(profile, '', Boolean(profile.remembered));
+        openSessionInNewTab(profile, '', Boolean(profile.remembered), requestedProfile);
       } else {
-        setHostModal({ open: true, profile });
+        setHostModal({ open: true, profile }, requestedProfile);
       }
     },
-    [openSessionInNewTab],
+    [openSessionInNewTab, setHostModal],
   );
 
   const handleClearRecent = useCallback(async () => {
@@ -399,13 +429,13 @@ export const App: React.FC = () => {
 
   // Automatic background update check once after startup when enabled.
   useEffect(() => {
-    if (autoCheckedRef.current || settings.autoCheckUpdate === false || !hasDesktopBridge()) return;
-    autoCheckedRef.current = true;
+    if (!settingsLoaded || autoCheckedRef.current || settings.autoCheckUpdate === false || !hasDesktopBridge()) return;
     const timer = window.setTimeout(() => {
+      autoCheckedRef.current = true;
       void handleCheckUpdate(true);
     }, 3200);
     return () => window.clearTimeout(timer);
-  }, [settings.autoCheckUpdate, handleCheckUpdate]);
+  }, [settingsLoaded, settings.autoCheckUpdate, handleCheckUpdate]);
 
   // Subscribe to in-app update download/verify progress.
   useEffect(() => {
@@ -459,10 +489,16 @@ export const App: React.FC = () => {
       onDesktopEvent<[AgentApprovalRequest]>('agent:approval', (req) => {
         setApprovalQueue((q) => [...q, req]);
       }),
-      onDesktopEvent<[string]>('agent:connect_profile', (profileId) => {
-        const target = profilesRef.current.find((p) => p.id === profileId);
+      onDesktopEvent<[string, boolean?]>('agent:connect_profile', async (profileId, fromMcp) => {
+        let target = profilesRef.current.find((p) => p.id === profileId);
+        if (fromMcp || !target) {
+          const saved = await getApi().Profiles().catch(() => []);
+          target = saved?.find((p) => p.id === profileId);
+        }
         if (target) {
-          connectOrPromptProfile(target, false);
+          connectOrPromptProfile(target, false, fromMcp ? profileId : '');
+        } else if (fromMcp) {
+          void getApi().CancelVisibleConnect(profileId).catch(() => {});
         }
       }),
       onDesktopEvent<[string]>('agent:focus_session', (sessionId) => {
@@ -558,12 +594,11 @@ export const App: React.FC = () => {
         const now = Date.now();
         if (prevNet && st.netRxBytes >= prevNet.rx && st.netTxBytes >= prevNet.tx) {
           const dt = Math.max(0.5, (now - prevNet.ts) / 1000);
+          const rxPerSec = Math.round((st.netRxBytes - prevNet.rx) / dt);
+          const txPerSec = Math.round((st.netTxBytes - prevNet.tx) / dt);
           setNetRateBySession((prev) => ({
             ...prev,
-            [sid]: {
-              rxPerSec: Math.round((st.netRxBytes - prevNet!.rx) / dt),
-              txPerSec: Math.round((st.netTxBytes - prevNet!.tx) / dt),
-            },
+            [sid]: { rxPerSec, txPerSec },
           }));
         }
         prevNet = { rx: st.netRxBytes, tx: st.netTxBytes, ts: now };
@@ -674,6 +709,10 @@ export const App: React.FC = () => {
   }, []);
 
   const closeSessionBackend = useCallback((sessionId: string) => {
+    const attempt = connectingRef.current.get(sessionId);
+    attempt?.controller.abort();
+    if (attempt?.requestedProfile) void getApi().CancelVisibleConnect(attempt.requestedProfile).catch(() => {});
+    connectingRef.current.delete(sessionId);
     const ws = wsMapRef.current.get(sessionId);
     if (ws) {
       ws.close();
@@ -780,13 +819,11 @@ export const App: React.FC = () => {
             : t,
         ),
       );
-      requestAnimationFrame(() =>
-        startSSHConnection(
-          newSessionId,
-          sourceSession.profile,
-          sourceSession.secret ?? '',
-          Boolean(sourceSession.remember ?? sourceSession.profile.remembered),
-        ),
+      startSSHConnection(
+        newSessionId,
+        sourceSession.profile,
+        sourceSession.secret ?? '',
+        Boolean(sourceSession.remember ?? sourceSession.profile.remembered),
       );
     },
     [startSSHConnection, toast],
@@ -830,6 +867,12 @@ export const App: React.FC = () => {
       const old = sessionsRef.current[oldSessionId];
       if (!old) return;
       const latestProfile = profiles.find((p) => p.id === old.profile.id) ?? old.profile;
+      const secret = reconnectSecret(old, latestProfile);
+      if (secret === null) {
+        setHostModal({ open: true, profile: latestProfile });
+        return;
+      }
+      const remember = Boolean(latestProfile.remembered);
       const newSessionId = randomId();
       closeSessionBackend(oldSessionId);
       const rec: SessionRecord = {
@@ -837,26 +880,19 @@ export const App: React.FC = () => {
         profile: latestProfile,
         state: 'connecting',
         startedAt: Date.now(),
-        dir: old.dir,
+        dir: sameSessionTarget(old.profile, latestProfile) ? old.dir : '.',
         cols: old.cols,
         rows: old.rows,
-        secret: old.secret,
-        remember: Boolean(latestProfile.remembered || old.remember),
+        secret,
+        remember,
       };
       setSessions((prev) => ({ ...prev, [newSessionId]: rec }));
       setTabs((prev) =>
         prev.map((t) => (t.id === tabId ? { ...t, root: replacePaneSession(t.root, paneId, newSessionId) } : t)),
       );
-      requestAnimationFrame(() =>
-        startSSHConnection(
-          newSessionId,
-          latestProfile,
-          old.secret ?? '',
-          Boolean(latestProfile.remembered || old.remember),
-        ),
-      );
+      startSSHConnection(newSessionId, latestProfile, secret, remember);
     },
-    [closeSessionBackend, profiles, startSSHConnection],
+    [closeSessionBackend, profiles, setHostModal, startSSHConnection],
   );
 
   const sendCommandToActive = useCallback(
@@ -945,13 +981,18 @@ export const App: React.FC = () => {
       typeof api.SaveProfileWithSecret === 'function'
         ? await api.SaveProfileWithSecret(p, secret, remember, keepExisting)
         : await api.SaveProfile(p);
+    let requestedProfile = '';
+    if (andConnect && promptForVisibleConnect.current === stored.id && hostModal.profile && sameSessionTarget(stored, hostModal.profile)) {
+      requestedProfile = stored.id;
+      promptForVisibleConnect.current = '';
+    }
     setHostModal({ open: false, profile: null });
-    await reloadData();
     if (andConnect) {
-      openSessionInNewTab(stored, secret, remember);
+      openSessionInNewTab(stored, secret, remember, requestedProfile);
     } else {
       toast(`已保存主机「${stored.name}」`);
     }
+    await reloadData();
   };
 
   const handleDeleteHost = async (p: Profile) => {
@@ -1143,6 +1184,7 @@ export const App: React.FC = () => {
 
             {drawer === 'sftp' && activeSession?.state === 'connected' && (
               <SftpDrawer
+                key={activeSession.id}
                 session={activeSession}
                 transfers={transfers}
                 onClose={() => setDrawer('none')}
@@ -1158,6 +1200,7 @@ export const App: React.FC = () => {
 
             {drawer === 'tunnels' && activeSession?.state === 'connected' && (
               <TunnelsDrawer
+                key={activeSession.id}
                 session={activeSession}
                 profile={activeProfile}
                 onClose={() => setDrawer('none')}
@@ -1232,6 +1275,7 @@ export const App: React.FC = () => {
 
       {hostModal.open && (
         <HostModal
+          key={hostModal.profile?.id || 'new-host'}
           profile={hostModal.profile}
           allProfiles={profiles}
           existingGroups={existingGroups}
@@ -1305,6 +1349,7 @@ export const App: React.FC = () => {
 
       {editorTarget && (
         <RemoteEditorModal
+          key={JSON.stringify([editorTarget.sessionId, editorTarget.remotePath])}
           sessionId={editorTarget.sessionId}
           remotePath={editorTarget.remotePath}
           onClose={() => setEditorTarget(null)}

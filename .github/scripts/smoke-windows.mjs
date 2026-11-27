@@ -128,6 +128,7 @@ const BRIDGE_MOCK_SCRIPT = `
     { id: 's5', name: '校验并重载 Nginx', category: '服务', command: 'sudo nginx -t && sudo systemctl reload nginx', description: '先校验再重载' }
   ];
   window.runtime = {
+    EventsEmit: emit,
     EventsOn(ev, cb) {
       if (!listeners.has(ev)) listeners.set(ev, new Set());
       listeners.get(ev).add(cb);
@@ -459,6 +460,37 @@ async function verifyFrontendUI() {
     await until(() => evaluate("!!document.querySelector('#keyPath')"), 'private key form');
     await click('#connectDialog [data-close]');
 
+    // A stored password may follow an address change only if the user selects it.
+    await evaluate(`document.querySelector('.host-row[title^="root@"] button[title="编辑主机"]').click()`);
+    await until(() => evaluate("Boolean(document.querySelector('#password')?.value)"), 'saved test credential');
+    await evaluate(`(() => {
+      const address = document.querySelector('#address');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(address, 'new.example');
+      address.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await until(() => evaluate("!!document.querySelector('#reuseSavedCredential')"), 'changed target credential choice');
+    assert.equal(await evaluate("document.querySelector('#password').value"), '', 'Changed host must default to an empty credential');
+    await click('#reuseSavedCredential');
+    assert.ok(await evaluate("Boolean(document.querySelector('#password').value)"), 'Explicit reuse should restore the saved test credential');
+    await click('#connectDialog [data-close]');
+
+    // The tray and MCP share an event, but only MCP waits for the credential dialog.
+    await evaluate(`(() => {
+      const api = window.go.main.App;
+      window.canceledProfileIds = [];
+      api.CancelVisibleConnect = async id => { window.canceledProfileIds.push(id); };
+      const profiles = api.Profiles;
+      window.restoreTestProfiles = () => { api.Profiles = profiles; };
+      api.Profiles = async () => [...await profiles(), { id: 'needs-password', name: 'Test host', host: 'example.test', user: 'demo', port: 22, auth: 'password' }];
+      window.runtime.EventsEmit('agent:connect_profile', 'needs-password', true);
+    })()`);
+    await click('#connectDialog [data-close]');
+    assert.deepEqual(await evaluate('window.canceledProfileIds'), ['needs-password']);
+    await evaluate(`window.runtime.EventsEmit('agent:connect_profile', 'needs-password')`);
+    await click('#connectDialog [data-close]');
+    assert.deepEqual(await evaluate('window.canceledProfileIds'), ['needs-password']);
+    await evaluate('window.restoreTestProfiles()');
+
     // Spotlight Command Palette
     await click('#paletteBtn');
     await until(() => evaluate("!!document.querySelector('#commandPalette')"), 'command palette');
@@ -479,6 +511,45 @@ async function verifyFrontendUI() {
     await click('#sftpBtn');
     await until(() => evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'SFTP drawer files');
     await shot('04-Terminal-SFTP-Light');
+
+    // A failed read must never turn the save shortcut into an empty file write.
+    await evaluate(`(() => {
+      const api = window.go.main.App;
+      const original = api.ReadRemoteText;
+      api.ReadRemoteText = async () => {
+        api.ReadRemoteText = original;
+        throw new Error('Read denied for test');
+      };
+      window.editorWrites = 0;
+      api.WriteRemoteText = async () => { window.editorWrites++; };
+      document.querySelector('.sftp-row button[title="在线编辑"]').click();
+    })()`);
+    await until(() => evaluate("!!document.querySelector('.modal-sheet.editor .error-text')"), 'editor read error');
+    await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, cancelable: true }))`);
+    assert.equal(await evaluate('window.editorWrites'), 0, 'Saving after a failed read must preserve the remote file');
+    await click('.modal-sheet.editor .icon-btn');
+
+    // Complete an old refresh after the user has already navigated to the parent.
+    await evaluate(`(() => {
+      const api = window.go.main.App;
+      const original = api.ListFiles;
+      api.ListFiles = () => {
+        api.ListFiles = original;
+        return new Promise(resolve => { window.finishOldListing = () => resolve([]); });
+      };
+    })()`);
+    await click('.sftp-toolbar button[title="刷新"]');
+    await until(() => evaluate("typeof window.finishOldListing === 'function'"), 'deferred SFTP refresh');
+    await click('.sftp-toolbar button[title="上一级"]');
+    const pathSelector = '.sftp-toolbar input[aria-label="远程路径"]';
+    await until(() => evaluate(`document.querySelector('${pathSelector}').value === '/home/deploy'`), 'parent SFTP directory');
+    await evaluate(`(async () => {
+      window.finishOldListing();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    })()`);
+    assert.equal(await evaluate(`document.querySelector('${pathSelector}').value`), '/home/deploy', 'Late results must preserve the current directory');
+    assert.ok(await evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'Late results must preserve the current file list');
+    await click('.sftp-toolbar button[title="主目录"]');
 
     // Tunnels Drawer
     await click('#tunnelsBtn');

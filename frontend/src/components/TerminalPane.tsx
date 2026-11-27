@@ -200,6 +200,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
         return false;
       }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyC') {
+        e.preventDefault();
         if (term.hasSelection()) {
           void copyToClipboard(term.getSelection());
           toastRef.current('已复制选区');
@@ -207,12 +208,14 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
         return false;
       }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyV') {
+        e.preventDefault();
         void readFromClipboard().then((t) => {
           if (t) term.paste(t);
         });
         return false;
       }
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyF') {
+        e.preventDefault();
         searchOpenRef.current();
         return false;
       }
@@ -257,13 +260,14 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       clear: () => term.clear(),
     });
 
-    requestAnimationFrame(() => {
+    const initialFrame = requestAnimationFrame(() => {
       doFit();
       resizeRef.current(term.cols, term.rows);
       term.focus();
     });
 
     return () => {
+      cancelAnimationFrame(initialFrame);
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       observer.disconnect();
       dataDisp.dispose();

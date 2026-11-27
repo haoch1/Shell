@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp,
   ChevronRight,
@@ -56,6 +56,7 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
   const [sortBy, setSortBy] = useState<SortKey>('name');
   const [selected, setSelected] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
+  const directoryRequest = useRef(0);
 
   // Inline modal prompt for mkdir / new file / rename / chmod
   const [actionModal, setActionModal] = useState<
@@ -67,38 +68,43 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
   >(null);
 
   const loadDir = async (target: string) => {
+    const request = ++directoryRequest.current;
     setLoading(true);
     setErr('');
     try {
       const api = getApi();
       const canonical = await api.RealPath(session.id, target || '.').catch(() => target || '.');
+      if (request !== directoryRequest.current) return;
       const list = await api.ListFiles(session.id, canonical);
+      if (request !== directoryRequest.current) return;
       setDir(canonical);
       setPathInput(canonical);
       onUpdateDir(canonical);
       setEntries(list || []);
       setSelected(null);
     } catch (e) {
-      setErr(errorMessage(e));
+      if (request === directoryRequest.current) setErr(errorMessage(e));
     } finally {
-      setLoading(false);
+      if (request === directoryRequest.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     void loadDir(session.dir || '.');
+    return () => { directoryRequest.current++; };
   }, [session.id]);
 
   // Listen to native Windows file drops from Wails OnFileDrop
   useEffect(() => {
     const off = onDesktopEvent<[{ x: number; y: number; paths: string[] }]>('shell:filedrop', async (payload) => {
       if (!payload?.paths?.length) return;
+      const request = directoryRequest.current;
       setDropActive(false);
       try {
         const done = await getApi().UploadLocalPaths(session.id, dir, payload.paths, true);
         if (done?.length) {
           onToast(`已上传 ${done.length} 个文件`);
-          void loadDir(dir);
+          if (request === directoryRequest.current) void loadDir(dir);
         }
       } catch (e) {
         setErr(errorMessage(e));
@@ -141,13 +147,14 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
   };
 
   const handleUpload = async () => {
+    const request = directoryRequest.current;
     try {
       const paths = await getApi().PickUploadFiles();
-      if (!paths?.length) return;
+      if (!paths?.length || request !== directoryRequest.current) return;
       const done = await getApi().UploadLocalPaths(session.id, dir, paths, true);
       if (done?.length) {
         onToast(`已上传 ${done.length} 个文件`);
-        void loadDir(dir);
+        if (request === directoryRequest.current) void loadDir(dir);
       }
     } catch (e) {
       setErr(errorMessage(e));
@@ -166,6 +173,7 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
   const submitAction = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!actionModal) return;
+    const request = directoryRequest.current;
     const api = getApi();
     try {
       if (actionModal.kind === 'mkdir') {
@@ -191,19 +199,19 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
         await api.RenameRemote(session.id, actionModal.entry.path, nextPath);
         onToast(`已重命名为 ${nextName}`);
       } else if (actionModal.kind === 'chmod') {
-        const parsed = parseInt(actionModal.value.trim(), 8);
-        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 0o7777) {
+        const mode = actionModal.value.trim();
+        if (!/^[0-7]{1,4}$/.test(mode)) {
           setErr('请输入有效的八进制权限，例如 755 或 644');
           return;
         }
-        await api.ChmodRemote(session.id, actionModal.entry.path, parsed);
+        await api.ChmodRemote(session.id, actionModal.entry.path, parseInt(mode, 8));
         onToast(`权限已更新为 ${actionModal.value.trim()}`);
       } else if (actionModal.kind === 'delete') {
         await api.DeleteRemote(session.id, actionModal.entry.path);
         onToast(`已删除 ${actionModal.entry.name}`);
       }
       setActionModal(null);
-      void loadDir(dir);
+      if (request === directoryRequest.current) void loadDir(dir);
     } catch (ex) {
       setErr(errorMessage(ex));
     }

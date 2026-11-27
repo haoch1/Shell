@@ -4,6 +4,7 @@ import type { AuthMode, HostAgentAccess, HostIconId, Profile, ProfileColor, Prox
 import { PROFILE_COLORS, profileColorHex } from '../lib/themes';
 import { errorMessage, getApi } from '../lib/bridge';
 import { HOST_ICONS, inferHostIcon, renderHostGlyph } from './HostIcon';
+import { Select } from './ui/Select';
 
 interface HostModalProps {
   profile: Profile | null;
@@ -85,7 +86,10 @@ export const HostModal: React.FC<HostModalProps> = ({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (e.defaultPrevented || document.querySelector('[data-radix-select-viewport]')) return;
+        onClose();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -453,14 +457,19 @@ export const HostModal: React.FC<HostModalProps> = ({
             <>
               <div className="field-group">
                 <label className="field-label">SSH 跳板机 (ProxyJump)</label>
-                <select className="select" value={jumpHostId} onChange={(e) => setJumpHostId(e.target.value)}>
-                  <option value="">不使用跳板机</option>
-                  {jumpCandidates.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.user}@{p.host}:{p.port})
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  id="jumpHostSelect"
+                  ariaLabel="SSH 跳板机 (ProxyJump)"
+                  value={jumpHostId}
+                  options={[
+                    { value: '', label: '不使用跳板机' },
+                    ...jumpCandidates.map((p) => ({
+                      value: p.id,
+                      label: `${p.name} (${p.user}@${p.host}:${p.port})`,
+                    })),
+                  ]}
+                  onValueChange={setJumpHostId}
+                />
               </div>
 
               <div className="field-group">

@@ -32,6 +32,8 @@ import type {
 import { syncTerminalThemeForAppearance, TERMINAL_THEMES } from '../lib/themes';
 import { copyToClipboard, errorMessage, getApi, openExternalURL } from '../lib/bridge';
 import { AgentSecurityTab } from './AgentSecurityTab';
+import { Checkbox } from './ui/Checkbox';
+import { Select } from './ui/Select';
 
 export type SettingsTab = 'appearance' | 'ssh' | 'keys' | 'ai' | 'agent' | 'backup' | 'about';
 
@@ -208,6 +210,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (e.defaultPrevented || document.querySelector('[data-radix-select-viewport]')) {
+          return;
+        }
         if (modelMenuOpen) {
           e.stopPropagation();
           setModelMenuOpen(false);
@@ -252,6 +257,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     () => filteredKnownHosts.filter((k) => selectedLines[k.line]).map((k) => k.line),
     [filteredKnownHosts, selectedLines],
   );
+  const allKnownChecked =
+    filteredKnownHosts.length > 0 && chosenKnownLines.length === filteredKnownHosts.length;
+  const someKnownChecked =
+    chosenKnownLines.length > 0 && chosenKnownLines.length < filteredKnownHosts.length;
 
   const toggleAllKnown = () => {
     if (chosenKnownLines.length === filteredKnownHosts.length && filteredKnownHosts.length > 0) {
@@ -476,6 +485,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const matchedFont = FONT_OPTIONS.some((f) => f.value === settings.fontFamily)
     ? settings.fontFamily
     : '__custom__';
+  const fontSelectOptions = useMemo(
+    () =>
+      matchedFont === '__custom__'
+        ? [...FONT_OPTIONS, { label: '自定义字体', value: '__custom__' }]
+        : FONT_OPTIONS,
+    [matchedFont],
+  );
 
   return (
     <div id="settingsDialog" className="modal-backdrop" onClick={onClose}>
@@ -601,21 +617,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="pref-group">
                     <div className="pref-row">
                       <span className="pref-row-label">终端字体</span>
-                      <select
-                        className="select"
+                      <Select
+                        id="terminalFontSelect"
+                        ariaLabel="终端字体"
                         style={{ width: 186, height: 30 }}
                         value={matchedFont}
-                        onChange={(e) => {
-                          if (e.target.value !== '__custom__') patch({ fontFamily: e.target.value });
+                        options={fontSelectOptions}
+                        onValueChange={(val) => {
+                          if (val !== '__custom__') patch({ fontFamily: val });
                         }}
-                      >
-                        {FONT_OPTIONS.map((f) => (
-                          <option key={f.label} value={f.value}>
-                            {f.label}
-                          </option>
-                        ))}
-                        {matchedFont === '__custom__' && <option value="__custom__">自定义字体</option>}
-                      </select>
+                      />
                     </div>
                     <div className="pref-row">
                       <span className="pref-row-label">字号</span>
@@ -668,7 +679,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       { key: 'copyOnSelect' as const, title: '选中即复制' },
                       { key: 'rightClickPaste' as const, title: '右键快捷复制 / 粘贴' },
                       { key: 'showTelemetry' as const, title: '状态栏性能监控' },
-                      { key: 'webglEnabled' as const, title: 'WebGL 渲染（实验性）' },
                     ].map((opt) => (
                       <div key={opt.key} className="pref-row">
                         <span className="pref-row-label">{opt.title}</span>
@@ -681,6 +691,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         />
                       </div>
                     ))}
+                    <div className="pref-row">
+                      <span className="pref-row-label">终端语法高亮</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={settings.syntaxHighlight !== false}
+                        className="apple-switch accent"
+                        onClick={() => patch({ syntaxHighlight: settings.syntaxHighlight === false })}
+                      />
+                    </div>
+                    <div className="pref-row">
+                      <span className="pref-row-label">WebGL 渲染（实验性）</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={settings.webglEnabled}
+                        className="apple-switch accent"
+                        onClick={() => patch({ webglEnabled: !settings.webglEnabled })}
+                      />
+                    </div>
                   </div>
                 </div>
               </>
@@ -803,25 +833,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span className="pref-section-title">已信任主机指纹 (known_hosts)</span>
                       {knownHosts.length > 0 && <span className="pill-badge neutral mono">{knownHosts.length}</span>}
                     </div>
-                    {knownHosts.length > 0 && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <button type="button" className="btn btn-sm btn-ghost" onClick={toggleAllKnown}>
-                          {chosenKnownLines.length === filteredKnownHosts.length && filteredKnownHosts.length > 0 ? '取消全选' : '全选'}
-                        </button>
-                        {chosenKnownLines.length > 0 && (
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-danger"
-                            onClick={() => void removeKnownLines(chosenKnownLines)}
-                          >
-                            批量移除 ({chosenKnownLines.length})
-                          </button>
-                        )}
-                        <button type="button" className="btn btn-sm" onClick={() => void clearAllKnown()}>
-                          清空全部
-                        </button>
-                      </div>
-                    )}
                   </div>
 
                   {knownHosts.length > 3 && (
@@ -845,13 +856,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   ) : (
                     <div className="pref-group">
+                      <div className="pref-select-header">
+                        <label className="pref-select-toggle">
+                          <Checkbox
+                            checked={allKnownChecked}
+                            indeterminate={someKnownChecked}
+                            onChange={toggleAllKnown}
+                            aria-label="全选主机指纹"
+                          />
+                          <span>
+                            {chosenKnownLines.length > 0
+                              ? `已选 ${chosenKnownLines.length} / ${filteredKnownHosts.length}`
+                              : '全选'}
+                          </span>
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                          {chosenKnownLines.length > 0 && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger"
+                              onClick={() => void removeKnownLines(chosenKnownLines)}
+                            >
+                              移除所选 ({chosenKnownLines.length})
+                            </button>
+                          )}
+                          <button type="button" className="btn btn-sm" onClick={() => void clearAllKnown()}>
+                            清空全部
+                          </button>
+                        </div>
+                      </div>
                       {filteredKnownHosts.map((kh) => (
                         <div key={kh.line} className="pref-row" style={{ gap: 10 }}>
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             checked={Boolean(selectedLines[kh.line])}
                             onChange={(e) => setSelectedLines((prev) => ({ ...prev, [kh.line]: e.target.checked }))}
-                            style={{ margin: 0, flexShrink: 0, cursor: 'pointer' }}
+                            aria-label={`选择 ${kh.hosts.join(', ')}`}
                           />
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div className="mono" style={{ fontWeight: 600, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -917,15 +956,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                         <div className="field-group" style={{ width: 150 }}>
                           <label className="field-label">算法</label>
-                          <select
-                            className="select"
+                          <Select
+                            id="keyAlgoSelect"
+                            ariaLabel="密钥算法"
                             style={{ height: 30 }}
                             value={keyAlgo}
-                            onChange={(e) => setKeyAlgo(e.target.value as 'ed25519' | 'rsa-4096')}
-                          >
-                            <option value="ed25519">Ed25519</option>
-                            <option value="rsa-4096">RSA 4096</option>
-                          </select>
+                            options={[
+                              { value: 'ed25519', label: 'Ed25519' },
+                              { value: 'rsa-4096', label: 'RSA 4096' },
+                            ]}
+                            onValueChange={(val) => setKeyAlgo(val as 'ed25519' | 'rsa-4096')}
+                          />
                         </div>
                       </div>
                       <div className="field-row">

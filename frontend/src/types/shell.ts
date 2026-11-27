@@ -183,6 +183,8 @@ export interface AppSettings {
   closeToTray: boolean;
   autoCheckUpdate?: boolean;
   hideHostIp?: boolean;
+  groupOrder?: string[];
+  syntaxHighlight?: boolean;
 }
 
 export interface KnownHostEntry {

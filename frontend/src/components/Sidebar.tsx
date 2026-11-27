@@ -12,6 +12,7 @@ import {
   EyeOff,
   Folder,
   FolderMinus,
+  GripVertical,
   KeyRound,
   Moon,
   Pencil,
@@ -31,6 +32,8 @@ import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 
 type HostSortMode = 'default' | 'name-asc' | 'name-desc' | 'recent' | 'host';
+
+const GROUP_DRAG_MIME = 'application/x-shell-group';
 
 const SORT_OPTIONS: { id: HostSortMode; label: string }[] = [
   { id: 'default', label: '默认顺序' },
@@ -53,6 +56,8 @@ function loadSortMode(): HostSortMode {
 interface SidebarProps {
   open: boolean;
   profiles: Profile[];
+  groupOrder?: string[];
+  onReorderGroups?: (next: string[]) => void;
   sessions: Record<string, SessionRecord>;
   tabs: WorkspaceTab[];
   activeTabId: string | null;
@@ -82,6 +87,8 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = React.memo(({
   open,
   profiles,
+  groupOrder = [],
+  onReorderGroups,
   sessions,
   tabs,
   activeTabId,
@@ -118,7 +125,25 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   const [groupMenuPos, setGroupMenuPos] = useState<{ left: number; bottom: number } | null>(null);
   const [newGroupName, setNewGroupName] = useState('');
   const [groupingBatch, setGroupingBatch] = useState(false);
+  const [draggingGroup, setDraggingGroup] = useState<string | null>(null);
+  const [groupDropTarget, setGroupDropTarget] = useState<{ key: string; pos: 'before' | 'after' } | null>(null);
+  const draggingGroupRef = useRef<string | null>(null);
   const groupInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!draggingGroup) return;
+    const clearDrag = () => {
+      draggingGroupRef.current = null;
+      setDraggingGroup(null);
+      setGroupDropTarget(null);
+    };
+    window.addEventListener('dragend', clearDrag, true);
+    window.addEventListener('blur', clearDrag);
+    return () => {
+      window.removeEventListener('dragend', clearDrag, true);
+      window.removeEventListener('blur', clearDrag);
+    };
+  }, [draggingGroup]);
 
   useEffect(() => {
     if (!sortMenuPos && !groupMenuPos) return;
@@ -152,6 +177,25 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
       return hay.includes(q);
     });
   }, [profiles, query]);
+
+  const groupOrderIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    groupOrder.forEach((name, idx) => {
+      const trimmed = name.trim();
+      if (trimmed && !map.has(trimmed)) map.set(trimmed, idx);
+    });
+    return map;
+  }, [groupOrder]);
+
+  const sortCustomGroupNames = (names: string[]) =>
+    [...names].sort((a, b) => {
+      const ia = groupOrderIndex.get(a);
+      const ib = groupOrderIndex.get(b);
+      if (ia !== undefined && ib !== undefined) return ia - ib;
+      if (ia !== undefined) return -1;
+      if (ib !== undefined) return 1;
+      return a.localeCompare(b, 'zh-CN');
+    });
 
   const sections = useMemo(() => {
     const sortList = (items: Profile[]) => {
@@ -193,13 +237,18 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
     const sortedGroups = [...groupMap.entries()].sort((a, b) => {
       if (a[0] === '全部主机') return 1;
       if (b[0] === '全部主机') return -1;
+      const ia = groupOrderIndex.get(a[0]);
+      const ib = groupOrderIndex.get(b[0]);
+      if (ia !== undefined && ib !== undefined) return ia - ib;
+      if (ia !== undefined) return -1;
+      if (ib !== undefined) return 1;
       return a[0].localeCompare(b[0], 'zh-CN');
     });
     for (const [label, items] of sortedGroups) {
       list.push({ key: label, label, items: sortList(items) });
     }
     return list;
-  }, [filtered, sortMode]);
+  }, [filtered, sortMode, groupOrderIndex]);
 
   const quickTarget = useMemo(() => {
     if (!query.trim() || filtered.length > 0) return null;
@@ -214,12 +263,27 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
     [filtered, selectedIds],
   );
   const existingGroups = useMemo(
-    () =>
-      [...new Set(profiles.map((p) => p.group?.trim()).filter((g): g is string => Boolean(g)))].sort((a, b) =>
-        a.localeCompare(b, 'zh-CN'),
-      ),
-    [profiles],
+    () => sortCustomGroupNames([...new Set(profiles.map((p) => p.group?.trim()).filter((g): g is string => Boolean(g)))]),
+    [profiles, groupOrderIndex],
   );
+
+  const isGroupDrag = (e: React.DragEvent) =>
+    Boolean(draggingGroupRef.current) && e.dataTransfer.types.includes(GROUP_DRAG_MIME);
+
+  const commitGroupReorder = (draggedKey: string, targetKey: string, pos: 'before' | 'after') => {
+    if (!onReorderGroups || draggedKey === targetKey) return;
+    const base = existingGroups.length > 0
+      ? existingGroups
+      : sections.filter((s) => s.key !== '__pinned__' && s.key !== '全部主机').map((s) => s.key);
+    if (!base.includes(draggedKey) || !base.includes(targetKey)) return;
+    const withoutDragged = base.filter((g) => g !== draggedKey);
+    const targetIdx = withoutDragged.indexOf(targetKey);
+    if (targetIdx < 0) return;
+    const insertIdx = pos === 'before' ? targetIdx : targetIdx + 1;
+    const next = [...withoutDragged.slice(0, insertIdx), draggedKey, ...withoutDragged.slice(insertIdx)];
+    if (next.length === base.length && next.every((g, i) => g === base[i])) return;
+    onReorderGroups(next);
+  };
 
   const exitSelectMode = () => {
     setSelectMode(false);
@@ -359,15 +423,81 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
 
         {sections.map((sec) => {
           const collapsed = Boolean(collapsedGroups[sec.key]);
+          const isCustomGroup = sec.key !== '__pinned__' && sec.key !== '全部主机';
+          const canDragGroup = isCustomGroup && !selectMode && Boolean(onReorderGroups);
+          const isDragging = draggingGroup === sec.key;
+          const dropClass =
+            groupDropTarget?.key === sec.key
+              ? groupDropTarget.pos === 'before'
+                ? 'drop-before'
+                : 'drop-after'
+              : '';
           return (
-            <div key={sec.key} className="group-section">
+            <div
+              key={sec.key}
+              data-group-key={sec.key}
+              className={`group-section ${isDragging ? 'dragging' : ''} ${dropClass}`.trim()}
+              onDragOver={(e) => {
+                if (!isCustomGroup || !isGroupDrag(e)) return;
+                const src = draggingGroupRef.current;
+                if (!src || src === sec.key) {
+                  setGroupDropTarget((cur) => (cur ? null : cur));
+                  return;
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = 'move';
+                const rect = e.currentTarget.getBoundingClientRect();
+                const pos: 'before' | 'after' = e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+                setGroupDropTarget((cur) => (cur?.key === sec.key && cur.pos === pos ? cur : { key: sec.key, pos }));
+              }}
+              onDragLeave={(e) => {
+                if (!isGroupDrag(e)) return;
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                  setGroupDropTarget((cur) => (cur?.key === sec.key ? null : cur));
+                }
+              }}
+              onDrop={(e) => {
+                if (!isCustomGroup || !isGroupDrag(e)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const src = e.dataTransfer.getData(GROUP_DRAG_MIME) || draggingGroupRef.current;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const pos: 'before' | 'after' = e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+                draggingGroupRef.current = null;
+                setDraggingGroup(null);
+                setGroupDropTarget(null);
+                if (src && src !== sec.key) {
+                  commitGroupReorder(src, sec.key, pos);
+                }
+              }}
+            >
               <button
                 type="button"
-                className="group-header"
+                className={`group-header ${canDragGroup ? 'draggable' : ''}`.trim()}
+                draggable={canDragGroup}
+                title={canDragGroup ? '点击折叠，拖拽调整分组顺序' : undefined}
+                onDragStart={(e) => {
+                  if (!canDragGroup) {
+                    e.preventDefault();
+                    return;
+                  }
+                  e.stopPropagation();
+                  draggingGroupRef.current = sec.key;
+                  setDraggingGroup(sec.key);
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData(GROUP_DRAG_MIME, sec.key);
+                }}
+                onDragEnd={() => {
+                  draggingGroupRef.current = null;
+                  setDraggingGroup(null);
+                  setGroupDropTarget(null);
+                }}
                 onClick={() => toggleGroup(sec.key)}
               >
                 {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                 <span>{sec.label}</span>
+                {canDragGroup && <GripVertical size={11} className="group-drag-grip" aria-hidden="true" />}
                 <span className="group-count">{sec.items.length}</span>
               </button>
 

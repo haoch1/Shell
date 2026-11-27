@@ -71,18 +71,32 @@ type Evaluation struct {
 var (
 	// High-risk destructive / remote-code-execution patterns (JumpServer + Claude Code inspired)
 	hardDangerPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\brm\s+-[a-z]*[rf][a-z]*\s+(?:/\s*$|/\*|~|/\w+/\*)`),
-		regexp.MustCompile(`(?i)\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r`),
+		// Catastrophic rm targeting root, wildcard root, home, or top-level system directories
+		regexp.MustCompile(`(?i)\brm\b(?:\s+-[a-z-]+)*\s+-[a-z]*[rf][a-z]*(?:\s+-[a-z-]+)*(?:\s+--)?(?:\s+[^\s;&|"']+)*\s+['"]?(?:/\s*(?:$|[;&|"'])|/\*(?:\s|$|[;&|"'])|~(?:/\*?)?(?:\s|$|[;&|"'])|\$HOME(?:/\*?)?(?:\s|$|[;&|"'])|/(?:etc|usr|var|boot|home|root|bin|sbin|lib(?:64)?)(?:/\*?)?(?:\s|$|[;&|"']))`),
+		// Disk / partition / block-device wipe
 		regexp.MustCompile(`(?i)\b(?:mkfs(?:\.[a-z0-9]+)?|wipefs|fdisk|parted|shred)\b`),
 		regexp.MustCompile(`(?i)\bdd\s+[^\n]*\bof=/dev/`),
-		regexp.MustCompile(`:\(\)\s*\{`), // Fork bomb
+		regexp.MustCompile(`(?i)>\s*/dev/(?:sd[a-z]|nvme|vd[a-z]|hd[a-z])`),
+		// Fork bomb
+		regexp.MustCompile(`:\(\)\s*\{`),
+		// Global recursive chmod 777 from root
 		regexp.MustCompile(`(?i)\bchmod\s+-R\s+777\s+/`),
+		// Power / reboot disruption
 		regexp.MustCompile(`(?i)\b(?:shutdown|reboot|poweroff|halt|init\s+[06])\b`),
-		regexp.MustCompile(`(?i)\biptables\s+-F\b|\bufw\s+disable\b`),
-		regexp.MustCompile(`(?i)\bdrop\s+(?:database|table|schema)\b|\btruncate\s+table\b`),
+		// Firewall flush / disable
+		regexp.MustCompile(`(?i)\bip6?tables\s+-F\b|\bufw\s+disable\b`),
+		// Database wipe
+		regexp.MustCompile(`(?i)\bdrop\s+(?:database|table|schema)\b|\btruncate\s+table\b|\bflushall\b`),
+		// Auth / account / sudoers / sshd tampering
+		regexp.MustCompile(`(?i)(?:^|[;&|(\n"'` + "`" + `]\s*)(?:(?:sudo|doas)\s+(?:-[a-z]+\s+)*)?(?:/(?:usr/)?s?bin/)?(?:passwd|userdel|visudo)\b`),
+		regexp.MustCompile(`(?i)>>?\s*['"]?/etc/(?:sudoers(?:\.d/\S*)?|shadow|ssh/sshd_config)\b`),
+		regexp.MustCompile(`(?i)\btee\b(?:\s+-[a-z]+)*\s+['"]?/etc/(?:sudoers(?:\.d/\S*)?|shadow|ssh/sshd_config)\b`),
+		regexp.MustCompile(`(?i)\bsed\s+[^\n]*(?:-i|--in-place)[^\n;|&]*['"]?/etc/(?:sudoers(?:\.d/\S*)?|shadow|ssh/sshd_config)\b`),
+		regexp.MustCompile(`(?i)\b(?:cp|mv|install)\s+[^\n;|&]*['"]?/etc/(?:sudoers(?:\.d/\S*)?|shadow|ssh/sshd_config)\b['"]?\s*(?:$|[;&|"'])`),
+		regexp.MustCompile(`(?i)\brm\b[^\n;|&]*['"]?/etc/(?:sudoers(?:\.d/\S*)?|shadow|ssh/sshd_config)\b`),
+		// Remote pipe-to-shell
 		regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z|da|a)?sh\b`),
 		regexp.MustCompile(`(?i)\bbase64\s+(?:-d|--decode)[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z|da|a)?sh\b`),
-		regexp.MustCompile(`(?i)>\s*/dev/(?:sd[a-z]|nvme|vd[a-z]|hd[a-z])`),
 	}
 
 	// Strictly read-only POSIX / Linux inspection commands
@@ -311,7 +325,6 @@ func analyzeAtomicSegment(raw string) CommandSegment {
 		seg.Risk = "caution"
 		seg.Reason = "调用脚本或子 Shell 解释器"
 		if seg.Wrapped {
-			seg.Risk = "danger"
 			seg.Reason = "提权执行脚本或子 Shell"
 		}
 		return seg
@@ -393,9 +406,9 @@ func analyzeAtomicSegment(raw string) CommandSegment {
 
 	// 8. Known mutating / dangerous programs
 	switch seg.Program {
-	case "rm", "rmdir", "dd", "mkfs", "fdisk", "parted", "reboot", "shutdown", "poweroff", "halt", "killall", "pkill":
+	case "dd", "mkfs", "fdisk", "parted", "reboot", "shutdown", "poweroff", "halt", "passwd", "userdel", "visudo":
 		seg.Risk = "danger"
-		seg.Reason = "潜在破坏性或中断服务命令：" + seg.Program
+		seg.Reason = "潜在破坏性或高危系统命令：" + seg.Program
 	default:
 		seg.Risk = "caution"
 		if seg.Wrapped {
@@ -492,7 +505,7 @@ func effectiveMode(globalMode PermissionMode, hostAccess string) (PermissionMode
 		return ModeReadOnly, true
 	default:
 		if globalMode == "" {
-			return ModeSmart, true
+			return ModeTrusted, true
 		}
 		return globalMode, true
 	}

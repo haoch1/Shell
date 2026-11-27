@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/haoch1/Shell/internal/security"
 )
 
 func TestSSHConfigParserAndImport(t *testing.T) {
@@ -259,5 +262,142 @@ func TestCappedBufferAndUTF8BoundaryHelpers(t *testing.T) {
 	}
 	if tr := truncateUTF8("中文测试数据", 7); !utf8.ValidString(tr) || tr != "中文" {
 		t.Fatalf("truncateUTF8 produced %q", tr)
+	}
+}
+
+func TestAgentConfigPolicyVersionMigration(t *testing.T) {
+	dir := isolated(t)
+
+	// 1. Fresh install defaults to PolicyVersion=2 and ModeTrusted.
+	def, err := LoadAgentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.PolicyVersion != 2 || def.Policy.Mode != security.ModeTrusted {
+		t.Fatalf("unexpected default agent config: version=%d mode=%q", def.PolicyVersion, def.Policy.Mode)
+	}
+
+	// 2. Legacy v1.0/v1.1 agent.json (no policyVersion, mode=smart) auto-migrates once to ModeTrusted + PolicyVersion=2.
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacySmart := `{"enabled":true,"port":17822,"execMode":"visible","policy":{"mode":"smart"}}`
+	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(legacySmart), 0600); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := LoadAgentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Policy.Mode != security.ModeTrusted || migrated.PolicyVersion != 2 || !migrated.Enabled || migrated.ExecMode != "visible" {
+		t.Fatalf("expected legacy smart config to migrate to trusted v2, got %+v", migrated)
+	}
+
+	// 3. Explicit user save of smart/readonly/ask_all (even with PolicyVersion=0 from frontend) stamps v2 and persists forever.
+	for _, explicitMode := range []security.PermissionMode{security.ModeSmart, security.ModeReadOnly, security.ModeAskAll} {
+		toSave := migrated
+		toSave.PolicyVersion = 0
+		toSave.Policy.Mode = explicitMode
+		saved, err := SaveAgentConfig(toSave)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.PolicyVersion != 2 || saved.Policy.Mode != explicitMode {
+			t.Fatalf("SaveAgentConfig failed to preserve explicit mode %q: %+v", explicitMode, saved)
+		}
+		reloaded, err := LoadAgentConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.PolicyVersion != 2 || reloaded.Policy.Mode != explicitMode {
+			t.Fatalf("LoadAgentConfig overwrote explicit mode %q: %+v", explicitMode, reloaded)
+		}
+	}
+
+	// 4. Legacy agent.json with explicit readonly/ask_all (no policyVersion) must NOT be forced to trusted.
+	legacyReadOnly := `{"enabled":false,"port":17822,"policy":{"mode":"readonly"}}`
+	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(legacyReadOnly), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ro, err := LoadAgentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ro.Policy.Mode != security.ModeReadOnly || ro.PolicyVersion != 2 {
+		t.Fatalf("legacy readonly config should remain readonly at v2, got %+v", ro)
+	}
+}
+
+func TestSettingsGroupOrderAndSyntaxHighlight(t *testing.T) {
+	dir := isolated(t)
+
+	// 1. Default settings enable SyntaxHighlight=true and empty GroupOrder.
+	s, err := LoadSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.SyntaxHighlight == nil || !*s.SyntaxHighlight {
+		t.Fatalf("expected default SyntaxHighlight=true, got %+v", s.SyntaxHighlight)
+	}
+	if len(s.GroupOrder) != 0 {
+		t.Fatalf("expected empty default GroupOrder, got %v", s.GroupOrder)
+	}
+
+	// 2. Legacy settings.json without syntaxHighlight still defaults to true.
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"theme":"dark","fontSize":15}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Theme != "dark" || loaded.SyntaxHighlight == nil || !*loaded.SyntaxHighlight {
+		t.Fatalf("legacy settings should default SyntaxHighlight=true, got %+v", loaded)
+	}
+
+	// 3. UpdateSettings mutating *SyntaxHighlight in-place (just like json.Unmarshal in UpdatePreferences) MUST persist false!
+	updated, err := UpdateSettings(func(cur *AppSettings) error {
+		return json.Unmarshal([]byte(`{"syntaxHighlight":false,"groupOrder":[" Prod ","","Staging","Prod","Dev  "]}`), cur)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SyntaxHighlight == nil || *updated.SyntaxHighlight {
+		t.Fatalf("expected SyntaxHighlight=false after update, got %+v", updated.SyntaxHighlight)
+	}
+	wantOrder := []string{"Prod", "Staging", "Dev"}
+	if !reflect.DeepEqual(updated.GroupOrder, wantOrder) {
+		t.Fatalf("expected sanitized GroupOrder %v, got %v", wantOrder, updated.GroupOrder)
+	}
+	reloaded, err := LoadSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.SyntaxHighlight == nil || *reloaded.SyntaxHighlight {
+		t.Fatalf("SyntaxHighlight=false did not persist on disk: %+v", reloaded.SyntaxHighlight)
+	}
+	if !reflect.DeepEqual(reloaded.GroupOrder, wantOrder) {
+		t.Fatalf("GroupOrder did not persist on disk: got %v want %v", reloaded.GroupOrder, wantOrder)
+	}
+
+	// 4. Clearing groupOrder to empty slice removes it cleanly.
+	cleared, err := UpdateSettings(func(cur *AppSettings) error {
+		return json.Unmarshal([]byte(`{"groupOrder":[]}`), cur)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.GroupOrder != nil {
+		t.Fatalf("expected nil GroupOrder after clearing, got %v", cleared.GroupOrder)
+	}
+	reloaded2, err := LoadSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded2.GroupOrder != nil || reloaded2.SyntaxHighlight == nil || *reloaded2.SyntaxHighlight {
+		t.Fatalf("unexpected settings after clearing GroupOrder: %+v", reloaded2)
 	}
 }

@@ -14,22 +14,26 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const currentPolicyVersion = 2
+
 // AgentConfig controls external Agent MCP/HTTP bridge, execution mode, command permissions, and text redaction.
 type AgentConfig struct {
-	Enabled   bool                     `json:"enabled"`
-	Port      int                      `json:"port"`
-	ExecMode  string                   `json:"execMode,omitempty"` // "silent" (default, background headless/tray) or "visible" (open/focus GUI terminal)
-	Policy    security.PolicyConfig    `json:"policy"`
-	Redaction security.RedactionConfig `json:"redaction"`
+	Enabled       bool                     `json:"enabled"`
+	Port          int                      `json:"port"`
+	ExecMode      string                   `json:"execMode,omitempty"` // "silent" (default, background headless/tray) or "visible" (open/focus GUI terminal)
+	PolicyVersion int                      `json:"policyVersion,omitempty"`
+	Policy        security.PolicyConfig    `json:"policy"`
+	Redaction     security.RedactionConfig `json:"redaction"`
 }
 
 func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
-		Enabled:   false,
-		Port:      17822,
-		ExecMode:  "silent",
-		Policy:    security.DefaultPolicyConfig(),
-		Redaction: security.DefaultRedactionConfig(),
+		Enabled:       false,
+		Port:          17822,
+		ExecMode:      "silent",
+		PolicyVersion: currentPolicyVersion,
+		Policy:        security.DefaultPolicyConfig(),
+		Redaction:     security.DefaultRedactionConfig(),
 	}
 }
 
@@ -64,16 +68,34 @@ func LoadAgentConfig() (AgentConfig, error) {
 		if err != nil {
 			return err
 		}
+		// Reset PolicyVersion before decoding so legacy v1.0/v1.1 configs omitting it decode as 0.
+		cfg.PolicyVersion = 0
 		if !json.Valid(data) || json.NewDecoder(bytes.NewReader(data)).Decode(&cfg) != nil {
 			return errors.New("Agent 配置文件格式无效")
 		}
+		migrated := false
+		if cfg.PolicyVersion < currentPolicyVersion {
+			if cfg.Policy.Mode == security.ModeSmart {
+				cfg.Policy.Mode = security.ModeTrusted
+			}
+			cfg.PolicyVersion = currentPolicyVersion
+			migrated = true
+		}
 		cfg = normalizeAgentConfig(cfg)
+		if migrated {
+			if out, mErr := json.MarshalIndent(cfg, "", "  "); mErr == nil {
+				_ = writeAtomic(filepath.Join(dir, "agent.json"), out)
+			}
+		}
 		return nil
 	})
 	return cfg, err
 }
 
 func SaveAgentConfig(cfg AgentConfig) (AgentConfig, error) {
+	if cfg.PolicyVersion < currentPolicyVersion {
+		cfg.PolicyVersion = currentPolicyVersion
+	}
 	cfg = normalizeAgentConfig(cfg)
 	err := withStore(func(dir string) error {
 		data, err := json.MarshalIndent(cfg, "", "  ")

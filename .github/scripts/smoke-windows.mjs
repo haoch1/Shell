@@ -138,7 +138,7 @@ const BRIDGE_MOCK_SCRIPT = `
     fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
     fontSize: 14, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
-    showTelemetry: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false
+    showTelemetry: true, syntaxHighlight: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false, groupOrder: []
   };
   let profiles = new URLSearchParams(location.search).has('empty-hosts') ? [] : [
     { id: 'p1', name: 'Tokyo Production', group: '生产集群', icon: 'ubuntu', pinned: true, host: '10.24.0.10', port: 22, user: 'deploy', auth: 'agent', keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 300 },
@@ -208,15 +208,21 @@ const BRIDGE_MOCK_SCRIPT = `
     CommitImportedHosts: async () => [],
     Connect: async (id, p) => {
       setTimeout(() => {
+        const promptPrefix = p.user + '@' + p.name.toLowerCase().replace(/\\s+/g,'-') + ':~/app$ ';
         const banner = '\\r\\n\\x1b[32mWelcome to Ubuntu 24.04.1 LTS (GNU/Linux 6.8.0-45-generic x86_64)\\x1b[0m\\r\\n\\r\\n'
           + '  System load:  0.42              Processes:             142\\r\\n'
-          + '  Usage of /:   38.4% of 98.3GB   Memory usage:          26%\\r\\n\\r\\n'
-          + '\\x1b[1;34m' + p.user + '@' + p.name.toLowerCase().replace(/\\s+/g,'-') + '\\x1b[0m:\\x1b[1;36m~/app\\x1b[0m$ docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"\\r\\n'
+          + '  Usage of /:   38.4% of 98.3GB   Memory usage:          26%\\r\\n'
+          + '  Last login:   Fri Nov 27 22:18:04 2026 from 8.217.10.13\\r\\n\\r\\n'
+          + promptPrefix + 'docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"\\r\\n'
           + 'NAMES          STATUS          PORTS\\r\\n'
           + 'api-gateway    Up 14 days      0.0.0.0:443->8443/tcp\\r\\n'
           + 'postgres-16    Up 14 days      127.0.0.1:5432->5432/tcp\\r\\n'
           + 'redis-cache    Up 14 days      127.0.0.1:6379->6379/tcp\\r\\n'
-          + '\\x1b[1;34m' + p.user + '@' + p.name.toLowerCase().replace(/\\s+/g,'-') + '\\x1b[0m:\\x1b[1;36m~/app\\x1b[0m$ ';
+          + promptPrefix + 'tail -n 2 /var/log/app/gateway.log && curl -s https://127.0.0.1:8443/health\\r\\n'
+          + '2026-11-27T22:18:10Z OK    upstream 10.24.0.10:8080 latency=14ms path=/var/log/app/gateway.log\\r\\n'
+          + '2026-11-27T22:18:11Z ERROR upstream 10.24.0.11:8080 connection refused (retry 2/3)\\r\\n'
+          + '{"status": "OK", "region": "ap-northeast-1", "mem": "428MB", "uptime": "14d"}\\r\\n'
+          + promptPrefix;
         emit('ssh:data', id, btoa(unescape(encodeURIComponent(banner))));
         emit('ssh:latency', id, 18);
       }, 120);
@@ -697,8 +703,56 @@ async function verifyFrontendUI() {
     await shot('07-Settings-Light');
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(2)').click()`);
-    await sleep(200);
+    await until(() => evaluate("!!document.querySelector('#settingsDialog .pref-group > .pref-select-header input[aria-label=\"全选主机指纹\"]')"), 'known_hosts select header');
+    const knownHostsLayout = await evaluate(`(() => {
+      const strayBtns = document.querySelectorAll('#settingsDialog .pref-section-head button').length;
+      const master = document.querySelector('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]');
+      const firstRowCb = document.querySelector('#settingsDialog .pref-group .pref-row input[type="checkbox"]');
+      return {
+        strayBtns,
+        masterLeft: master ? master.getBoundingClientRect().left : -1,
+        rowLeft: firstRowCb ? firstRowCb.getBoundingClientRect().left : -1,
+      };
+    })()`);
+    assert.equal(knownHostsLayout.strayBtns, 0, 'Expected zero stray buttons in known_hosts .pref-section-head, got ' + JSON.stringify(knownHostsLayout));
+    assert.ok(
+      knownHostsLayout.masterLeft > 0 && Math.abs(knownHostsLayout.masterLeft - knownHostsLayout.rowLeft) <= 1.5,
+      'Expected master checkbox aligned vertically with row checkboxes: ' + JSON.stringify(knownHostsLayout),
+    );
+    await click('#settingsDialog .pref-group .pref-row input[type="checkbox"]');
+    const partialKnownState = await evaluate(`(() => {
+      const m = document.querySelector('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]');
+      const txt = document.querySelector('#settingsDialog .pref-select-header')?.textContent || '';
+      return { checked: Boolean(m?.checked), indeterminate: Boolean(m?.indeterminate), hasCount: txt.includes('已选 1 / 2') && txt.includes('移除所选 (1)') };
+    })()`);
+    assert.deepEqual(partialKnownState, { checked: false, indeterminate: true, hasCount: true }, 'Expected indeterminate master checkbox when 1/2 known_hosts selected');
+    await click('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]');
+    assert.equal(await evaluate(`document.querySelector('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]')?.checked`), true, 'Master checkbox should select all');
+    await click('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]');
+    assert.equal(await evaluate(`document.querySelector('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]')?.checked`), false, 'Master checkbox should deselect all');
+    await sleep(180);
     await shot('13-Settings-SSH-KnownHosts');
+
+    // Settings -> SSH Keys right-edge alignment & screenshot
+    await evaluate(`document.querySelector('.settings-nav-btn:nth-child(3)').click()`);
+    await until(() => evaluate("!!document.querySelector('#settingsDialog .pref-section-head button') && document.querySelectorAll('#settingsDialog .pref-group .pref-row button').length >= 2"), 'SSH keys tab');
+    await sleep(180);
+    const keysAlign = await evaluate(`(() => {
+      const genBtn = document.querySelector('#settingsDialog .pref-section-head button');
+      const rowBtns = [...document.querySelectorAll('#settingsDialog .pref-group .pref-row button')];
+      const deployBtn = rowBtns[rowBtns.length - 1];
+      return {
+        genText: genBtn?.textContent?.trim(),
+        deployText: deployBtn?.textContent?.trim(),
+        genRight: genBtn ? genBtn.getBoundingClientRect().right : -1,
+        deployRight: deployBtn ? deployBtn.getBoundingClientRect().right : -1,
+      };
+    })()`);
+    assert.ok(
+      keysAlign.genRight > 0 && Math.abs(keysAlign.genRight - keysAlign.deployRight) <= 1.5,
+      'Expected SSH keys Generate & Deploy buttons right edges aligned: ' + JSON.stringify(keysAlign),
+    );
+    await shot('20-Settings-Keys');
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(4)').click()`);
     await until(() => evaluate("document.querySelector('#model')?.value === 'claude-sonnet-5-5' && !!document.querySelector('#fetchModelsBtn')"), 'AI API tab with latest default model & refresh button');
@@ -736,6 +790,37 @@ async function verifyFrontendUI() {
     await sleep(200);
     await evaluate(`document.querySelector('#settingsDialog .segmented button:nth-child(2)').click()`);
     await sleep(250);
+    // Verify syntax highlighting toggle
+    const syntaxSwitchChecked = await evaluate(`(() => {
+      const row = [...document.querySelectorAll('#settingsDialog .pref-row')].find(r => r.textContent?.includes('终端语法高亮'));
+      return row?.querySelector('button[role="switch"]')?.getAttribute('aria-checked');
+    })()`);
+    assert.equal(syntaxSwitchChecked, 'true', 'Expected 终端语法高亮 switch to default to enabled');
+    await evaluate(`(() => {
+      const row = [...document.querySelectorAll('#settingsDialog .pref-row')].find(r => r.textContent?.includes('终端语法高亮'));
+      row?.querySelector('button[role="switch"]')?.click();
+    })()`);
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.syntaxHighlight === false)"), 'persisted syntaxHighlight=false');
+    await evaluate(`(() => {
+      const row = [...document.querySelectorAll('#settingsDialog .pref-row')].find(r => r.textContent?.includes('终端语法高亮'));
+      row?.querySelector('button[role="switch"]')?.click();
+    })()`);
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.syntaxHighlight === true)"), 'restored syntaxHighlight=true');
+
+    // Verify Radix Select (终端字体) opens cleanly and updates fontFamily
+    await until(() => evaluate("!!document.querySelector('#terminalFontSelect')"), 'Radix font select trigger');
+    await evaluate(`document.querySelector('#terminalFontSelect')?.scrollIntoView({ block: 'center' })`);
+    await sleep(120);
+    await click('#terminalFontSelect');
+    await until(() => evaluate("document.querySelectorAll('[data-radix-select-viewport] [role=\"option\"]').length >= 5"), 'Radix font select options');
+    await click('[data-radix-select-viewport] [role="option"]:nth-child(3)');
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.fontFamily.includes('JetBrains Mono'))"), 'selected JetBrains Mono via Radix Select');
+    await click('#terminalFontSelect');
+    await until(() => evaluate("document.querySelectorAll('[data-radix-select-viewport] [role=\"option\"]').length >= 5"), 'reopened Radix font select');
+    await click('[data-radix-select-viewport] [role="option"]:nth-child(1)');
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.fontFamily.includes('SF Mono'))"), 'restored default font via Radix Select');
+    await evaluate(`document.querySelector('#settingsDialog .settings-content').scrollTop = 0`);
+    await sleep(200);
     await shot('08-Settings-Dark');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await sleep(250);
@@ -747,7 +832,7 @@ async function verifyFrontendUI() {
     await verifyEmptyHostExport({ call, evaluate, until, click, expectedRect: exportRect });
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 19 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 20 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

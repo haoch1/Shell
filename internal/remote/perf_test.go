@@ -542,3 +542,86 @@ func TestPreferredSSHConfigAndKnownHostsFastPath(t *testing.T) {
 		t.Fatalf("expected changed host key rejection after cache warm, got %v", err)
 	}
 }
+
+type nopWriteCloser struct{}
+
+func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (nopWriteCloser) Close() error                { return nil }
+
+func TestSessionIsPromptIdle(t *testing.T) {
+	// Nil, closed, and headless (no PTY stdin) sessions must never report prompt idle.
+	var nilSess *Session
+	if nilSess.IsPromptIdle() {
+		t.Fatal("nil session reported IsPromptIdle=true")
+	}
+	headless := &Session{}
+	headless.appendRing([]byte("root@host:~# "))
+	if headless.IsPromptIdle() {
+		t.Fatal("headless session (input==nil) reported IsPromptIdle=true")
+	}
+
+	makePTYSession := func(chunks ...string) *Session {
+		s := &Session{input: nopWriteCloser{}}
+		for _, c := range chunks {
+			s.appendRing([]byte(c))
+		}
+		return s
+	}
+
+	// Empty ring buffer -> not idle yet.
+	if makePTYSession().IsPromptIdle() {
+		t.Fatal("empty ring buffer reported IsPromptIdle=true")
+	}
+
+	// Standard idle shell prompts (including ANSI colors, OSC titles, and \r line overwrites).
+	idleCases := []struct {
+		name   string
+		chunks []string
+	}{
+		{"root bash ANSI", []string{"Last login: Fri Nov 27\r\n\x1b]0;root@ip-172-26-1-186: ~\x07\x1b[01;32mroot@ip-172-26-1-186\x1b[00m:\x1b[01;34m~\x1b[00m# \x1b[?2004h"}},
+		{"user bash dollar", []string{"ubuntu@web:~$ "}},
+		{"zsh percent", []string{"macbook% "}},
+		{"starship chevron", []string{"~/workspace main\r\n\x1b[32m❯\x1b[0m "}},
+		{"arrow prompt", []string{"~ ➜ "}},
+		{"angle prompt", []string{"PS C:\\Users\\ops> "}},
+		{"trimmed hash", []string{"root@srv:~#"}},
+		{"trimmed dollar", []string{"deploy@srv:~$"}},
+		{"cr overwrite prompt", []string{"downloading 100%\rdeploy@srv:~$ "}},
+	}
+	for _, tc := range idleCases {
+		if !makePTYSession(tc.chunks...).IsPromptIdle() {
+			t.Fatalf("case %q expected IsPromptIdle=true", tc.name)
+		}
+	}
+
+	// Busy / non-prompt / half-typed / password / long lines -> must be false.
+	busyCases := []struct {
+		name   string
+		chunks []string
+	}{
+		{"half typed command", []string{"root@srv:~# ls -la"}},
+		{"sudo password prompt", []string{"[sudo] password for ubuntu: "}},
+		{"running log output", []string{"2026-11-27 12:00:00 INFO server started\r\n"}},
+		{"overly long line", []string{strings.Repeat("x", 165) + "$ "}},
+		{"inside alt screen vim", []string{"root@srv:~# vim\r\n\x1b[?1049h~ \r\n# comment\r\n$ "}},
+		{"split alt screen sequence", []string{"root@srv:~# htop\r\n\x1b[?1049", "h$ "}},
+		{"alt screen rolled past 64KiB", []string{"\x1b[?1049h", strings.Repeat("a", ringBufferLimit+1024), "\r\n$ "}},
+	}
+	for _, tc := range busyCases {
+		if makePTYSession(tc.chunks...).IsPromptIdle() {
+			t.Fatalf("case %q expected IsPromptIdle=false", tc.name)
+		}
+	}
+
+	// Exiting alt screen back to shell prompt restores IsPromptIdle=true.
+	exited := makePTYSession("\x1b[?1049hvim buffer\x1b[?1049l\r\nroot@srv:~# ")
+	if !exited.IsPromptIdle() {
+		t.Fatal("expected IsPromptIdle=true after exiting alt screen back to prompt")
+	}
+
+	// Closed session returns false even if ring buffer ended with a prompt.
+	exited.closed.Store(true)
+	if exited.IsPromptIdle() {
+		t.Fatal("closed session reported IsPromptIdle=true")
+	}
+}

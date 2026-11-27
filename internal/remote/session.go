@@ -2,6 +2,7 @@
 package remote
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -86,6 +87,7 @@ type Session struct {
 	ringBuf          []byte
 	ringPos          int
 	ringFull         bool
+	inAltScreen      bool
 	statsMu          sync.Mutex
 	prevCPU          [7]float64
 	hasPrevCPU       bool
@@ -135,6 +137,7 @@ func (s *Session) appendRing(b []byte) {
 		copy(s.ringBuf, b[len(b)-ringBufferLimit:])
 		s.ringPos = 0
 		s.ringFull = true
+		s.updateAltScreenLocked(len(b))
 		return
 	}
 	n := copy(s.ringBuf[s.ringPos:], b)
@@ -142,6 +145,7 @@ func (s *Session) appendRing(b []byte) {
 		copy(s.ringBuf, b[n:])
 		s.ringPos = len(b) - n
 		s.ringFull = true
+		s.updateAltScreenLocked(len(b))
 		return
 	}
 	s.ringPos += n
@@ -149,9 +153,62 @@ func (s *Session) appendRing(b []byte) {
 		s.ringPos = 0
 		s.ringFull = true
 	}
+	s.updateAltScreenLocked(len(b))
 }
 
-var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
+var (
+	ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
+	altScreenRe  = regexp.MustCompile(`\x1b\[\?(?:[0-9;]*;)?(?:1049|1047|47)(?:;[0-9;]*)?([hl])`)
+)
+
+func (s *Session) ringTailLocked(window int) []byte {
+	total := s.ringPos
+	if s.ringFull {
+		total = ringBufferLimit
+	}
+	if total == 0 || window <= 0 {
+		return nil
+	}
+	if window > total {
+		window = total
+	}
+	out := make([]byte, window)
+	start := s.ringPos - window
+	if start >= 0 {
+		copy(out, s.ringBuf[start:s.ringPos])
+	} else {
+		n := copy(out, s.ringBuf[ringBufferLimit+start:])
+		copy(out[n:], s.ringBuf[:s.ringPos])
+	}
+	return out
+}
+
+func (s *Session) updateAltScreenLocked(added int) {
+	tail := s.ringTailLocked(added + 32)
+	if len(tail) == 0 || bytes.IndexByte(tail, 0x1b) < 0 {
+		return
+	}
+	matches := altScreenRe.FindAllSubmatch(tail, -1)
+	if len(matches) > 0 {
+		last := matches[len(matches)-1][1]
+		s.inAltScreen = len(last) == 1 && last[0] == 'h'
+	}
+}
+
+func (s *Session) snapshotRingLocked() []byte {
+	if s.ringFull {
+		rawBytes := make([]byte, ringBufferLimit)
+		n := copy(rawBytes, s.ringBuf[s.ringPos:])
+		copy(rawBytes[n:], s.ringBuf[:s.ringPos])
+		return rawBytes
+	}
+	if s.ringPos > 0 {
+		rawBytes := make([]byte, s.ringPos)
+		copy(rawBytes, s.ringBuf[:s.ringPos])
+		return rawBytes
+	}
+	return nil
+}
 
 // RecentOutput returns the last `maxLines` lines of cleaned terminal output from the session ring buffer.
 func (s *Session) RecentOutput(maxLines int) string {
@@ -159,15 +216,7 @@ func (s *Session) RecentOutput(maxLines int) string {
 		maxLines = 120
 	}
 	s.ringMu.Lock()
-	var rawBytes []byte
-	if s.ringFull {
-		rawBytes = make([]byte, ringBufferLimit)
-		n := copy(rawBytes, s.ringBuf[s.ringPos:])
-		copy(rawBytes[n:], s.ringBuf[:s.ringPos])
-	} else if s.ringPos > 0 {
-		rawBytes = make([]byte, s.ringPos)
-		copy(rawBytes, s.ringBuf[:s.ringPos])
-	}
+	rawBytes := s.snapshotRingLocked()
 	s.ringMu.Unlock()
 
 	for len(rawBytes) > 0 && !utf8.RuneStart(rawBytes[0]) {
@@ -181,6 +230,61 @@ func (s *Session) RecentOutput(maxLines int) string {
 		lines = lines[len(lines)-maxLines:]
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// IsPromptIdle reports whether the interactive PTY appears to be sitting idle at a shell prompt
+// (not closed, has a live PTY stdin, not inside an alternate-screen fullscreen TUI, and the last
+// non-empty cleaned line ends like a shell prompt).
+func (s *Session) IsPromptIdle() bool {
+	if s == nil || s.closed.Load() {
+		return false
+	}
+	s.write.Lock()
+	hasInput := s.input != nil
+	s.write.Unlock()
+	if !hasInput {
+		return false
+	}
+
+	s.ringMu.Lock()
+	inAlt := s.inAltScreen
+	rawBytes := s.snapshotRingLocked()
+	s.ringMu.Unlock()
+	if inAlt || len(rawBytes) == 0 {
+		return false
+	}
+
+	for len(rawBytes) > 0 && !utf8.RuneStart(rawBytes[0]) {
+		rawBytes = rawBytes[1:]
+	}
+	clean := ansiEscapeRe.ReplaceAllString(string(rawBytes), "")
+	clean = strings.ReplaceAll(clean, "\r\n", "\n")
+
+	lines := strings.Split(clean, "\n")
+	var lastLine string
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimRight(lines[i], "\r\x00\x07")
+		if idx := strings.LastIndexByte(l, '\r'); idx >= 0 {
+			l = l[idx+1:]
+		}
+		if strings.TrimSpace(l) != "" {
+			lastLine = l
+			break
+		}
+	}
+	if lastLine == "" {
+		return false
+	}
+	trimmed := strings.TrimSpace(lastLine)
+	if len(trimmed) == 0 || len(trimmed) >= 160 {
+		return false
+	}
+	for _, suffix := range []string{"# ", "$ ", "% ", "❯ ", "➜ ", "> "} {
+		if strings.HasSuffix(lastLine, suffix) {
+			return true
+		}
+	}
+	return strings.HasSuffix(trimmed, "#") || strings.HasSuffix(trimmed, "$")
 }
 
 func hostAddress(host string, port int) (string, error) {
@@ -656,6 +760,7 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 		s.Close()
 		return nil, fmt.Errorf("远端拒绝分配交互终端：%w", err)
 	}
+	_ = pty.Setenv("COLORTERM", "truecolor")
 	if err := pty.Shell(); err != nil {
 		if agentCleanup != nil {
 			agentCleanup()

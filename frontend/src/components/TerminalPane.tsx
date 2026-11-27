@@ -13,7 +13,6 @@ import {
   Download,
   Eraser,
   FolderOpen,
-  Loader2,
   Search,
   Sparkles,
   SplitSquareHorizontal,
@@ -22,9 +21,11 @@ import {
 } from 'lucide-react';
 import type { AppSettings, SessionRecord } from '../types/shell';
 import { getTerminalTheme } from '../lib/themes';
+import { TerminalHighlighter } from '../lib/terminalHighlight';
 import { terminalBus } from '../lib/terminalBus';
 import { copyToClipboard, openExternalURL, readFromClipboard } from '../lib/bridge';
 import { formatHostDisplay } from '../lib/utils';
+import { HostIcon } from './HostIcon';
 
 interface TerminalPaneProps {
   paneId: string;
@@ -69,15 +70,14 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   onExplainSelection,
   onExportLog,
   onFontZoom,
-  onToast,
 }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const highlighterRef = useRef<TerminalHighlighter | null>(null);
   const inputRef = useRef(onInput);
   const resizeRef = useRef(onResize);
   const cwdRef = useRef(onCwdChange);
   const settingsRef = useRef(settings);
   const zoomRef = useRef(onFontZoom);
-  const toastRef = useRef(onToast);
   const searchOpenRef = useRef(onOpenSearch);
   const reconnectRef = useRef(onReconnect);
   const stateRef = useRef(session.state);
@@ -86,7 +86,6 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   cwdRef.current = onCwdChange;
   settingsRef.current = settings;
   zoomRef.current = onFontZoom;
-  toastRef.current = onToast;
   searchOpenRef.current = onOpenSearch;
   reconnectRef.current = onReconnect;
   stateRef.current = session.state;
@@ -208,7 +207,6 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
         e.preventDefault();
         if (term.hasSelection()) {
           void copyToClipboard(term.getSelection());
-          toastRef.current('已复制选区');
         }
         return false;
       }
@@ -253,12 +251,45 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       return lines.join('\n') + '\n';
     };
 
+    const highlighter = new TerminalHighlighter();
+    highlighterRef.current = highlighter;
+    const decoder = new TextDecoder('utf-8');
+    let wasHighlightEnabled =
+      (settingsRef.current as AppSettings & { syntaxHighlight?: boolean }).syntaxHighlight !== false;
+
     terminalBus.register(session.id, {
       term,
       search,
       fit: doFit,
       focus: () => term.focus(),
-      writeData: (bytes) => term.write(bytes),
+      writeData: (bytes) => {
+        const highlightOn =
+          (settingsRef.current as AppSettings & { syntaxHighlight?: boolean }).syntaxHighlight !== false;
+        if (highlightOn) {
+          if (!wasHighlightEnabled) {
+            highlighter.reset();
+            wasHighlightEnabled = true;
+          }
+          const text = decoder.decode(bytes, { stream: true });
+          if (text) {
+            const highlighted = highlighter.process(text);
+            if (highlighted) term.write(highlighted);
+          }
+        } else {
+          if (wasHighlightEnabled) {
+            const tailText = decoder.decode();
+            if (tailText) {
+              const highlighted = highlighter.process(tailText);
+              if (highlighted) term.write(highlighted);
+            }
+            const pending = highlighter.flush();
+            if (pending) term.write(pending);
+            highlighter.reset();
+            wasHighlightEnabled = false;
+          }
+          term.write(bytes);
+        }
+      },
       writeln: (line) => term.writeln(line),
       getSelection: () => term.getSelection(),
       getTranscript,
@@ -281,10 +312,21 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       osc7Disp.dispose();
       selDisp.dispose();
       webgl?.dispose();
+      highlighter.reset();
+      if (highlighterRef.current === highlighter) {
+        highlighterRef.current = null;
+      }
       terminalBus.unregister(session.id);
       term.dispose();
     };
   }, [session.id]);
+
+  // Reset highlighter parser state on reconnect so stale alt-screen/SGR state never leaks across sessions.
+  useEffect(() => {
+    if (session.state === 'connecting') {
+      highlighterRef.current?.reset();
+    }
+  }, [session.state]);
 
   // Live-update xterm options when user changes appearance settings.
   useEffect(() => {
@@ -320,7 +362,6 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       if (sel) {
         void copyToClipboard(sel);
         ctrl?.term.clearSelection();
-        onToast('已复制选中文本');
       } else {
         void readFromClipboard().then((t) => {
           if (t && session.state === 'connected') ctrl?.term.paste(t);
@@ -396,20 +437,25 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
 
       <div
         className="pane-xterm-wrap"
-        style={{ background: preset.theme.background ?? '#141720' }}
+        style={{ background: preset.theme.background ?? '#141729' }}
       >
         <div ref={hostRef} className="pane-xterm-host" />
       </div>
 
       {session.state === 'connecting' && (
-        <div className="pane-connecting-bar">
-          <Loader2 size={13} className="spin" />
-          <span className="mono">
-            {hideHostIp
-              ? `正在连接 ${paneDisplayName} …`
-              : `正在连接 ${session.profile.user}@${formatHostDisplay(session.profile.host, session.profile.port)} …`}
-          </span>
-        </div>
+        <>
+          <div className="pane-loading-track" aria-hidden="true">
+            <div className="pane-loading-bar" />
+          </div>
+          <div className="pane-connecting-center" role="status" aria-live="polite">
+            <div className="pane-connecting-icon">
+              <HostIcon profile={session.profile} size="lg" />
+            </div>
+            <div className="pane-connecting-label">
+              正在连接 {paneDisplayName}
+            </div>
+          </div>
+        </>
       )}
 
       {session.state === 'closed' && (
@@ -445,7 +491,6 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
               onClick={() => {
                 if (ctxMenu.selection) {
                   void copyToClipboard(ctxMenu.selection);
-                  onToast('已复制');
                 }
                 setCtxMenu(null);
               }}

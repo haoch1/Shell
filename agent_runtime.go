@@ -1648,7 +1648,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		}
 		mirrorVisible := cfg.ExecMode == "visible" && isGUI
 		if mirrorVisible {
-			a.mirrorToTerminal(sid, fmt.Sprintf("\r\n\x1b[38;5;75m[MCP · %s]\x1b[0m \x1b[1m$ %s\x1b[0m\r\n", clientName, cmd))
+			a.mirrorToTerminal(sid, fmt.Sprintf("\r\n\x1b[38;5;75m[MCP · %s]\x1b[0m \x1b[1m$ %s\x1b[0m\r\n", clientName, formatMirrorLines(cmd)))
 		}
 		execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 		defer cancel()
@@ -1676,6 +1676,9 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 			}
 			mirrorBuf.WriteString(fmt.Sprintf("\x1b[90m[exit %d · %dms]\x1b[0m\r\n", res.ExitCode, res.DurationMs))
 			a.mirrorToTerminal(sid, mirrorBuf.String())
+			if entry.session.IsPromptIdle() {
+				_ = entry.session.Write([]byte("\r"))
+			}
 		}
 		totalRedacted := rOut.Count + rErr.Count
 		payload := map[string]any{

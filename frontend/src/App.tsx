@@ -70,6 +70,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   rightClickPaste: false,
   showTelemetry: true,
   hideHostIp: false,
+  syntaxHighlight: true,
+  groupOrder: [],
   webglEnabled: false,
   defaultKeepAlive: 30,
   confirmOnClose: true,
@@ -1139,6 +1141,8 @@ export const App: React.FC = () => {
           activeTabId={activeTabId}
           onDragPane={paneDrag.start}
           profiles={profiles}
+          groupOrder={settings.groupOrder ?? []}
+          onReorderGroups={(next) => void updateSettings({ groupOrder: next })}
           sessions={sessions}
           activeProfileId={activeSession?.profile.id}
           hasUpdate={Boolean(updateInfo?.hasUpdate)}

@@ -166,27 +166,27 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
       const darkEditorChrome = EditorView.theme(
         {
           '&': {
-            color: '#E6EDF7',
-            backgroundColor: '#1C2028',
+            color: '#E6EDF3',
+            backgroundColor: '#121316',
           },
           '.cm-content': {
-            caretColor: '#60A5FA',
+            caretColor: '#58A6FF',
           },
           '.cm-cursor, .cm-dropCursor': {
-            borderLeftColor: '#60A5FA',
+            borderLeftColor: '#58A6FF',
             borderLeftWidth: '1.8px',
           },
           '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
             {
-              backgroundColor: 'rgba(59, 130, 246, 0.30)',
+              backgroundColor: 'rgba(88, 166, 255, 0.28)',
             },
           '.cm-activeLine': {
-            backgroundColor: 'rgba(255, 255, 255, 0.042)',
+            backgroundColor: 'rgba(255, 255, 255, 0.036)',
           },
           '.cm-gutters': {
-            backgroundColor: '#191D25',
-            color: '#6B778D',
-            borderRight: '1px solid rgba(255, 255, 255, 0.08)',
+            backgroundColor: '#16171B',
+            color: '#6E7681',
+            borderRight: '1px solid rgba(255, 255, 255, 0.075)',
           },
           '.cm-activeLineGutter': {
             backgroundColor: 'rgba(255, 255, 255, 0.055)',

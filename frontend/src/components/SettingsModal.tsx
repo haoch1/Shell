@@ -583,7 +583,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <span style={{ fontSize: 9, opacity: 0.72 }}>浅色</span>
                           </span>
                           <span className="theme-swatch-half dark">
-                            <span style={{ color: '#7FD29A' }}>&gt;_</span>
+                            <span style={{ color: '#3FB950' }}>&gt;_</span>
                             <span style={{ fontSize: 9, opacity: 0.78 }}>深色</span>
                           </span>
                         </div>

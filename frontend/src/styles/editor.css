@@ -1,6 +1,6 @@
 /* ==========================================================================
    Remote SFTP CodeMirror 6 Editor Modal
-   Scoped styles aligned with Shell's Dark (#1C2028) & Light (#F8FAFC) tokens
+   Scoped styles aligned with Shell's Dark (#121316) & Light (#F8FAFC) tokens
    ========================================================================== */
 
 .modal-backdrop.remote-editor-backdrop {
@@ -233,7 +233,7 @@
 }
 
 [data-theme="dark"] .remote-editor-body {
-  background: #1c2028;
+  background: #121316;
 }
 
 .remote-editor-cm-host {

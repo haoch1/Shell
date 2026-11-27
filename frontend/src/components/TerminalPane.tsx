@@ -562,7 +562,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
 
       <div
         className="pane-xterm-wrap"
-        style={{ background: preset.theme.background ?? '#1C2028', position: 'relative' }}
+        style={{ background: preset.theme.background ?? '#121316', position: 'relative' }}
       >
         <div ref={hostRef} className={`pane-xterm-host ${showConnectOverlay ? 'is-hidden' : ''}`} />
         {showConnectOverlay && (() => {

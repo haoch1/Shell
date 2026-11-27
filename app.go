@@ -1337,6 +1337,9 @@ type HostExportResult struct {
 func (a *App) ExportHosts(ids []string, format string) (HostExportResult, error) {
 	options := runtime.SaveDialogOptions{Title: "导出服务器"}
 	switch format {
+	case "csv", "csv-sanitized":
+		options.DefaultFilename = fmt.Sprintf("Shell-hosts-%s.csv", time.Now().Format("2006-01-02"))
+		options.Filters = []runtime.FileFilter{{DisplayName: "CSV 主机列表 (*.csv)", Pattern: "*.csv"}}
 	case "openssh":
 		options.DefaultFilename = "ssh_config"
 		options.Filters = []runtime.FileFilter{{DisplayName: "OpenSSH 配置", Pattern: "*"}}

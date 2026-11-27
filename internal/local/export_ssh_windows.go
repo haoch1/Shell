@@ -3,6 +3,7 @@ package local
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -11,33 +12,56 @@ import (
 	"unicode"
 )
 
-// ExportHostFile reads only host profiles and connection preferences. Secrets live separately.
+// ExportHostFile exports selected host profiles to CSV (Netcatty/Termius compatible), OpenSSH config, or PuTTY registry.
+// Only the "csv" format reads DPAPI secrets so users can migrate complete credentials to other SSH clients.
 func ExportHostFile(dest string, ids []string, format string) (int, []string, error) {
 	var profiles []Profile
 	settings := DefaultSettings()
+	var secrets map[string]string
+	includeSecrets := format == "csv"
 	if err := withStore(func(dir string) error {
 		var err error
 		profiles, err = readProfiles(dir)
 		if err != nil {
 			return err
 		}
+		if includeSecrets {
+			secrets = make(map[string]string, len(profiles))
+			for _, p := range profiles {
+				var item credential
+				err := readProtected(secretPath(dir, p.ID), &item)
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				if err == nil && item.For == identityKey(p) && item.Secret != "" {
+					secrets[p.ID] = item.Secret
+				}
+			}
+		}
 		return readSettings(dir, &settings)
 	}); err != nil {
 		return 0, nil, err
 	}
-	for i := range profiles {
-		p := &profiles[i]
-		if p.KeepAliveSec == 0 {
-			p.KeepAliveSec = settings.DefaultKeepAlive
-		}
-		if p.ProxyType == "" || p.ProxyType == "none" {
-			p.ProxyType = settings.ProxyMode
-			p.ProxyHost, p.ProxyPort, p.ProxyUser = settings.ProxyHost, settings.ProxyPort, settings.ProxyUser
+	defer clear(secrets)
+
+	if format != "csv" && format != "csv-sanitized" {
+		for i := range profiles {
+			p := &profiles[i]
+			if p.KeepAliveSec == 0 {
+				p.KeepAliveSec = settings.DefaultKeepAlive
+			}
+			if p.ProxyType == "" || p.ProxyType == "none" {
+				p.ProxyType = settings.ProxyMode
+				p.ProxyHost, p.ProxyPort, p.ProxyUser = settings.ProxyHost, settings.ProxyPort, settings.ProxyUser
+			}
 		}
 	}
-	data, count, warnings, err := renderHostExport(profiles, ids, format)
+	data, count, warnings, err := renderHostExportWithSecrets(profiles, ids, format, secrets)
 	if err != nil {
 		return 0, nil, err
+	}
+	if includeSecrets {
+		defer clear(data)
 	}
 	if err := writeAtomic(dest, data); err != nil {
 		return 0, nil, err
@@ -46,6 +70,10 @@ func ExportHostFile(dest string, ids []string, format string) (int, []string, er
 }
 
 func renderHostExport(all []Profile, ids []string, format string) ([]byte, int, []string, error) {
+	return renderHostExportWithSecrets(all, ids, format, nil)
+}
+
+func renderHostExportWithSecrets(all []Profile, ids []string, format string, secrets map[string]string) ([]byte, int, []string, error) {
 	wanted := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		wanted[id] = true
@@ -64,6 +92,10 @@ func renderHostExport(all []Profile, ids []string, format string) ([]byte, int, 
 		return nil, 0, nil, errors.New("没有可导出的服务器")
 	}
 	switch format {
+	case "csv":
+		return renderNetcattyCSV(selected, all, secrets, true)
+	case "csv-sanitized":
+		return renderNetcattyCSV(selected, all, nil, false)
 	case "openssh":
 		return renderOpenSSH(selected, all)
 	case "putty":

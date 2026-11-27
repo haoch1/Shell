@@ -1,8 +1,8 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { errorMessage, getApi } from '../lib/bridge';
 import { formatHostDisplay } from '../lib/utils';
-import type { HostExportResult, Profile } from '../types/shell';
+import type { HostExportFormat, HostExportResult, Profile } from '../types/shell';
 import { Checkbox } from './ui/Checkbox';
 
 export function HostExportModal({ profiles, initialIds, hideHostIp = false, onClose }: {
@@ -11,6 +11,8 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
   const [selected, setSelected] = useState<Set<string>>(() =>
     new Set(initialIds.length > 0 ? initialIds : profiles.map(p => p.id)),
   );
+  const [format, setFormat] = useState<'csv' | 'openssh'>('csv');
+  const [includeSecrets, setIncludeSecrets] = useState(true);
   const [result, setResult] = useState<HostExportResult | null>(null);
   const [error, setError] = useState('');
   const [canceled, setCanceled] = useState(false);
@@ -20,9 +22,6 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
   const ids = profiles.filter(p => selected.has(p.id)).map(p => p.id);
   const allSelected = profiles.length > 0 && ids.length === profiles.length;
   const someSelected = ids.length > 0 && !allSelected;
-  const savedIds = useMemo(() => new Set(profiles.map(p => p.id)), [profiles]);
-  const includesJumpHost = profiles.some(p =>
-    selected.has(p.id) && p.jumpHostId && savedIds.has(p.jumpHostId) && !selected.has(p.jumpHostId));
 
   useLayoutEffect(() => {
     const modal = dialog.current;
@@ -51,7 +50,8 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
     setCanceled(false);
     try {
       const exportIds = ids.length === profiles.length ? [] : ids;
-      const saved = await getApi().ExportHosts(exportIds, 'openssh');
+      const wireFormat: HostExportFormat = format === 'openssh' ? 'openssh' : includeSecrets ? 'csv' : 'csv-sanitized';
+      const saved = await getApi().ExportHosts(exportIds, wireFormat);
       if (saved.path) setResult(saved);
       else setCanceled(true);
     } catch (err) {
@@ -78,7 +78,33 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
       <form onSubmit={event => { event.preventDefault(); if (result) close(); else void save(); }}>
         <div className="modal-header">
           <h2 id="exportTitle">{result ? `已导出 ${result.count} 台主机` : '导出主机'}</h2>
-          <button type="button" className="icon-btn" aria-label="关闭导出" disabled={busy} onClick={close}><X size={15} /></button>
+          <div className="modal-header-actions">
+            {!result && profiles.length > 0 && (
+              <div id="exportFormatToggle" className="segmented" role="group" aria-label="导出格式">
+                <button
+                  type="button"
+                  data-format="csv"
+                  aria-pressed={format === 'csv'}
+                  className={format === 'csv' ? 'active' : ''}
+                  disabled={busy}
+                  onClick={() => setFormat('csv')}
+                >
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  data-format="openssh"
+                  aria-pressed={format === 'openssh'}
+                  className={format === 'openssh' ? 'active' : ''}
+                  disabled={busy}
+                  onClick={() => setFormat('openssh')}
+                >
+                  OpenSSH
+                </button>
+              </div>
+            )}
+            <button type="button" className="icon-btn" aria-label="关闭导出" disabled={busy} onClick={close}><X size={15} /></button>
+          </div>
         </div>
         <div className="modal-body">
           {result ? (
@@ -138,18 +164,27 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
                   </div>
                 </div>
               </div>
-              <div className="host-export-meta">
-                <p className="host-export-note">
-                  {includesJumpHost && <span id="exportJumpNotice">文件还会包含连接所需的跳板机。</span>}
-                  导出为 OpenSSH 配置文件，密码和私钥内容不会写入文件。
-                </p>
-                {error && <p className="error-text" role="alert">{error}</p>}
-                {canceled && <p className="host-export-note" role="status">已取消保存</p>}
-              </div>
+              {(error || canceled) && (
+                <div className="host-export-meta">
+                  {error && <p className="error-text" role="alert">{error}</p>}
+                  {canceled && <p className="host-export-note" role="status">已取消保存</p>}
+                </div>
+              )}
             </>
           )}
         </div>
         <div className="modal-footer">
+          {!result && profiles.length > 0 && format === 'csv' && (
+            <label className="host-export-secret-opt">
+              <Checkbox
+                id="exportIncludeSecrets"
+                checked={includeSecrets}
+                disabled={busy}
+                onChange={(e) => setIncludeSecrets(e.target.checked)}
+              />
+              <span>包含密码</span>
+            </label>
+          )}
           {!result && <button type="button" className="btn" autoFocus={!profiles.length} disabled={busy} onClick={close}>取消</button>}
           <button type="submit" id="saveHostExport" className="btn btn-primary" disabled={!result && (busy || !ids.length)}>
             {result ? '完成' : busy ? '正在导出…' : '导出'}

@@ -46,7 +46,27 @@ export async function verifyHostExport({ call, evaluate, until, click, shot }) {
   assert.equal(await evaluate("!!document.querySelector('#hostExportFormat')"), false, 'Format dropdown must not be present');
   assert.equal(await evaluate("document.querySelector('#hostExportDialog').matches(':modal')"), true);
   assert.equal(await evaluate("document.querySelectorAll('#hostExportDialog .host-export-list input[type=checkbox]:checked').length"), 3, 'All hosts must be selected by default');
-  assert.equal(await evaluate("document.querySelector('#toggleExportSelectAll')?.textContent.trim()"), '取消全选');
+  const exportSelectMetrics = await evaluate(`(() => {
+    const master = document.querySelector('#toggleExportSelectAll');
+    const firstRow = document.querySelector('#hostExportDialog .host-export-list input[type=checkbox]');
+    const labelText = master?.closest('.select-list-master')?.textContent?.trim() || '';
+    return {
+      isCheckbox: master?.tagName === 'INPUT' && master?.type === 'checkbox',
+      checked: Boolean(master?.checked),
+      indeterminate: Boolean(master?.indeterminate),
+      labelText,
+      masterLeft: master ? master.getBoundingClientRect().left : -1,
+      firstRowLeft: firstRow ? firstRow.getBoundingClientRect().left : -1,
+    };
+  })()`);
+  assert.equal(exportSelectMetrics.isCheckbox, true, 'Expected unified in-card master <Checkbox> for #toggleExportSelectAll');
+  assert.equal(exportSelectMetrics.checked, true, 'Expected master checkbox checked by default');
+  assert.equal(exportSelectMetrics.indeterminate, false, 'Expected master checkbox not indeterminate when all selected');
+  assert.ok(exportSelectMetrics.labelText.includes('已选 3 / 3'), 'Expected count label on master checkbox, got ' + exportSelectMetrics.labelText);
+  assert.ok(
+    exportSelectMetrics.masterLeft > 0 && Math.abs(exportSelectMetrics.masterLeft - exportSelectMetrics.firstRowLeft) <= 0.5,
+    'Expected export master checkbox aligned pixel-for-pixel with first row checkbox: ' + JSON.stringify(exportSelectMetrics),
+  );
   const baseRect = await dialogRect();
   assert.ok(baseRect && Math.abs(baseRect.width - 440) <= 2 && Math.abs(baseRect.height - 432) <= 2, 'Expected fixed 440x432 export dialog, got ' + JSON.stringify(baseRect));
   await shot?.('19-HostExport');
@@ -74,10 +94,19 @@ export async function verifyHostExport({ call, evaluate, until, click, shot }) {
   await assertSameSize(baseRect, 'reopen default');
   await click('#toggleExportSelectAll');
   assert.equal(await evaluate("document.querySelectorAll('#hostExportDialog .host-export-list input[type=checkbox]:checked').length"), 0, 'Toggle select-all should unselect all hosts');
-  assert.equal(await evaluate("document.querySelector('#toggleExportSelectAll')?.textContent.trim()"), '全选');
+  const unselectedMaster = await evaluate(`(() => {
+    const m = document.querySelector('#toggleExportSelectAll');
+    return { checked: Boolean(m?.checked), indeterminate: Boolean(m?.indeterminate), label: m?.closest('.select-list-master')?.textContent?.trim() || '' };
+  })()`);
+  assert.deepEqual(unselectedMaster, { checked: false, indeterminate: false, label: '全选' }, 'Expected unchecked master checkbox with 全选 label after unselect-all');
   assert.equal(await evaluate("document.querySelector('#saveHostExport').disabled"), true, 'An empty selection must not export every host');
   await assertSameSize(baseRect, 'all unselected');
   await click('#hostExportDialog input[value="p2"]');
+  const partialMaster = await evaluate(`(() => {
+    const m = document.querySelector('#toggleExportSelectAll');
+    return { checked: Boolean(m?.checked), indeterminate: Boolean(m?.indeterminate), label: m?.closest('.select-list-master')?.textContent?.trim() || '' };
+  })()`);
+  assert.deepEqual(partialMaster, { checked: false, indeterminate: true, label: '已选 1 / 3' }, 'Expected indeterminate master checkbox when 1/3 hosts selected');
   assert.equal(await evaluate("document.querySelector('#saveHostExport').disabled"), false);
   assert.ok(await evaluate("!!document.querySelector('#exportJumpNotice')"), 'The user must see that OpenSSH includes the extra jump host before saving');
   await assertSameSize(baseRect, 'single host with jump notice');
@@ -93,7 +122,7 @@ export async function verifyHostExport({ call, evaluate, until, click, shot }) {
   await assertSameSize(baseRect, 'after single-host OpenSSH save result');
   await click('#saveHostExport');
 
-  await click('.sidebar-footer button[aria-label="批量管理"]');
+  await click('#batchManageBtn');
   assert.equal(
     await evaluate("!!document.querySelector('.sidebar-footer.batch-bar button[aria-label=\"导出已选主机\"]')"),
     false,

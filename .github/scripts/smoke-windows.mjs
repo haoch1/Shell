@@ -207,6 +207,15 @@ const BRIDGE_MOCK_SCRIPT = `
     }),
     CommitImportedHosts: async () => [],
     Connect: async (id, p) => {
+      if (p.id === 'progress-test') {
+        emit('ssh:status', id, 'jump', '正在连接跳板机 Tokyo Production…');
+        await new Promise(r => setTimeout(r, 35));
+        emit('ssh:status', id, 'dial', '正在连接 ' + p.host + ':' + p.port + '…');
+        await new Promise(r => setTimeout(r, 35));
+        emit('ssh:status', id, 'auth', '正在校验指纹与认证…');
+        await new Promise(resolve => { window.finishProgressConnect = resolve; });
+        return;
+      }
       if (p.id === 'fail-test') {
         emit('ssh:status', id, 'jump', '正在连接跳板机 Tokyo Production…');
         await new Promise(r => setTimeout(r, 40));
@@ -265,7 +274,7 @@ const BRIDGE_MOCK_SCRIPT = `
       { name: 'docker-compose.yml', path: '/home/deploy/app/docker-compose.yml', isDir: false, isSymlink: false, size: 2480, mode: 0o644, perm: '-rw-r--r--', modTime: Math.floor(Date.now()/1000) - 7200 },
       { name: 'nginx.conf', path: '/home/deploy/app/nginx.conf', isDir: false, isSymlink: false, size: 4120, mode: 0o644, perm: '-rw-r--r--', modTime: Math.floor(Date.now()/1000) - 86400 },
       { name: 'deploy.sh', path: '/home/deploy/app/deploy.sh', isDir: false, isSymlink: false, size: 1890, mode: 0o755, perm: '-rwxr-xr-x', modTime: Math.floor(Date.now()/1000) - 1800 },
-      { name: 'release-1.5.3.tar.gz', path: '/home/deploy/app/release-1.5.3.tar.gz', isDir: false, isSymlink: false, size: 14820400, mode: 0o644, perm: '-rw-r--r--', modTime: Math.floor(Date.now()/1000) - 21600 },
+      { name: 'release-1.5.5.tar.gz', path: '/home/deploy/app/release-1.5.5.tar.gz', isDir: false, isSymlink: false, size: 14820400, mode: 0o644, perm: '-rw-r--r--', modTime: Math.floor(Date.now()/1000) - 21600 },
       { name: '.env.production', path: '/home/deploy/app/.env.production', isDir: false, isSymlink: false, size: 612, mode: 0o600, perm: '-rw-------', modTime: Math.floor(Date.now()/1000) - 43200 }
     ],
     PickUploadFiles: async () => [],
@@ -307,7 +316,7 @@ const BRIDGE_MOCK_SCRIPT = `
           '# Production API Gateway & Database Stack',
           'services:',
           '  api-gateway:',
-          '    image: ghcr.io/acme/gateway:1.5.3',
+          '    image: ghcr.io/acme/gateway:1.5.5',
           '    restart: unless-stopped',
           '    ports:',
           '      - "443:8443"',
@@ -628,29 +637,52 @@ async function verifyFrontendUI() {
       const r = document.querySelector('.sidebar-action-row')?.getBoundingClientRect();
       return r ? { top: r.top, height: r.height } : null;
     })()`);
-    await click('.sidebar-footer button[aria-label="批量管理"]');
+    await click('#batchManageBtn');
     await until(() => evaluate("!!document.querySelector('.sidebar-select-header')"), 'sidebar batch select header');
     const batchMetrics = await evaluate(`(() => {
       const hdr = document.querySelector('.sidebar-select-header')?.getBoundingClientRect();
+      const masterCb = document.querySelector('.sidebar-select-header input[type="checkbox"]')?.getBoundingClientRect();
+      const firstRowCb = document.querySelector('.host-row input[type="checkbox"]')?.getBoundingClientRect();
       const rowCbs = [...document.querySelectorAll('.host-row input[type="checkbox"]')].filter(
         el => getComputedStyle(el).appearance === 'none',
       ).length;
-      const btns = [...document.querySelectorAll('.sidebar-footer.batch-bar .batch-action-btn')].map(el => ({
-        text: el.textContent.trim(),
-        width: el.getBoundingClientRect().width,
-        disabled: el.disabled,
-      }));
-      return { hdr: hdr ? { top: hdr.top, height: hdr.height } : null, rowCbs, btns };
+      const footer = document.querySelector('.sidebar-footer.batch-bar')?.getBoundingClientRect();
+      const btns = [...document.querySelectorAll('.sidebar-footer.batch-bar .batch-action-btn')].map(el => {
+        const r = el.getBoundingClientRect();
+        return {
+          text: el.textContent.trim(),
+          width: r.width,
+          top: r.top,
+          bottom: r.bottom,
+          disabled: el.disabled,
+        };
+      });
+      return {
+        hdr: hdr ? { top: hdr.top, height: hdr.height } : null,
+        masterCbLeft: masterCb?.left ?? null,
+        firstRowCbLeft: firstRowCb?.left ?? null,
+        footer: footer ? { top: footer.top, bottom: footer.bottom, height: footer.height } : null,
+        rowCbs,
+        btns,
+      };
     })()`);
     assert.ok(
       beforeBatchHeaderRect && batchMetrics.hdr && Math.abs(beforeBatchHeaderRect.height - batchMetrics.hdr.height) <= 2,
       'Expected zero vertical jump entering batch select mode: ' + JSON.stringify({ beforeBatchHeaderRect, after: batchMetrics.hdr }),
+    );
+    assert.ok(
+      batchMetrics.masterCbLeft !== null && batchMetrics.firstRowCbLeft !== null && Math.abs(batchMetrics.masterCbLeft - batchMetrics.firstRowCbLeft) <= 0.5,
+      'Expected master checkbox aligned pixel-for-pixel with host row checkboxes: ' + JSON.stringify(batchMetrics),
     );
     assert.equal(batchMetrics.rowCbs, 3, 'Expected custom <Checkbox> on all 3 host rows, got ' + batchMetrics.rowCbs);
     assert.equal(batchMetrics.btns.length, 2, 'Expected 2 equal-width bottom batch buttons, got ' + JSON.stringify(batchMetrics.btns));
     assert.ok(
       Math.abs(batchMetrics.btns[0].width - batchMetrics.btns[1].width) <= 2,
       'Expected equal-width bottom batch buttons, got ' + JSON.stringify(batchMetrics.btns),
+    );
+    assert.ok(
+      batchMetrics.footer && (batchMetrics.btns[0].top - batchMetrics.footer.top) >= 7 && (batchMetrics.footer.bottom - batchMetrics.btns[0].bottom) >= 7,
+      'Expected comfortable vertical breathing room in bottom batch bar: ' + JSON.stringify({ footer: batchMetrics.footer, btn: batchMetrics.btns[0] }),
     );
     assert.equal(await evaluate("document.querySelector('#batchGroupBtn')?.disabled"), true, 'Batch group button must start disabled with 0 selected');
     await click('.host-row[data-profile-id="p3"]');
@@ -668,14 +700,14 @@ async function verifyFrontendUI() {
     await until(() => evaluate("!document.querySelector('.sidebar-select-header')"), 'Esc exits batch select mode');
 
     // Verify batch host grouping (#batchGroupBtn popover: existing group + new group, restoring fixture cleanly)
-    await click('.sidebar-footer button[aria-label="批量管理"]');
+    await click('#batchManageBtn');
     await click('.host-row[data-profile-id="p3"]');
     await click('#batchGroupBtn');
     const groupPopRect = await evaluate(`(() => { const el = document.querySelector('#batchGroupPopover'); if (!el) return null; const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width }; })()`);
     assert.ok(groupPopRect && groupPopRect.top > 0 && groupPopRect.bottom < 820 && groupPopRect.width >= 180, 'Expected visible batch group popover inside viewport, got ' + JSON.stringify(groupPopRect));
     await evaluate(`[...document.querySelectorAll('#batchGroupPopover .batch-group-list .context-menu-item')].find(el => el.textContent.trim() === '生产集群')?.click()`);
     await until(() => evaluate("window.go.main.App.Profiles().then(list => list.find(x => x.id === 'p3')?.group === '生产集群')"), 'batch assign existing group');
-    await click('.sidebar-footer button[aria-label="批量管理"]');
+    await click('#batchManageBtn');
     await click('.host-row[data-profile-id="p3"]');
     await click('#batchGroupBtn');
     await until(() => evaluate("!!document.querySelector('#batchGroupInput')"), 'batch group input');
@@ -907,7 +939,21 @@ async function verifyFrontendUI() {
     await click('#importSshBtn');
     await until(() => evaluate("!!document.querySelector('#importDialog')"), 'universal import modal');
     await click('#pickImportFilesBtn');
-    await sleep(250);
+    await until(() => evaluate("document.querySelectorAll('#importDialog .import-host-row').length === 2"), 'imported hosts list');
+    const importAlign = await evaluate(`(() => {
+      const master = document.querySelector('#importDialog .select-list-header input[type="checkbox"]');
+      const firstRow = document.querySelector('#importDialog .import-host-row input[type="checkbox"]');
+      return {
+        checked: Boolean(master?.checked),
+        masterLeft: master ? master.getBoundingClientRect().left : -1,
+        firstRowLeft: firstRow ? firstRow.getBoundingClientRect().left : -1,
+      };
+    })()`);
+    assert.ok(
+      importAlign.checked && importAlign.masterLeft > 0 && Math.abs(importAlign.masterLeft - importAlign.firstRowLeft) <= 0.5,
+      'Expected import modal master checkbox aligned pixel-for-pixel with rows: ' + JSON.stringify(importAlign),
+    );
+    await sleep(150);
     await shot('10-Universal-Import');
     await click('#importDialog button[aria-label="关闭"]');
 
@@ -1048,12 +1094,31 @@ async function verifyFrontendUI() {
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.fontFamily.includes('SF Mono'))"), 'restored default font via Radix Select');
     await evaluate(`document.querySelector('#settingsDialog .settings-content').scrollTop = 0`);
     await sleep(200);
+    const themeTiles = await evaluate(`[...document.querySelectorAll('#settingsDialog .theme-tile')].map(el => el.textContent.trim())`);
+    assert.ok(
+      themeTiles.some(t => t.includes('石墨深色')) && themeTiles.some(t => t.includes('清雅浅色')) && !themeTiles.some(t => t.includes('Termius')),
+      'Expected eye-comfort theme presets 石墨深色 / 清雅浅色 in Settings, got ' + JSON.stringify(themeTiles),
+    );
     await shot('08-Settings-Dark');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await sleep(250);
-    // Verify restored #1C2028 dark terminal background blending cleanly with chrome
-    const darkTermBg = await evaluate(`getComputedStyle(document.querySelector('.pane-xterm-wrap')).backgroundColor`);
-    assert.equal(darkTermBg, 'rgb(28, 32, 40)', 'Expected Termius Dark canvas background restored to #1C2028, got ' + darkTermBg);
+    // Verify 石墨深色 (#1C2028) dark terminal background, calm cursor (#93B4F5) & non-neon ANSI green (#7FD29A)
+    const darkPaletteAudit = await evaluate(`(() => {
+      const wrap = document.querySelector('.pane-xterm-wrap');
+      const bg = wrap ? getComputedStyle(wrap).backgroundColor : '';
+      const greenSpan = document.querySelector('.pane-xterm-wrap .xterm-fg-2');
+      const greenColor = greenSpan ? getComputedStyle(greenSpan).color : '';
+      const styleText = [...document.querySelectorAll('.pane-xterm-wrap style')].map(s => s.textContent || '').join('\\n');
+      const cursorEl = document.querySelector('.pane-xterm-wrap .xterm-cursor');
+      const cursorBoxShadow = cursorEl ? getComputedStyle(cursorEl).boxShadow : '';
+      const hasCalmCursor = /#93b4f5/i.test(styleText) || styleText.includes('147, 180, 245') || cursorBoxShadow.includes('147, 180, 245');
+      const hasSoftGreen = /#7fd29a/i.test(styleText) || greenColor === 'rgb(127, 210, 154)';
+      return { bg, greenColor, cursorBoxShadow, hasCalmCursor, hasSoftGreen };
+    })()`);
+    assert.equal(darkPaletteAudit.bg, 'rgb(28, 32, 40)', 'Expected 石墨深色 canvas background #1C2028, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.greenColor, 'rgb(127, 210, 154)', 'Expected non-neon 石墨深色 ANSI green #7FD29A, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCalmCursor, true, 'Expected calm 石墨深色 cursor color #93B4F5 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasSoftGreen, true, 'Expected soft 石墨深色 green #7FD29A in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
     await shot('09-Terminal-Dark');
 
     // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #1C2028 canvas)
@@ -1076,39 +1141,199 @@ async function verifyFrontendUI() {
     await click('#sftpBtn');
     await until(() => evaluate("!document.querySelector('#filesPane')"), 'closed dark SFTP drawer');
 
-    // Verify inline SSH connection trace & error diagnosis UI (zero top-left corner cursor on initial failure)
+    // Verify centered SSH connection progress card (jump hop + elapsed timer + vertical milestone rail)
+    await evaluate(`(() => {
+      const api = window.go.main.App;
+      const origProfiles = api.Profiles;
+      window.restoreProgressProfile = () => { api.Profiles = origProfiles; };
+      api.Profiles = async () => [
+        ...(await origProfiles()),
+        { id: 'progress-test', name: 'Prod Core API', host: '10.24.0.42', port: 22, user: 'deploy', icon: 'ubuntu', jumpHostId: 'p1', auth: 'agent', keepAliveSec: 30 }
+      ];
+      window.runtime.EventsEmit('agent:connect_profile', 'progress-test');
+    })()`);
+    await until(
+      () =>
+        evaluate(
+          "!!document.querySelector('.pane-connect-card:not(.is-error) .pane-connect-step.is-active') && document.querySelectorAll('.pane-connect-card:not(.is-error) .pane-connect-step.is-done').length === 2",
+        ),
+      'active connect progress card with jump hop milestones',
+    );
+    await sleep(180);
+    const progressAudit = await evaluate(`(() => {
+      const overlay = document.querySelector('.pane-connect-trace')?.getBoundingClientRect();
+      const card = document.querySelector('.pane-connect-card:not(.is-error)')?.getBoundingClientRect();
+      const host = document.querySelector('.pane-box.focused .pane-xterm-host');
+      const hop = document.querySelector('.pane-connect-card .pane-connect-hop')?.textContent?.trim() || '';
+      const elapsed = document.querySelector('.pane-connect-card .pane-connect-elapsed')?.textContent?.trim() || '';
+      const doneSteps = document.querySelectorAll('.pane-connect-card .pane-connect-step.is-done').length;
+      const activeSteps = document.querySelectorAll('.pane-connect-card .pane-connect-step.is-active').length;
+      const pendingSteps = document.querySelectorAll('.pane-connect-card .pane-connect-step.is-pending').length;
+      const centerDelta = overlay && card ? Math.abs((card.left + card.width / 2) - (overlay.left + overlay.width / 2)) : 999;
+      return { xtermHidden: Boolean(host?.classList.contains('is-hidden')), hop, elapsed, doneSteps, activeSteps, pendingSteps, centerDelta };
+    })()`);
+    assert.equal(progressAudit.xtermHidden, true, 'Expected xterm hidden while connecting');
+    assert.ok(progressAudit.hop.includes('Tokyo Production'), 'Expected jump hop badge on connect progress card, got ' + JSON.stringify(progressAudit));
+    assert.match(progressAudit.elapsed, /^\d+\.\ds$/, 'Expected live elapsed timer on connect progress card, got ' + JSON.stringify(progressAudit));
+    assert.deepEqual(
+      { done: progressAudit.doneSteps, active: progressAudit.activeSteps, pending: progressAudit.pendingSteps },
+      { done: 2, active: 1, pending: 1 },
+      'Expected vertical milestone rail (jump/dial done, auth active, shell pending): ' + JSON.stringify(progressAudit),
+    );
+    assert.ok(progressAudit.centerDelta <= 2, 'Expected centered .pane-connect-card, centerDelta=' + progressAudit.centerDelta);
+    await shot('27-Connect-Progress-Card');
+    await evaluate(`(() => { window.finishProgressConnect?.(); window.restoreProgressProfile?.(); })()`);
+    await click('.tab-item.active .tab-close');
+    await until(() => evaluate("document.querySelectorAll('.tab-item').length === 1"), 'closed progress test tab');
+
+    // Verify centered SSH connection error diagnosis card (vertical milestone rail + copy error + edit/reconnect)
     await evaluate(`(() => {
       const api = window.go.main.App;
       const origProfiles = api.Profiles;
       window.restoreFailProfile = () => { api.Profiles = origProfiles; };
       api.Profiles = async () => [
         ...(await origProfiles()),
-        { id: 'fail-test', name: 'Staging DB', host: '10.24.0.99', port: 22, user: 'ops', auth: 'agent', keepAliveSec: 30 }
+        { id: 'fail-test', name: 'Staging DB', host: '10.24.0.99', port: 22, user: 'ops', icon: 'debian', jumpHostId: 'p1', auth: 'agent', keepAliveSec: 30 }
       ];
       window.runtime.EventsEmit('agent:connect_profile', 'fail-test');
     })()`);
-    await until(() => evaluate("!!document.querySelector('.pane-connect-trace .pane-connect-error-title')"), 'connect error trace overlay');
+    await until(() => evaluate("!!document.querySelector('.pane-connect-card.is-error .pane-connect-error-title')"), 'connect error trace overlay');
     const traceAudit = await evaluate(`(() => {
+      const overlay = document.querySelector('.pane-connect-trace')?.getBoundingClientRect();
+      const card = document.querySelector('.pane-connect-card.is-error')?.getBoundingClientRect();
       const host = document.querySelector('.pane-box.focused .pane-xterm-host');
+      const hop = document.querySelector('.pane-connect-card.is-error .pane-connect-hop')?.textContent?.trim() || '';
+      const pill = document.querySelector('.pane-connect-card.is-error .pane-connect-pill.error')?.textContent?.trim() || '';
       const title = document.querySelector('.pane-connect-error-title')?.textContent?.trim() || '';
       const raw = document.querySelector('.pane-connect-raw')?.textContent?.trim() || '';
+      const hasCopyBtn = !!document.querySelector('.pane-connect-card.is-error .pane-connect-copy');
       const btns = [...document.querySelectorAll('.pane-connect-actions button')].map(b => b.textContent.trim());
-      const errSteps = document.querySelectorAll('.pane-connect-step.is-error').length;
+      const doneSteps = document.querySelectorAll('.pane-connect-card.is-error .pane-connect-step.is-done').length;
+      const errSteps = document.querySelectorAll('.pane-connect-card.is-error .pane-connect-step.is-error').length;
+      const centerDelta = overlay && card ? Math.abs((card.left + card.width / 2) - (overlay.left + overlay.width / 2)) : 999;
       return {
         xtermHidden: Boolean(host?.classList.contains('is-hidden')),
+        hop,
+        pill,
         title,
         hasRaw: raw.includes('10.24.0.99:22'),
+        hasCopyBtn,
         btns,
+        doneSteps,
         errSteps,
+        centerDelta,
       };
     })()`);
-    assert.equal(traceAudit.xtermHidden, true, 'Expected xterm host hidden before first connection (no green corner cursor)');
+    assert.equal(traceAudit.xtermHidden, true, 'Expected xterm host hidden before first connection (no corner cursor)');
+    assert.ok(traceAudit.hop.includes('Tokyo Production'), 'Expected jump hop badge on error card, got ' + JSON.stringify(traceAudit));
+    assert.equal(traceAudit.pill, '连接失败', 'Expected error status pill, got ' + JSON.stringify(traceAudit));
     assert.ok(traceAudit.title.includes('连接被拒绝'), 'Expected clear Chinese error diagnosis, got ' + JSON.stringify(traceAudit));
     assert.equal(traceAudit.hasRaw, true, 'Expected raw error detail shown');
+    assert.equal(traceAudit.hasCopyBtn, true, 'Expected copy-error button on error card');
     assert.ok(traceAudit.btns.includes('重新连接') && traceAudit.btns.includes('编辑配置'), 'Expected Reconnect + Edit Profile buttons, got ' + JSON.stringify(traceAudit.btns));
-    assert.ok(traceAudit.errSteps >= 1, 'Expected at least 1 failed connection step');
+    assert.ok(traceAudit.doneSteps >= 1 && traceAudit.errSteps === 1, 'Expected completed jump milestone + failed dial milestone, got ' + JSON.stringify(traceAudit));
+    assert.ok(traceAudit.centerDelta <= 2, 'Expected centered error card, centerDelta=' + traceAudit.centerDelta);
     await shot('26-Connect-Error-Trace');
+    await click('.pane-connect-card.is-error .pane-connect-copy');
+    await until(() => evaluate("document.querySelector('.pane-connect-card.is-error .pane-connect-copy')?.title === '已复制错误详情'"), 'copy error detail feedback');
     await evaluate('window.restoreFailProfile()');
+    await click('.tab-item.active .tab-close');
+    await until(() => evaluate("document.querySelectorAll('.tab-item').length === 1"), 'closed error test tab');
+
+    // Verify Multi-Tab chip separation, 20x20 close hitboxes, searchable switcher popover (26x26 close + 关闭全部), and tab context menu 关闭所有标签
+    await click('.host-row[data-profile-id="p2"]');
+    await until(() => evaluate("document.querySelectorAll('.tab-item').length === 2"), 'second tab opened');
+    await click('.host-row[data-profile-id="p3"]');
+    await until(() => evaluate("document.querySelectorAll('.tab-item').length === 3"), 'third tab opened');
+    for (const expectedCount of [4, 5]) {
+      await evaluate(`(() => {
+        const tab = document.querySelectorAll('.tab-item')[${expectedCount - 4}];
+        const r = tab.getBoundingClientRect();
+        tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 12, clientY: r.y + 12 }));
+      })()`);
+      await until(() => evaluate("[...document.querySelectorAll('.context-menu-item')].some(el => el.textContent.trim() === '复制新会话标签')"), 'tab context menu for clone');
+      await evaluate(`[...document.querySelectorAll('.context-menu-item')].find(el => el.textContent.trim() === '复制新会话标签')?.click()`);
+      await until(() => evaluate(`document.querySelectorAll('.tab-item').length === ${expectedCount}`), `cloned tab #${expectedCount}`);
+    }
+    await until(() => evaluate("!document.querySelector('.tab-item.state-connecting')"), 'all 5 tabs connected');
+    await sleep(180);
+    const multiTabMetrics = await evaluate(`(() => {
+      const items = [...document.querySelectorAll('.tab-item')];
+      const rects = items.map(el => el.getBoundingClientRect());
+      const gaps = [];
+      for (let i = 1; i < rects.length; i++) gaps.push(rects[i].left - rects[i - 1].right);
+      const closeRect = items[0]?.querySelector('.tab-close')?.getBoundingClientRect();
+      const allBtn = document.querySelector('#allTabsBtn');
+      const allBtnRect = allBtn?.getBoundingClientRect();
+      return {
+        count: items.length,
+        minGap: gaps.length ? Math.min(...gaps) : 0,
+        closeW: closeRect ? Math.round(closeRect.width) : 0,
+        closeH: closeRect ? Math.round(closeRect.height) : 0,
+        allBtnText: allBtn?.textContent?.trim() || '',
+        allBtnVisible: Boolean(allBtnRect && allBtnRect.width > 0 && allBtnRect.height > 0),
+      };
+    })()`);
+    assert.equal(multiTabMetrics.count, 5, 'Expected 5 open tabs, got ' + JSON.stringify(multiTabMetrics));
+    assert.ok(multiTabMetrics.minGap >= 3, 'Expected separated .tab-item chips (gap >= 3px), got ' + JSON.stringify(multiTabMetrics));
+    assert.ok(
+      Math.abs(multiTabMetrics.closeW - 20) <= 1 && Math.abs(multiTabMetrics.closeH - 20) <= 1,
+      'Expected larger 20x20 .tab-close hit target, got ' + JSON.stringify(multiTabMetrics),
+    );
+    assert.equal(multiTabMetrics.allBtnVisible, true, 'Expected #allTabsBtn visible with 5 tabs');
+    assert.equal(multiTabMetrics.allBtnText, '5', 'Expected #allTabsBtn to display tab count 5, got ' + multiTabMetrics.allBtnText);
+
+    await click('#allTabsBtn');
+    await until(() => evaluate("!!document.querySelector('.tabs-switcher-popover')"), 'multi-tab switcher popover');
+    await sleep(150);
+    const switcherMetrics = await evaluate(`(() => {
+      const pop = document.querySelector('.tabs-switcher-popover');
+      const search = pop?.querySelector('.tabs-switcher-search input');
+      const closeAllBtn = pop?.querySelector('.tabs-switcher-action.danger');
+      const closeRowBtn = pop?.querySelector('.tabs-switcher-close');
+      const closeR = closeRowBtn?.getBoundingClientRect();
+      return {
+        rowCount: pop?.querySelectorAll('.tabs-switcher-row').length ?? 0,
+        hasSearch: Boolean(search && search.getBoundingClientRect().width > 80),
+        closeAllText: closeAllBtn?.textContent?.trim() || '',
+        closeW: closeR ? Math.round(closeR.width) : 0,
+        closeH: closeR ? Math.round(closeR.height) : 0,
+      };
+    })()`);
+    assert.equal(switcherMetrics.rowCount, 5, 'Expected 5 rows in tab switcher popover, got ' + JSON.stringify(switcherMetrics));
+    assert.equal(switcherMetrics.hasSearch, true, 'Expected search input in tab switcher popover');
+    assert.equal(switcherMetrics.closeAllText, '关闭全部', 'Expected 关闭全部 button in tab switcher popover');
+    assert.ok(
+      Math.abs(switcherMetrics.closeW - 26) <= 1 && Math.abs(switcherMetrics.closeH - 26) <= 1,
+      'Expected 26x26 .tabs-switcher-close hit target, got ' + JSON.stringify(switcherMetrics),
+    );
+    await shot('28-MultiTab-Switcher');
+
+    // Exercise live search filter in switcher, then dismiss & verify 关闭所有标签 via tab right-click menu
+    await evaluate(`(() => {
+      const input = document.querySelector('.tabs-switcher-search input');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'GPU');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await until(
+      () =>
+        evaluate(
+          "document.querySelectorAll('.tabs-switcher-row').length === 1 && (document.querySelector('.tabs-switcher-row')?.textContent || '').includes('Local GPU Box')",
+        ),
+      'filtered tab switcher results',
+    );
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('.tabs-switcher-popover')"), 'closed tab switcher popover');
+
+    await evaluate(`(() => {
+      const tab = document.querySelector('.tab-item');
+      const r = tab.getBoundingClientRect();
+      tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 12, clientY: r.y + 12 }));
+    })()`);
+    await until(() => evaluate("[...document.querySelectorAll('.context-menu-item')].some(el => el.textContent.trim() === '关闭所有标签')"), 'tab context menu 关闭所有标签');
+    await evaluate(`[...document.querySelectorAll('.context-menu-item')].find(el => el.textContent.trim() === '关闭所有标签')?.click()`);
+    await until(() => evaluate("document.querySelectorAll('.tab-item').length === 0"), 'all tabs closed via context menu');
 
     const { verifySplitWorkspace } = await import('./split-workspace.mjs');
     await verifySplitWorkspace({ call, evaluate, until, click });
@@ -1117,7 +1342,7 @@ async function verifyFrontendUI() {
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 26 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 28 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

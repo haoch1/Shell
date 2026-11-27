@@ -14,7 +14,7 @@ func boolPtr(v bool) *bool { return &v }
 // AppSettings stores persistent UI, terminal, and UX preferences.
 type AppSettings struct {
 	Theme            string   `json:"theme"`            // "light", "dark", "system"
-	TerminalTheme    string   `json:"terminalTheme"`    // "apple-dark", "apple-light", "one-half-dark", "tokyo-night", "catppuccin-mocha", "solarized-light", "github-light"
+	TerminalTheme    string   `json:"terminalTheme"`    // "auto", "shell-dark", "tokyo-night", "catppuccin-mocha", "shell-light", "warm-paper"
 	FontFamily       string   `json:"fontFamily"`
 	FontSize         int      `json:"fontSize"`
 	LineHeight       float64  `json:"lineHeight"`
@@ -46,7 +46,7 @@ func DefaultSettings() AppSettings {
 		Theme:            "light",
 		TerminalTheme:    "auto",
 		FontFamily:       `"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace`,
-		FontSize:         14,
+		FontSize:         13,
 		LineHeight:       1.28,
 		CursorStyle:      "bar",
 		CursorBlink:      true,
@@ -86,7 +86,8 @@ func normalizeSettings(s AppSettings) AppSettings {
 	default:
 		s.Theme = d.Theme
 	}
-	if strings.TrimSpace(s.TerminalTheme) == "" {
+	s.TerminalTheme = strings.TrimSpace(s.TerminalTheme)
+	if s.TerminalTheme == "" {
 		s.TerminalTheme = d.TerminalTheme
 	}
 	if strings.TrimSpace(s.FontFamily) == "" {

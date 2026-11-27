@@ -20,7 +20,7 @@ import type {
   WorkspaceTab,
 } from './types/shell';
 import { errorMessage, getApi, hasDesktopBridge, onDesktopEvent } from './lib/bridge';
-import { syncTerminalThemeForAppearance } from './lib/themes';
+import { resolveTerminalTheme, syncTerminalThemeForAppearance } from './lib/themes';
 import { decodeBase64, encodeBase64, terminalBus } from './lib/terminalBus';
 import { connectIfOpen, reconnectSecret, sameSessionTarget } from './lib/sessionAttempt';
 import {
@@ -60,11 +60,13 @@ interface SplitTarget {
   direction: 'horizontal' | 'vertical';
 }
 
+const APPEARANCE_STORAGE_KEY = 'shell:appearance:v1';
+
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   terminalTheme: 'auto',
   fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
-  fontSize: 14,
+  fontSize: 13,
   lineHeight: 1.28,
   cursorStyle: 'bar',
   cursorBlink: true,
@@ -82,10 +84,52 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoCheckUpdate: true,
 };
 
+function readCachedAppearance(): Pick<AppSettings, 'theme' | 'terminalTheme'> | null {
+  try {
+    const raw = window.localStorage?.getItem(APPEARANCE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<Pick<AppSettings, 'theme' | 'terminalTheme'>> | null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const theme: AppSettings['theme'] =
+      parsed.theme === 'dark' || parsed.theme === 'light' || parsed.theme === 'system'
+        ? parsed.theme
+        : DEFAULT_SETTINGS.theme;
+    const terminalTheme =
+      typeof parsed.terminalTheme === 'string' && parsed.terminalTheme.trim()
+        ? parsed.terminalTheme.trim()
+        : DEFAULT_SETTINGS.terminalTheme;
+    return { theme, terminalTheme };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedAppearance(theme: AppSettings['theme'], terminalTheme: string): void {
+  try {
+    const sysDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+    const baseDark = theme === 'dark' || (theme === 'system' && sysDark);
+    const normalizedTerm =
+      !terminalTheme || terminalTheme === 'auto'
+        ? 'auto'
+        : resolveTerminalTheme(terminalTheme, baseDark).id;
+    window.localStorage?.setItem(
+      APPEARANCE_STORAGE_KEY,
+      JSON.stringify({ theme, terminalTheme: normalizedTerm }),
+    );
+  } catch {
+    // ignore storage restrictions
+  }
+}
+
+function getInitialSettings(): AppSettings {
+  const cached = readCachedAppearance();
+  return cached ? { ...DEFAULT_SETTINGS, ...cached } : DEFAULT_SETTINGS;
+}
+
 export const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings>(getInitialSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatusView | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -143,6 +187,7 @@ export const App: React.FC = () => {
 
   const writeChainsRef = useRef<Map<string, Promise<void>>>(new Map());
   const settingsWrite = useRef(Promise.resolve());
+  const settingsRevisionRef = useRef(0);
   const wsMapRef = useRef<Map<string, WebSocket>>(new Map());
   const connectingRef = useRef(new Map<string, { controller: AbortController; requestedProfile: string }>());
   const lastSizeRef = useRef<Map<string, string>>(new Map());
@@ -176,14 +221,25 @@ export const App: React.FC = () => {
     return () => mq.removeEventListener('change', handler);
   }, []);
 
-  const isDark = settings.theme === 'dark' || (settings.theme === 'system' && sysDark);
+  const baseDark = settings.theme === 'dark' || (settings.theme === 'system' && sysDark);
+  const activePalette = useMemo(
+    () => resolveTerminalTheme(settings.terminalTheme, baseDark),
+    [settings.terminalTheme, baseDark],
+  );
+  const effectiveDark = activePalette.isDark;
+  const workspaceSettings = useMemo(
+    () => (settings.theme === 'system' ? { ...settings } : settings),
+    [settings, effectiveDark],
+  );
   useEffect(() => {
-    document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
-  }, [isDark]);
+    document.documentElement.dataset.theme = effectiveDark ? 'dark' : 'light';
+    document.documentElement.dataset.palette = activePalette.id;
+  }, [effectiveDark, activePalette.id]);
 
   // Initial load from Go backend
   const reloadData = useCallback(async () => {
     if (!hasDesktopBridge()) return;
+    const revBefore = settingsRevisionRef.current;
     const api = getApi();
     const [profs, snips, cfg, agSt] = await Promise.all([
       api.Profiles().catch(() => []),
@@ -194,7 +250,11 @@ export const App: React.FC = () => {
     setProfiles(profs || []);
     setSnippets(snips || []);
     if (cfg) {
-      setSettings({ ...DEFAULT_SETTINGS, ...cfg });
+      if (settingsRevisionRef.current === revBefore) {
+        const merged = { ...DEFAULT_SETTINGS, ...cfg };
+        setSettings(merged);
+        writeCachedAppearance(merged.theme, merged.terminalTheme);
+      }
       setSettingsLoaded(true);
     }
     if (agSt) setAgentStatus(agSt);
@@ -648,7 +708,11 @@ export const App: React.FC = () => {
         if (msg) toast(msg);
       }),
       onDesktopEvent<[AppSettings]>('shell:settings_updated', (next) => {
-        if (next) setSettings({ ...DEFAULT_SETTINGS, ...next });
+        if (next) {
+          const merged = { ...DEFAULT_SETTINGS, ...next };
+          setSettings(merged);
+          writeCachedAppearance(merged.theme, merged.terminalTheme);
+        }
       }),
       onDesktopEvent<[AgentStatusView]>('agent:status', (st) => {
         if (st) setAgentStatus(st);
@@ -1045,6 +1109,13 @@ export const App: React.FC = () => {
   );
 
   const updateSettings = useCallback(async (changes: Partial<AppSettings>) => {
+    settingsRevisionRef.current += 1;
+    const touchesAppearance = 'theme' in changes || 'terminalTheme' in changes;
+    if (touchesAppearance) {
+      const nextTheme = changes.theme ?? settingsRef.current.theme;
+      const nextTerm = changes.terminalTheme ?? settingsRef.current.terminalTheme;
+      writeCachedAppearance(nextTheme, nextTerm);
+    }
     setSettings((current) => ({ ...current, ...changes }));
     if (!hasDesktopBridge()) return;
     settingsWrite.current = settingsWrite.current.then(async () => {
@@ -1052,7 +1123,11 @@ export const App: React.FC = () => {
       setSettings((current) => {
         const keys = Object.keys(changes) as (keyof AppSettings)[];
         const confirmed = keys.filter((key) => current[key] === changes[key]);
-        return { ...current, ...Object.fromEntries(confirmed.map((key) => [key, saved[key]])) };
+        const next = { ...current, ...Object.fromEntries(confirmed.map((key) => [key, saved[key]])) };
+        if (touchesAppearance) {
+          writeCachedAppearance(next.theme, next.terminalTheme);
+        }
+        return next;
       });
     }).catch((error) => toast(`保存设置失败：${errorMessage(error)}`));
     await settingsWrite.current;
@@ -1060,7 +1135,7 @@ export const App: React.FC = () => {
 
   const handleFontZoom = useCallback(
     (delta: number) => {
-      const nextSize = delta === 0 ? 14 : Math.max(10, Math.min(28, settings.fontSize + delta));
+      const nextSize = delta === 0 ? DEFAULT_SETTINGS.fontSize : Math.max(10, Math.min(28, settings.fontSize + delta));
       void updateSettings({ fontSize: nextSize });
       toast(`终端字号 ${nextSize}px`);
     },
@@ -1268,11 +1343,11 @@ export const App: React.FC = () => {
           onOpenImportSSH={() => setImportOpen(true)}
           onOpenExportHosts={setExportIds}
           onOpenSettings={(tab = 'appearance') => setSettingsModal({ open: true, tab })}
-          isDark={isDark}
+          isDark={effectiveDark}
           hideHostIp={Boolean(settings.hideHostIp)}
           onToggleHideIp={() => void updateSettings({ hideHostIp: !settings.hideHostIp })}
           onToggleTheme={() => {
-            const nextDark = !isDark;
+            const nextDark = !effectiveDark;
             void updateSettings({
               theme: nextDark ? 'dark' : 'light',
               terminalTheme: syncTerminalThemeForAppearance(settings.terminalTheme, nextDark),
@@ -1322,7 +1397,7 @@ export const App: React.FC = () => {
                   paneDrag={paneDrag}
                   profiles={profiles}
                   sessions={sessions}
-                  settings={settings}
+                  settings={workspaceSettings}
                   onFocusPane={(tabId, paneId) =>
                     setTabs(prev => prev.map(t => t.id === tabId && t.activePaneId !== paneId ? {...t, activePaneId: paneId} : t))
                   }
@@ -1475,7 +1550,7 @@ export const App: React.FC = () => {
           profiles={profiles}
           snippets={snippets}
           hasActiveSession={activeSession?.state === 'connected'}
-          isDark={isDark}
+          isDark={effectiveDark}
           hideHostIp={Boolean(settings.hideHostIp)}
           onClose={() => { setPaletteOpen(false); setSplitPicker(null); }}
           onConnectProfile={splitPicker ? chooseSplitProfile : connectOrPromptProfile}
@@ -1488,7 +1563,7 @@ export const App: React.FC = () => {
           onToggleTunnels={() => toggleDrawer('tunnels')}
           onToggleAI={() => toggleDrawer('ai')}
           onToggleTheme={() => {
-            const nextDark = !isDark;
+            const nextDark = !effectiveDark;
             void updateSettings({
               theme: nextDark ? 'dark' : 'light',
               terminalTheme: syncTerminalThemeForAppearance(settings.terminalTheme, nextDark),
@@ -1546,6 +1621,7 @@ export const App: React.FC = () => {
           key={JSON.stringify([editorTarget.sessionId, editorTarget.remotePath])}
           sessionId={editorTarget.sessionId}
           remotePath={editorTarget.remotePath}
+          isDark={effectiveDark}
           onClose={() => setEditorTarget(null)}
           onSaved={() => {}}
           onToast={toast}

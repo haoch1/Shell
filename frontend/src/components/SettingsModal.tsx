@@ -29,7 +29,7 @@ import type {
   UpdateInfo,
   UpdateProgress,
 } from '../types/shell';
-import { syncTerminalThemeForAppearance, TERMINAL_THEMES } from '../lib/themes';
+import { resolveTerminalTheme, syncTerminalThemeForAppearance, TERMINAL_THEMES } from '../lib/themes';
 import { copyToClipboard, errorMessage, getApi, openExternalURL } from '../lib/bridge';
 import { AgentSecurityTab } from './AgentSecurityTab';
 import { Checkbox } from './ui/Checkbox';
@@ -533,9 +533,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             type="button"
                             className={settings.theme === t ? 'active' : ''}
                             onClick={() => {
-                              const nextIsDark =
-                                t === 'dark' ||
-                                (t === 'system' && (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false));
+                              if (t === 'system') {
+                                patch({ theme: 'system', terminalTheme: 'auto' });
+                                return;
+                              }
+                              const nextIsDark = t === 'dark';
                               const syncedTerm = syncTerminalThemeForAppearance(settings.terminalTheme, nextIsDark);
                               patch({ theme: t, terminalTheme: syncedTerm });
                             }}
@@ -556,7 +558,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       />
                     </div>
                     <div className="pref-row">
-                      <span className="pref-row-label">隐藏主机 IP（隐私模式）</span>
+                      <span className="pref-row-label">隐藏主机 IP</span>
                       <button
                         type="button"
                         role="switch"
@@ -569,46 +571,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 <div className="pref-section">
-                  <div className="pref-section-title">终端配色</div>
+                  <div className="pref-section-title">全局配色</div>
                   <div className="pref-group-pad">
-                    <div className="theme-grid">
-                      <button
-                        type="button"
-                        className={`theme-tile ${settings.terminalTheme === 'auto' || !settings.terminalTheme ? 'active' : ''}`}
-                        onClick={() => patch({ terminalTheme: 'auto' })}
-                      >
-                        <div className="theme-swatch-box theme-swatch-auto">
-                          <span className="theme-swatch-half light">
-                            <span style={{ color: '#2563EB' }}>&gt;_</span>
-                            <span style={{ fontSize: 9, opacity: 0.72 }}>浅色</span>
-                          </span>
-                          <span className="theme-swatch-half dark">
-                            <span style={{ color: '#3FB950' }}>&gt;_</span>
-                            <span style={{ fontSize: 9, opacity: 0.78 }}>深色</span>
-                          </span>
-                        </div>
-                        <span style={{ fontSize: 11.5, fontWeight: 500 }}>跟随界面外观</span>
-                      </button>
-                      {TERMINAL_THEMES.map((preset) => (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          className={`theme-tile ${settings.terminalTheme === preset.id ? 'active' : ''}`}
-                          onClick={() => patch({ terminalTheme: preset.id })}
-                        >
-                          <div
-                            className="theme-swatch-box"
-                            style={{ background: preset.preview[0], color: preset.preview[1] }}
+                    {(() => {
+                      const activePaletteId =
+                        !settings.terminalTheme || settings.terminalTheme === 'auto'
+                          ? 'auto'
+                          : resolveTerminalTheme(settings.terminalTheme, false).id;
+                      return (
+                        <div className="theme-grid">
+                          <button
+                            type="button"
+                            className={`theme-tile ${activePaletteId === 'auto' ? 'active' : ''}`}
+                            onClick={() => patch({ terminalTheme: 'auto' })}
                           >
-                            <span>
-                              <b style={{ color: preset.preview[3] }}>user@host</b>:~$
-                            </span>
-                            <span style={{ color: preset.preview[2] }}>ls -la</span>
-                          </div>
-                          <span style={{ fontSize: 11.5, fontWeight: 500 }}>{preset.name}</span>
-                        </button>
-                      ))}
-                    </div>
+                            <div className="theme-swatch-box theme-swatch-auto">
+                              <span className="theme-swatch-half light">
+                                <span style={{ color: '#2563EB' }}>&gt;_</span>
+                                <span style={{ fontSize: 9, opacity: 0.72 }}>浅色</span>
+                              </span>
+                              <span className="theme-swatch-half dark">
+                                <span style={{ color: '#3FB950' }}>&gt;_</span>
+                                <span style={{ fontSize: 9, opacity: 0.78 }}>深色</span>
+                              </span>
+                            </div>
+                            <span style={{ fontSize: 11.5, fontWeight: 500 }}>跟随界面外观</span>
+                          </button>
+                          {TERMINAL_THEMES.map((preset) => (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              className={`theme-tile ${activePaletteId === preset.id ? 'active' : ''}`}
+                              onClick={() =>
+                                patch({
+                                  terminalTheme: preset.id,
+                                  theme: preset.isDark ? 'dark' : 'light',
+                                })
+                              }
+                            >
+                              <div
+                                className="theme-swatch-box"
+                                style={{ background: preset.preview[0], color: preset.preview[1] }}
+                              >
+                                <span>
+                                  <b style={{ color: preset.preview[3] }}>user@host</b>:~$
+                                </span>
+                                <span style={{ color: preset.preview[2] }}>ls -la</span>
+                              </div>
+                              <span style={{ fontSize: 11.5, fontWeight: 500 }}>{preset.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 

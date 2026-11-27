@@ -4,6 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Shell</title>
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('shell:appearance:v1');
+          if (!raw) return;
+          var saved = JSON.parse(raw);
+          if (!saved || typeof saved !== 'object') return;
+          var darkSet = { 'shell-dark': 1, 'tokyo-night': 1, 'catppuccin-mocha': 1 };
+          var lightSet = { 'shell-light': 1, 'warm-paper': 1 };
+          var sysDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var baseDark = saved.theme === 'dark' || (saved.theme === 'system' && sysDark);
+          var term = typeof saved.terminalTheme === 'string' ? saved.terminalTheme : 'auto';
+          var palette =
+            term && term !== 'auto' && (darkSet[term] || lightSet[term])
+              ? term
+              : baseDark
+                ? 'shell-dark'
+                : 'shell-light';
+          document.documentElement.dataset.theme = darkSet[palette] ? 'dark' : 'light';
+          document.documentElement.dataset.palette = palette;
+        } catch (_) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

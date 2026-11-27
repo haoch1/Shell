@@ -85,15 +85,20 @@ func TestSnippetsAndSettingsLifecycle(t *testing.T) {
 	}
 
 	s, err := LoadSettings()
-	if err != nil || s.Theme != "light" || s.FontSize != 14 {
+	if err != nil || s.Theme != "light" || s.FontSize != 13 {
 		t.Fatalf("unexpected default settings: %+v, %v", s, err)
 	}
 	s.Theme = "dark"
+	s.TerminalTheme = "tokyo-night"
 	s.FontSize = 16
 	s.CopyOnSelect = true
 	savedSet, err := SaveSettings(s)
-	if err != nil || savedSet.Theme != "dark" || savedSet.FontSize != 16 || !savedSet.CopyOnSelect {
+	if err != nil || savedSet.Theme != "dark" || savedSet.TerminalTheme != "tokyo-night" || savedSet.FontSize != 16 || !savedSet.CopyOnSelect {
 		t.Fatalf("settings round-trip failed: %+v, %v", savedSet, err)
+	}
+	reloadedSet, err := LoadSettings()
+	if err != nil || reloadedSet.Theme != "dark" || reloadedSet.TerminalTheme != "tokyo-night" || reloadedSet.FontSize != 16 {
+		t.Fatalf("settings reload after save failed: %+v, %v", reloadedSet, err)
 	}
 }
 

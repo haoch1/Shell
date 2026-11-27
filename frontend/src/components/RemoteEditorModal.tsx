@@ -22,6 +22,7 @@ import '../styles/editor.css';
 interface RemoteEditorModalProps {
   sessionId: string;
   remotePath: string;
+  isDark?: boolean;
   onClose: () => void;
   onSaved: () => void;
   onToast: (msg: string) => void;
@@ -166,34 +167,34 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
       const darkEditorChrome = EditorView.theme(
         {
           '&': {
-            color: '#E6EDF3',
-            backgroundColor: '#121316',
+            color: 'var(--ink-primary)',
+            backgroundColor: 'var(--bg-app)',
           },
           '.cm-content': {
-            caretColor: '#58A6FF',
+            caretColor: 'var(--accent)',
           },
           '.cm-cursor, .cm-dropCursor': {
-            borderLeftColor: '#58A6FF',
+            borderLeftColor: 'var(--accent)',
             borderLeftWidth: '1.8px',
           },
           '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
             {
-              backgroundColor: 'rgba(88, 166, 255, 0.28)',
+              backgroundColor: 'color-mix(in srgb, var(--accent) 28%, transparent)',
             },
           '.cm-activeLine': {
-            backgroundColor: 'rgba(255, 255, 255, 0.036)',
+            backgroundColor: 'color-mix(in srgb, var(--ink-primary) 4.2%, transparent)',
           },
           '.cm-gutters': {
-            backgroundColor: '#16171B',
-            color: '#6E7681',
-            borderRight: '1px solid rgba(255, 255, 255, 0.075)',
+            backgroundColor: 'var(--bg-titlebar)',
+            color: 'var(--ink-tertiary)',
+            borderRight: '1px solid var(--border-hairline)',
           },
           '.cm-activeLineGutter': {
-            backgroundColor: 'rgba(255, 255, 255, 0.055)',
-            color: '#CBD5E1',
+            backgroundColor: 'var(--bg-hover)',
+            color: 'var(--ink-primary)',
           },
           '.cm-selectionMatch': {
-            backgroundColor: 'rgba(59, 130, 246, 0.22)',
+            backgroundColor: 'color-mix(in srgb, var(--accent) 22%, transparent)',
             borderRadius: '2px',
           },
           '.cm-searchMatch': {
@@ -206,8 +207,8 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
             outline: '1px solid #FBBF24',
           },
           '&.cm-focused .cm-matchingBracket, &.cm-focused .cm-nonmatchingBracket': {
-            backgroundColor: 'rgba(96, 165, 250, 0.22)',
-            outline: '1px solid rgba(96, 165, 250, 0.55)',
+            backgroundColor: 'color-mix(in srgb, var(--accent) 22%, transparent)',
+            outline: '1px solid color-mix(in srgb, var(--accent) 55%, transparent)',
             borderRadius: '2px',
           },
         },
@@ -221,17 +222,17 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
         { tag: [tags.string, tags.docString, tags.character, tags.attributeValue], color: '#98E39A' },
         { tag: [tags.regexp, tags.escape, tags.special(tags.string)], color: '#F78C6C' },
         { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom, tags.unit], color: '#F6B96B' },
-        { tag: [tags.variableName, tags.self], color: '#E2E8F0' },
+        { tag: [tags.variableName, tags.self], color: 'var(--ink-primary)' },
         { tag: [tags.definition(tags.variableName), tags.function(tags.variableName), tags.function(tags.propertyName)], color: '#7CC4FA' },
         { tag: [tags.propertyName, tags.attributeName], color: '#7DD3FC' },
         { tag: [tags.typeName, tags.className, tags.namespace, tags.macroName], color: '#FCD34D' },
         { tag: [tags.tagName], color: '#F87171' },
         { tag: [tags.labelName, tags.meta, tags.annotation, tags.processingInstruction], color: '#A5B4FC' },
-        { tag: [tags.punctuation, tags.separator, tags.bracket], color: '#94A3B8' },
+        { tag: [tags.punctuation, tags.separator, tags.bracket], color: 'var(--ink-secondary)' },
         { tag: [tags.heading], color: '#7CC4FA', fontWeight: '600' },
-        { tag: [tags.strong], fontWeight: '600', color: '#F8FAFC' },
-        { tag: [tags.emphasis], fontStyle: 'italic', color: '#E2E8F0' },
-        { tag: [tags.link, tags.url], color: '#60A5FA', textDecoration: 'underline' },
+        { tag: [tags.strong], fontWeight: '600', color: 'var(--ink-primary)' },
+        { tag: [tags.emphasis], fontStyle: 'italic', color: 'var(--ink-primary)' },
+        { tag: [tags.link, tags.url], color: 'var(--accent)', textDecoration: 'underline' },
         { tag: [tags.inserted], color: '#34D399', backgroundColor: 'rgba(52, 211, 153, 0.14)' },
         { tag: [tags.deleted], color: '#FB7185', backgroundColor: 'rgba(251, 113, 133, 0.15)' },
         { tag: [tags.changed], color: '#FBBF24', backgroundColor: 'rgba(251, 191, 36, 0.14)' },
@@ -241,34 +242,34 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
       const lightEditorChrome = EditorView.theme(
         {
           '&': {
-            color: '#1E293B',
-            backgroundColor: '#F8FAFC',
+            color: 'var(--ink-primary)',
+            backgroundColor: 'var(--bg-app)',
           },
           '.cm-content': {
-            caretColor: '#0071E3',
+            caretColor: 'var(--accent)',
           },
           '.cm-cursor, .cm-dropCursor': {
-            borderLeftColor: '#0071E3',
+            borderLeftColor: 'var(--accent)',
             borderLeftWidth: '1.8px',
           },
           '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
             {
-              backgroundColor: 'rgba(0, 113, 227, 0.18)',
+              backgroundColor: 'color-mix(in srgb, var(--accent) 18%, transparent)',
             },
           '.cm-activeLine': {
-            backgroundColor: 'rgba(15, 23, 42, 0.038)',
+            backgroundColor: 'color-mix(in srgb, var(--ink-primary) 4%, transparent)',
           },
           '.cm-gutters': {
-            backgroundColor: '#F1F5F9',
-            color: '#94A3B8',
-            borderRight: '1px solid rgba(15, 23, 42, 0.08)',
+            backgroundColor: 'var(--bg-surface-subtle)',
+            color: 'var(--ink-tertiary)',
+            borderRight: '1px solid var(--border-hairline)',
           },
           '.cm-activeLineGutter': {
-            backgroundColor: 'rgba(15, 23, 42, 0.055)',
-            color: '#334155',
+            backgroundColor: 'var(--bg-hover)',
+            color: 'var(--ink-primary)',
           },
           '.cm-selectionMatch': {
-            backgroundColor: 'rgba(0, 113, 227, 0.13)',
+            backgroundColor: 'color-mix(in srgb, var(--accent) 13%, transparent)',
             borderRadius: '2px',
           },
           '.cm-searchMatch': {
@@ -281,8 +282,8 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
             outline: '1px solid #D97706',
           },
           '&.cm-focused .cm-matchingBracket, &.cm-focused .cm-nonmatchingBracket': {
-            backgroundColor: 'rgba(0, 113, 227, 0.16)',
-            outline: '1px solid rgba(0, 113, 227, 0.45)',
+            backgroundColor: 'color-mix(in srgb, var(--accent) 16%, transparent)',
+            outline: '1px solid color-mix(in srgb, var(--accent) 45%, transparent)',
             borderRadius: '2px',
           },
         },
@@ -296,17 +297,17 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
         { tag: [tags.string, tags.docString, tags.character, tags.attributeValue], color: '#15803D' },
         { tag: [tags.regexp, tags.escape, tags.special(tags.string)], color: '#C2410C' },
         { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom, tags.unit], color: '#B45309' },
-        { tag: [tags.variableName, tags.self], color: '#1E293B' },
+        { tag: [tags.variableName, tags.self], color: 'var(--ink-primary)' },
         { tag: [tags.definition(tags.variableName), tags.function(tags.variableName), tags.function(tags.propertyName)], color: '#0369A1' },
         { tag: [tags.propertyName, tags.attributeName], color: '#0F766E' },
         { tag: [tags.typeName, tags.className, tags.namespace, tags.macroName], color: '#9A3412' },
         { tag: [tags.tagName], color: '#BE123C' },
         { tag: [tags.labelName, tags.meta, tags.annotation, tags.processingInstruction], color: '#4F46E5' },
-        { tag: [tags.punctuation, tags.separator, tags.bracket], color: '#64748B' },
+        { tag: [tags.punctuation, tags.separator, tags.bracket], color: 'var(--ink-secondary)' },
         { tag: [tags.heading], color: '#0369A1', fontWeight: '600' },
-        { tag: [tags.strong], fontWeight: '600', color: '#0F172A' },
-        { tag: [tags.emphasis], fontStyle: 'italic', color: '#334155' },
-        { tag: [tags.link, tags.url], color: '#0071E3', textDecoration: 'underline' },
+        { tag: [tags.strong], fontWeight: '600', color: 'var(--ink-primary)' },
+        { tag: [tags.emphasis], fontStyle: 'italic', color: 'var(--ink-secondary)' },
+        { tag: [tags.link, tags.url], color: 'var(--accent)', textDecoration: 'underline' },
         { tag: [tags.inserted], color: '#15803D', backgroundColor: 'rgba(22, 163, 74, 0.12)' },
         { tag: [tags.deleted], color: '#BE123C', backgroundColor: 'rgba(225, 29, 72, 0.12)' },
         { tag: [tags.changed], color: '#B45309', backgroundColor: 'rgba(217, 119, 6, 0.12)' },
@@ -389,6 +390,7 @@ function readIsDarkTheme(): boolean {
 export const RemoteEditorModal: React.FC<RemoteEditorModalProps> = ({
   sessionId,
   remotePath,
+  isDark: isDarkProp,
   onClose,
   onSaved,
   onToast,
@@ -406,7 +408,8 @@ export const RemoteEditorModal: React.FC<RemoteEditorModalProps> = ({
   const [wordWrap, setWordWrap] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [fontSize, setFontSize] = useState(DEFAULT_FONT_SIZE);
-  const [isDark, setIsDark] = useState<boolean>(readIsDarkTheme);
+  const [domDark, setDomDark] = useState<boolean>(readIsDarkTheme);
+  const isDark = isDarkProp ?? domDark;
   const [cursor, setCursor] = useState({ line: 1, col: 1, selected: 0 });
   const [lineCount, setLineCount] = useState(1);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -427,15 +430,16 @@ export const RemoteEditorModal: React.FC<RemoteEditorModalProps> = ({
 
   const dirty = original !== null && (content !== original || lineEnding !== originalLineEnding);
 
-  // Sync live theme changes from document.documentElement[data-theme]
+  // Sync live theme changes from document.documentElement[data-theme] when not explicitly controlled
   useEffect(() => {
+    if (isDarkProp !== undefined) return;
     const root = document.documentElement;
-    const sync = () => setIsDark(root.dataset.theme === 'dark');
+    const sync = () => setDomDark(root.dataset.theme === 'dark');
     sync();
     const observer = new MutationObserver(sync);
-    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme', 'data-palette'] });
     return () => observer.disconnect();
-  }, []);
+  }, [isDarkProp]);
 
   // Automatically dismiss unsaved confirmation banner if changes are undone or saved
   useEffect(() => {

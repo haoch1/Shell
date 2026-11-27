@@ -30,6 +30,7 @@ import { connectedProfilePanes, type PaneSource } from '../lib/paneLayout';
 import { copyToClipboard } from '../lib/bridge';
 import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
+import { Checkbox } from './ui/Checkbox';
 
 type HostSortMode = 'default' | 'name-asc' | 'name-desc' | 'recent' | 'host';
 
@@ -146,16 +147,28 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   }, [draggingGroup]);
 
   useEffect(() => {
-    if (!sortMenuPos && !groupMenuPos) return;
+    if (!sortMenuPos && !groupMenuPos && !selectMode) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (document.querySelector('.modal-backdrop, .spotlight-backdrop, dialog[open]')) return;
+      if (sortMenuPos) {
+        e.preventDefault();
         setSortMenuPos(null);
+        return;
+      }
+      if (groupMenuPos) {
+        e.preventDefault();
         setGroupMenuPos(null);
+        return;
+      }
+      if (selectMode) {
+        e.preventDefault();
+        exitSelectMode();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sortMenuPos, groupMenuPos]);
+  }, [sortMenuPos, groupMenuPos, selectMode]);
 
   const changeSortMode = (next: HostSortMode) => {
     setSortMode(next);
@@ -262,6 +275,8 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
     () => filtered.filter((p) => selectedIds[p.id]).map((p) => p.id),
     [filtered, selectedIds],
   );
+  const allSelected = filtered.length > 0 && chosenIds.length === filtered.length;
+  const someSelected = chosenIds.length > 0 && chosenIds.length < filtered.length;
   const existingGroups = useMemo(
     () => sortCustomGroupNames([...new Set(profiles.map((p) => p.group?.trim()).filter((g): g is string => Boolean(g)))]),
     [profiles, groupOrderIndex],
@@ -344,48 +359,79 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                 }
               }
               if (e.key === 'Escape') {
-                if (selectMode) exitSelectMode();
-                else setQuery('');
+                if (query) {
+                  e.stopPropagation();
+                  setQuery('');
+                } else if (groupMenuPos) {
+                  e.stopPropagation();
+                  setGroupMenuPos(null);
+                } else if (selectMode) {
+                  e.stopPropagation();
+                  exitSelectMode();
+                }
               }
             }}
           />
           <span className="kbd-hint">⌃K</span>
         </div>
 
-        <div className="sidebar-action-row">
-          <button
-            id="addHost"
-            type="button"
-            className="btn btn-primary"
-            style={{ flex: 1 }}
-            onClick={onAddHost}
-          >
-            <Plus size={13.5} strokeWidth={2} />
-            <span>新建主机</span>
-          </button>
-          <button
-            id="sortHostsBtn"
-            type="button"
-            className={`btn sidebar-sort-btn ${sortMode !== 'default' || sortMenuPos ? 'active' : ''}`}
-            title={`排序：${SORT_OPTIONS.find((o) => o.id === sortMode)?.label}`}
-            aria-label="主机排序"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (sortMenuPos) {
-                setSortMenuPos(null);
-                return;
-              }
-              const rect = e.currentTarget.getBoundingClientRect();
-              const menuW = 152;
-              setSortMenuPos({
-                left: Math.max(8, Math.min(rect.right - menuW, window.innerWidth - menuW - 8)),
-                top: rect.bottom + 6,
-              });
-            }}
-          >
-            <ArrowUpDown size={13.5} strokeWidth={1.8} />
-          </button>
-        </div>
+        {selectMode ? (
+          <div className="sidebar-select-header">
+            <label className="sidebar-select-toggle">
+              <Checkbox
+                checked={allSelected}
+                indeterminate={someSelected}
+                onChange={toggleSelectAll}
+                aria-label={allSelected ? '取消全选主机' : '全选主机'}
+              />
+              <span className="tabular">
+                {chosenIds.length > 0 ? `已选 ${chosenIds.length}/${filtered.length}` : '全选'}
+              </span>
+            </label>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost sidebar-select-done"
+              onClick={exitSelectMode}
+            >
+              完成
+            </button>
+          </div>
+        ) : (
+          <div className="sidebar-action-row">
+            <button
+              id="addHost"
+              type="button"
+              className="btn btn-primary"
+              style={{ flex: 1 }}
+              onClick={onAddHost}
+            >
+              <Plus size={13.5} strokeWidth={2} />
+              <span>新建主机</span>
+            </button>
+            <button
+              id="sortHostsBtn"
+              type="button"
+              className={`btn sidebar-sort-btn ${sortMode !== 'default' || sortMenuPos ? 'active' : ''}`}
+              title={`排序：${SORT_OPTIONS.find((o) => o.id === sortMode)?.label}`}
+              aria-label="主机排序"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (sortMenuPos) {
+                  setSortMenuPos(null);
+                  return;
+                }
+                const rect = e.currentTarget.getBoundingClientRect();
+                const menuW = 152;
+                setSortMenuPos({
+                  left: Math.max(8, Math.min(rect.right - menuW, window.innerWidth - menuW - 8)),
+                  top: rect.bottom + 6,
+                });
+              }}
+            >
+              <ArrowUpDown size={13.5} strokeWidth={1.8} />
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="sidebar-list" onClick={() => setCtxMenu(null)}>
@@ -522,7 +568,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                         if (!selectMode && source) onDragPane(e, source);
                         else e.preventDefault();
                       }}
-                      className={`host-row ${isActive ? 'active' : ''} ${isLive ? 'live' : ''}`}
+                      className={`host-row ${!selectMode && isActive ? 'active' : ''} ${selectMode && checked ? 'selected' : ''} ${isLive ? 'live' : ''}`.trim()}
                       onClick={() => {
                         if (selectMode) {
                           setSelectedIds((prev) => ({ ...prev, [p.id]: !prev[p.id] }));
@@ -541,11 +587,13 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                       }
                     >
                       {selectMode && (
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={checked}
-                          onChange={() => {}}
-                          style={{ margin: 0, flexShrink: 0, cursor: 'pointer' }}
+                          aria-label={`选择 ${displayName}`}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) =>
+                            setSelectedIds((prev) => ({ ...prev, [p.id]: e.target.checked }))
+                          }
                         />
                       )}
                       <HostIcon profile={p} size="md" />
@@ -598,45 +646,39 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
 
       {selectMode ? (
         <div className="sidebar-footer batch-bar">
-          <button type="button" className="btn btn-sm btn-ghost" onClick={toggleSelectAll}>
-            {chosenIds.length === filtered.length && filtered.length > 0 ? '取消全选' : '全选'}
+          <button
+            id="batchGroupBtn"
+            type="button"
+            className="btn btn-sm batch-action-btn"
+            disabled={!chosenIds.length || groupingBatch || deletingBatch}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (groupMenuPos) {
+                setGroupMenuPos(null);
+                return;
+              }
+              const rect = e.currentTarget.getBoundingClientRect();
+              const menuW = 216;
+              setGroupMenuPos({
+                left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)),
+                bottom: window.innerHeight - rect.top + 6,
+              });
+              setNewGroupName('');
+              requestAnimationFrame(() => groupInputRef.current?.focus());
+            }}
+          >
+            <Folder size={13} strokeWidth={1.8} />
+            <span>移动分组</span>
           </button>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <button
-              id="batchGroupBtn"
-              type="button"
-              className="btn btn-sm"
-              disabled={!chosenIds.length || groupingBatch || deletingBatch}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (groupMenuPos) {
-                  setGroupMenuPos(null);
-                  return;
-                }
-                const rect = e.currentTarget.getBoundingClientRect();
-                const menuW = 216;
-                setGroupMenuPos({
-                  left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)),
-                  bottom: window.innerHeight - rect.top + 6,
-                });
-                setNewGroupName('');
-                requestAnimationFrame(() => groupInputRef.current?.focus());
-              }}
-            >
-              分组
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm btn-danger"
-              disabled={!chosenIds.length || deletingBatch || groupingBatch}
-              onClick={() => void commitBatchDelete()}
-            >
-              删除 ({chosenIds.length})
-            </button>
-            <button type="button" className="btn btn-sm" onClick={exitSelectMode}>
-              完成
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn btn-sm btn-danger batch-action-btn"
+            disabled={!chosenIds.length || deletingBatch || groupingBatch}
+            onClick={() => void commitBatchDelete()}
+          >
+            <Trash2 size={13} strokeWidth={1.8} />
+            <span>删除{chosenIds.length > 0 ? ` (${chosenIds.length})` : ''}</span>
+          </button>
         </div>
       ) : (
         <div className="sidebar-footer">

@@ -4,6 +4,7 @@ import type { AuthMode, HostAgentAccess, HostIconId, Profile, ProfileColor, Prox
 import { PROFILE_COLORS, profileColorHex } from '../lib/themes';
 import { errorMessage, getApi } from '../lib/bridge';
 import { HOST_ICONS, inferHostIcon, renderHostGlyph } from './HostIcon';
+import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
 
 interface HostModalProps {
@@ -189,7 +190,7 @@ export const HostModal: React.FC<HostModalProps> = ({
                       display: 'inline-block',
                       width: 6,
                       height: 6,
-                      borderRadius: '50%',
+                      borderRadius: 'var(--radius-full)',
                       background: 'var(--accent)',
                       marginLeft: 5,
                       verticalAlign: 'middle',
@@ -351,9 +352,8 @@ export const HostModal: React.FC<HostModalProps> = ({
 
               {changedTarget && (
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
-                  <input
+                  <Checkbox
                     id="reuseSavedCredential"
-                    type="checkbox"
                     checked={approvedTarget === target}
                     onChange={(e) => setApprovedTarget(e.target.checked ? target : '')}
                   />
@@ -363,9 +363,8 @@ export const HostModal: React.FC<HostModalProps> = ({
 
               {auth !== 'agent' && (
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
-                  <input
+                  <Checkbox
                     id="remember"
-                    type="checkbox"
                     checked={remember}
                     onChange={(e) => setRemember(e.target.checked)}
                   />
@@ -448,7 +447,7 @@ export const HostModal: React.FC<HostModalProps> = ({
                   </div>
                 </div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, cursor: 'pointer', height: 22 }}>
-                  <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
+                  <Checkbox checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
                   置顶显示
                 </label>
               </div>
@@ -623,7 +622,7 @@ export const HostModal: React.FC<HostModalProps> = ({
               删除
             </button>
           )}
-          <button id="saveOnly" type="button" className="btn" style={{ minWidth: 74 }} disabled={saving} onClick={() => void submit(false)}>
+          <button id="saveOnly" type="button" className="btn" disabled={saving} onClick={() => void submit(false)}>
             仅保存
           </button>
           <button id="connect" type="submit" className="btn btn-primary" style={{ minWidth: 96 }} disabled={saving}>

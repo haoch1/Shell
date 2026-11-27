@@ -16,7 +16,7 @@ export const VerifyHostDialog: React.FC<VerifyDialogProps> = ({ request, onDecis
             <ShieldAlert size={18} style={{ color: 'var(--orange)' }} />
             <h2>验证主机指纹</h2>
           </div>
-          <button type="button" className="icon-btn" onClick={() => onDecision(false)}>
+          <button type="button" className="icon-btn" aria-label="关闭" onClick={() => onDecision(false)}>
             <X size={15} />
           </button>
         </div>
@@ -71,7 +71,7 @@ export const ChallengeDialog: React.FC<ChallengeDialogProps> = ({ request, onSub
       >
         <div className="modal-header">
           <h2>交互式身份验证</h2>
-          <button type="button" className="icon-btn" onClick={() => onSubmit([], false)}>
+          <button type="button" className="icon-btn" aria-label="关闭" onClick={() => onSubmit([], false)}>
             <X size={15} />
           </button>
         </div>

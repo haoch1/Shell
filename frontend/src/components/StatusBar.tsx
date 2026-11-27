@@ -128,9 +128,6 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             )}
           </button>
         )}
-        <span className="status-chip mono" style={{ opacity: 0.78 }}>
-          {session.cols}×{session.rows}
-        </span>
       </div>
 
       {showPopover && stats && (

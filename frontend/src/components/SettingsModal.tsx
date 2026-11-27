@@ -620,7 +620,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <Select
                         id="terminalFontSelect"
                         ariaLabel="终端字体"
-                        style={{ width: 186, height: 30 }}
+                        size="sm"
+                        style={{ width: 186 }}
                         value={matchedFont}
                         options={fontSelectOptions}
                         onValueChange={(val) => {
@@ -836,11 +837,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   {knownHosts.length > 3 && (
-                    <div className="search-box">
+                    <div className="search-box search-box-sm">
                       <Search size={12} />
                       <input
                         className="input input-sm"
-                        style={{ height: 30, paddingLeft: 28, paddingRight: 10 }}
                         placeholder="筛选主机或指纹…"
                         value={khQuery}
                         onChange={(e) => setKhQuery(e.target.value)}
@@ -870,7 +870,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               : '全选'}
                           </span>
                         </label>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        <div className="pref-row-actions">
                           {chosenKnownLines.length > 0 && (
                             <button
                               type="button"
@@ -880,7 +880,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               移除所选 ({chosenKnownLines.length})
                             </button>
                           )}
-                          <button type="button" className="btn btn-sm" onClick={() => void clearAllKnown()}>
+                          <button type="button" className="btn btn-sm btn-key-action" onClick={() => void clearAllKnown()}>
                             清空全部
                           </button>
                         </div>
@@ -904,21 +904,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               {kh.keyType} · {kh.fingerprint}
                             </div>
                           </div>
-                          <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                          <div className="pref-row-actions">
                             <button
                               type="button"
-                              className="btn btn-sm btn-ghost"
+                              className="btn btn-sm btn-ghost btn-icon-sm"
                               title="复制指纹"
+                              aria-label="复制指纹"
                               onClick={() => {
                                 void copyToClipboard(kh.fingerprint);
                                 onToast('已复制指纹');
                               }}
                             >
-                              <Copy size={12} />
+                              <Copy size={12.5} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-sm btn-danger"
+                              className="btn btn-sm btn-danger btn-key-action"
                               onClick={() => void removeKnownLines([kh.line])}
                             >
                               移除
@@ -937,7 +938,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="pref-section">
                   <div className="pref-section-head">
                     <span className="pref-section-title">本地 SSH 密钥 (~/.ssh)</span>
-                    <button type="button" className="btn btn-primary btn-sm" onClick={() => setGenOpen((v) => !v)}>
+                    <button type="button" className="btn btn-primary btn-sm btn-key-action" onClick={() => setGenOpen((v) => !v)}>
                       生成密钥
                     </button>
                   </div>
@@ -959,7 +960,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <Select
                             id="keyAlgoSelect"
                             ariaLabel="密钥算法"
-                            style={{ height: 30 }}
+                            size="sm"
                             value={keyAlgo}
                             options={[
                               { value: 'ed25519', label: 'Ed25519' },
@@ -991,10 +992,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
                       {keyErr && <p className="error-text">{keyErr}</p>}
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-                        <button type="button" className="btn btn-sm" onClick={() => setGenOpen(false)}>
+                        <button type="button" className="btn btn-sm btn-key-action" onClick={() => setGenOpen(false)}>
                           取消
                         </button>
-                        <button type="submit" className="btn btn-primary btn-sm" style={{ minWidth: 88 }} disabled={generating}>
+                        <button type="submit" className="btn btn-primary btn-sm btn-key-action" disabled={generating}>
                           {generating ? '生成中…' : '创建密钥'}
                         </button>
                       </div>
@@ -1022,10 +1023,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </div>
                           </div>
                           {k.publicKey && (
-                            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                            <div className="pref-row-actions">
                               <button
                                 type="button"
-                                className="btn btn-sm"
+                                className="btn btn-sm btn-key-action"
                                 onClick={() => {
                                   void copyToClipboard(k.publicKey);
                                   onToast('已复制公钥');
@@ -1036,7 +1037,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               {activeSessionId && (
                                 <button
                                   type="button"
-                                  className="btn btn-primary btn-sm"
+                                  className="btn btn-primary btn-sm btn-key-action"
                                   onClick={() => void deployPublicKey(k.publicKey)}
                                 >
                                   部署公钥
@@ -1307,8 +1308,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <button
                               id="fetchModelsBtn"
                               type="button"
-                              className="btn"
-                              style={{ width: 32, height: 33, padding: 0, flexShrink: 0 }}
+                              className="btn btn-icon-md"
                               disabled={fetchingModels || aiBusy}
                               title="从当前 API 接口刷新可用模型列表"
                               aria-label="刷新模型列表"
@@ -1336,9 +1336,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
 
                         {hasSavedKeyForEndpoint && !aiKey && (
-                          <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5 }}>
-                            <input
-                              type="checkbox"
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, cursor: 'pointer' }}>
+                            <Checkbox
                               checked={clearAiKey}
                               onChange={(e) => setClearAiKey(e.target.checked)}
                             />
@@ -1355,10 +1354,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         )}
 
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                          <button type="button" className="btn" style={{ minWidth: 86 }} disabled={aiBusy} onClick={() => void testAI()}>
+                          <button type="button" className="btn btn-pref-md" disabled={aiBusy} onClick={() => void testAI()}>
                             测试连接
                           </button>
-                          <button type="submit" className="btn btn-primary" style={{ minWidth: 86 }} disabled={aiBusy}>
+                          <button type="submit" className="btn btn-primary btn-pref-md" disabled={aiBusy}>
                             保存配置
                           </button>
                         </div>
@@ -1398,7 +1397,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     style={{
                                       width: 7,
                                       height: 7,
-                                      borderRadius: '50%',
+                                      borderRadius: 'var(--radius-full)',
                                       flexShrink: 0,
                                       background: det?.installed ? 'var(--green)' : 'var(--border-strong)',
                                     }}
@@ -1464,10 +1463,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         )}
 
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                          <button type="button" className="btn" style={{ minWidth: 86 }} disabled={aiBusy} onClick={() => void testAI()}>
+                          <button type="button" className="btn btn-pref-md" disabled={aiBusy} onClick={() => void testAI()}>
                             测试调用
                           </button>
-                          <button type="submit" className="btn btn-primary" style={{ minWidth: 86 }} disabled={aiBusy}>
+                          <button type="submit" className="btn btn-primary btn-pref-md" disabled={aiBusy}>
                             保存配置
                           </button>
                         </div>
@@ -1491,7 +1490,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span className="pref-row-label">导入其他 SSH 客户端配置</span>
                       <button
                         type="button"
-                        className="btn btn-sm"
+                        className="btn btn-sm btn-pref-action"
                         onClick={() => {
                           onClose();
                           onOpenImportSSH();
@@ -1528,11 +1527,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       />
                     </div>
                     {backupErr && <p className="error-text">{backupErr}</p>}
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button type="button" className="btn btn-primary" onClick={() => void doExport()}>
+                    <div className="pref-row-actions" style={{ gap: 8 }}>
+                      <button type="button" className="btn btn-primary btn-sm btn-pref-action" onClick={() => void doExport()}>
                         导出备份
                       </button>
-                      <button type="button" className="btn" onClick={() => void doImport()}>
+                      <button type="button" className="btn btn-sm btn-pref-action" onClick={() => void doImport()}>
                         从备份恢复
                       </button>
                     </div>
@@ -1570,12 +1569,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                         {updateProgress && <div className="pref-row-sub">{updateProgress.message}</div>}
                       </div>
-                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <div className="pref-row-actions">
                         {updateInfo?.hasUpdate && onApplyUpdate && (
                           <button
                             id="applyUpdateBtn"
                             type="button"
-                            className="btn btn-primary btn-sm"
+                            className="btn btn-primary btn-sm btn-pref-action"
                             disabled={updatingApp}
                             onClick={() => void onApplyUpdate()}
                           >
@@ -1586,7 +1585,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <button
                           id="checkUpdateBtn"
                           type="button"
-                          className="btn btn-sm"
+                          className="btn btn-sm btn-pref-action"
                           disabled={checkingUpdate || updatingApp}
                           onClick={() => void onCheckUpdate?.()}
                         >
@@ -1643,10 +1642,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           {appInfo?.dataDir || '%LOCALAPPDATA%\\Shell'}
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <div className="pref-row-actions">
                         <button
                           type="button"
-                          className="btn btn-sm btn-ghost"
+                          className="btn btn-sm btn-ghost btn-icon-sm"
                           title="复制目录路径"
                           aria-label="复制目录路径"
                           onClick={() => {
@@ -1654,11 +1653,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             onToast('已复制目录路径');
                           }}
                         >
-                          <Copy size={12} />
+                          <Copy size={12.5} />
                         </button>
                         <button
                           type="button"
-                          className="btn btn-sm"
+                          className="btn btn-sm btn-pref-action"
                           onClick={() => void getApi().OpenDataDir().catch(() => {})}
                         >
                           打开目录
@@ -1668,13 +1667,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                     <div className="pref-row">
                       <span className="pref-row-label">运行框架与仓库</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div className="pref-row-actions" style={{ gap: 8 }}>
                         <span className="mono" style={{ fontSize: 11.5, color: 'var(--ink-secondary)' }}>
                           Go 1.26 · Wails v2 · xterm.js v6
                         </span>
                         <button
                           type="button"
-                          className="btn btn-sm"
+                          className="btn btn-sm btn-pref-action"
                           onClick={() => openExternalURL('https://github.com/haoch1/Shell')}
                         >
                           GitHub

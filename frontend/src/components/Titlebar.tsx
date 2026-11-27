@@ -367,7 +367,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               aria-label="搜索终端"
               onClick={onOpenSearch}
             >
-              <Search size={13.5} strokeWidth={1.7} />
+              <Search size={14} strokeWidth={1.75} />
             </button>
             <button
               type="button"
@@ -376,7 +376,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               aria-label="左右分屏"
               onClick={() => onSplit('horizontal')}
             >
-              <SplitSquareHorizontal size={13.5} strokeWidth={1.7} />
+              <SplitSquareHorizontal size={14} strokeWidth={1.75} />
             </button>
             <button
               type="button"
@@ -385,7 +385,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               aria-label="上下分屏"
               onClick={() => onSplit('vertical')}
             >
-              <SplitSquareVertical size={13.5} strokeWidth={1.7} />
+              <SplitSquareVertical size={14} strokeWidth={1.75} />
             </button>
             {isMultiPane && (
               <button
@@ -395,7 +395,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 aria-label="广播输入"
                 onClick={onToggleBroadcast}
               >
-                <Radio size={13.5} strokeWidth={1.7} />
+                <Radio size={14} strokeWidth={1.75} />
               </button>
             )}
             <span className="titlebar-divider" />
@@ -405,10 +405,10 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               className={`icon-btn ${drawer === 'sftp' ? 'active' : ''}`}
               disabled={!isConnected}
               title="SFTP 文件管理"
+              aria-label="SFTP 文件管理"
               onClick={() => onToggleDrawer('sftp')}
             >
-              <FolderOpen size={13.5} strokeWidth={1.7} />
-              <span>文件</span>
+              <FolderOpen size={14} strokeWidth={1.75} />
             </button>
 
             <button
@@ -417,10 +417,10 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               className={`icon-btn ${drawer === 'tunnels' ? 'active' : ''}`}
               disabled={!isConnected}
               title="端口转发隧道"
+              aria-label="端口转发隧道"
               onClick={() => onToggleDrawer('tunnels')}
             >
-              <ArrowLeftRight size={13.5} strokeWidth={1.7} />
-              <span>转发</span>
+              <ArrowLeftRight size={14} strokeWidth={1.75} />
             </button>
           </>
         )}
@@ -430,10 +430,10 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           type="button"
           className={`icon-btn ${drawer === 'snippets' ? 'active' : ''}`}
           title="快捷命令片段"
+          aria-label="快捷命令片段"
           onClick={() => onToggleDrawer('snippets')}
         >
-          <Code2 size={13.5} strokeWidth={1.7} />
-          <span>片段</span>
+          <Code2 size={14} strokeWidth={1.75} />
         </button>
 
         <button
@@ -441,10 +441,10 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           type="button"
           className={`icon-btn ${drawer === 'ai' ? 'active-purple' : ''}`}
           title="AI 命令助手 (Ctrl+Shift+A)"
+          aria-label="AI 命令助手"
           onClick={() => onToggleDrawer('ai')}
         >
-          <Sparkles size={13.5} strokeWidth={1.7} />
-          <span>AI</span>
+          <Sparkles size={14} strokeWidth={1.75} />
         </button>
 
         <button
@@ -455,7 +455,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label="命令面板"
           onClick={onOpenPalette}
         >
-          <Command size={13.5} strokeWidth={1.7} />
+          <Command size={14} strokeWidth={1.75} />
         </button>
       </div>
 

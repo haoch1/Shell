@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { FileUp, ScanSearch, X } from 'lucide-react';
 import type { ImportedHost } from '../types/shell';
 import { errorMessage, getApi, onDesktopEvent } from '../lib/bridge';
+import { Checkbox } from './ui/Checkbox';
 
 interface SSHConfigImportModalProps {
   onClose: () => void;
@@ -223,8 +224,7 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
                       padding: '8px 12px',
                     }}
                   >
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={Boolean(selected[idx])}
                       onChange={(ev) => setSelected({ ...selected, [idx]: ev.target.checked })}
                     />
@@ -255,8 +255,7 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={showGroupOverride}
                     onChange={(e) => setShowGroupOverride(e.target.checked)}
                   />

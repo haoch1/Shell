@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { errorMessage, getApi } from '../lib/bridge';
 import { formatHostDisplay } from '../lib/utils';
 import type { HostExportResult, Profile } from '../types/shell';
+import { Checkbox } from './ui/Checkbox';
 
 export function HostExportModal({ profiles, initialIds, hideHostIp = false, onClose }: {
   profiles: Profile[]; initialIds: string[]; hideHostIp?: boolean; onClose: () => void;
@@ -76,7 +77,7 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
       <form onSubmit={event => { event.preventDefault(); if (result) close(); else void save(); }}>
         <div className="modal-header">
           <h2 id="exportTitle">{result ? `已导出 ${result.count} 台主机` : '导出主机'}</h2>
-          <button type="button" className="icon-btn" aria-label="关闭导出" disabled={busy} onClick={close}><X size={16} /></button>
+          <button type="button" className="icon-btn" aria-label="关闭导出" disabled={busy} onClick={close}><X size={15} /></button>
         </div>
         <div className="modal-body">
           {result ? (
@@ -120,7 +121,7 @@ export function HostExportModal({ profiles, initialIds, hideHostIp = false, onCl
                     const addr = hideHostIp ? '' : `${p.user}@${formatHostDisplay(p.host, p.port)}`;
                     return (
                       <label key={p.id} title={hideHostIp ? displayName : addr}>
-                        <input type="checkbox" value={p.id} checked={selected.has(p.id)} disabled={busy} onChange={() => toggle(p.id)} />
+                        <Checkbox value={p.id} checked={selected.has(p.id)} disabled={busy} onChange={() => toggle(p.id)} />
                         <span>{displayName}</span>
                         <small
                           className={`mono host-export-addr ${hideHostIp ? 'is-hidden' : ''}`}

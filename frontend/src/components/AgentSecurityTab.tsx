@@ -327,16 +327,18 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                   />
                   <button
                     type="button"
-                    className="btn btn-sm"
+                    className="btn btn-sm btn-icon-sm"
                     title={showToken ? '隐藏' : '显示'}
+                    aria-label={showToken ? '隐藏令牌' : '显示令牌'}
                     onClick={() => setShowToken((v) => !v)}
                   >
                     {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
                   </button>
                   <button
                     type="button"
-                    className="btn btn-sm"
+                    className="btn btn-sm btn-icon-sm"
                     title="复制令牌"
+                    aria-label="复制令牌"
                     onClick={() => {
                       void copyToClipboard(status.token);
                       onToast('已复制令牌');
@@ -346,8 +348,9 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                   </button>
                   <button
                     type="button"
-                    className="btn btn-sm"
+                    className="btn btn-sm btn-icon-sm"
                     title="重置令牌"
+                    aria-label="重置令牌"
                     onClick={async () => {
                       const nextTok = await getApi().RotateAgentToken();
                       setStatus({ ...status, token: nextTok });
@@ -364,10 +367,10 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
           <div className="pref-group-pad">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
               <div style={{ fontWeight: 600, fontSize: 13 }}>客户端接入</div>
-              <div style={{ display: 'flex', gap: 6 }}>
+              <div className="pref-row-actions">
                 <button
                   type="button"
-                  className="btn btn-primary btn-sm"
+                  className="btn btn-primary btn-sm btn-pref-action"
                   onClick={() => {
                     void copyToClipboard(activeSnippetCopy);
                     onToast(mcpClient === 'json' ? '已复制 HTTP 配置' : '已复制 CLI 接入命令');
@@ -378,7 +381,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                 {mcpClient === 'json' && (
                   <button
                     type="button"
-                    className="btn btn-sm"
+                    className="btn btn-sm btn-pref-action"
                     onClick={() => {
                       void copyToClipboard(mcpStdioConfig);
                       onToast('已复制 Stdio 配置');
@@ -543,7 +546,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                 <button
                   type="button"
-                  className="btn btn-primary btn-sm"
+                  className="btn btn-primary btn-sm btn-key-action"
                   disabled={busy}
                   onClick={() =>
                     void saveConfig(
@@ -578,7 +581,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                     onChange={(e) => setPolicyCmd(e.target.value)}
                     placeholder="输入命令检测…"
                   />
-                  <button type="button" className="btn btn-sm" onClick={() => void runPolicyTest()}>
+                  <button type="button" className="btn btn-sm btn-key-action" onClick={() => void runPolicyTest()}>
                     检测
                   </button>
                 </div>
@@ -599,7 +602,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
               <div className="soft-card">
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span style={{ fontWeight: 600, fontSize: 12 }}>脱敏测试</span>
-                  <button id="runRedactTestBtn" type="button" className="btn btn-sm" onClick={() => void runRedactTest()}>
+                  <button id="runRedactTestBtn" type="button" className="btn btn-sm btn-key-action" onClick={() => void runRedactTest()}>
                     运行测试
                   </button>
                 </div>
@@ -635,13 +638,13 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
             <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>
               最近 {logs.length} 条记录
             </span>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button type="button" className="btn btn-sm" onClick={() => void loadAudit()}>
+            <div className="pref-row-actions">
+              <button type="button" className="btn btn-sm btn-key-action" onClick={() => void loadAudit()}>
                 刷新
               </button>
               <button
                 type="button"
-                className="btn btn-sm btn-danger"
+                className="btn btn-sm btn-danger btn-key-action"
                 onClick={async () => {
                   await getApi().ClearAuditLogs();
                   setLogs([]);

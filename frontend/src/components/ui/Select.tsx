@@ -16,6 +16,7 @@ export interface SelectProps {
   options: SelectOption[];
   placeholder?: string;
   id?: string;
+  size?: 'sm' | 'md';
   className?: string;
   style?: React.CSSProperties;
   disabled?: boolean;
@@ -28,6 +29,7 @@ export const Select: React.FC<SelectProps> = ({
   options,
   placeholder,
   id,
+  size = 'md',
   className = '',
   style,
   disabled = false,
@@ -44,7 +46,7 @@ export const Select: React.FC<SelectProps> = ({
     >
       <SelectPrimitive.Trigger
         id={id}
-        className={`ui-select-trigger ${className}`.trim()}
+        className={`ui-select-trigger ${size === 'sm' ? 'ui-select-sm' : ''} ${className}`.trim()}
         style={style}
         aria-label={ariaLabel}
       >

@@ -118,6 +118,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   const [query, setQuery] = useState('');
   const [sortMode, setSortMode] = useState<HostSortMode>(loadSortMode);
   const [sortMenuPos, setSortMenuPos] = useState<{ left: number; top: number } | null>(null);
+  const [addMenuPos, setAddMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; profile: Profile } | null>(null);
   const [selectMode, setSelectMode] = useState(false);
@@ -147,10 +148,15 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   }, [draggingGroup]);
 
   useEffect(() => {
-    if (!sortMenuPos && !groupMenuPos && !selectMode) return;
+    if (!addMenuPos && !sortMenuPos && !groupMenuPos && !selectMode) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       if (document.querySelector('.modal-backdrop, .spotlight-backdrop, dialog[open]')) return;
+      if (addMenuPos) {
+        e.preventDefault();
+        setAddMenuPos(null);
+        return;
+      }
       if (sortMenuPos) {
         e.preventDefault();
         setSortMenuPos(null);
@@ -168,7 +174,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sortMenuPos, groupMenuPos, selectMode]);
+  }, [addMenuPos, sortMenuPos, groupMenuPos, selectMode]);
 
   const changeSortMode = (next: HostSortMode) => {
     setSortMode(next);
@@ -398,16 +404,50 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
           </div>
         ) : (
           <div className="sidebar-action-row">
-            <button
-              id="addHost"
-              type="button"
-              className="btn sidebar-new-btn"
-              style={{ flex: 1 }}
-              onClick={onAddHost}
-            >
-              <Plus size={14} strokeWidth={2.2} className="sidebar-new-plus" />
-              <span>新建主机</span>
-            </button>
+            <div className={`sidebar-new-split ${addMenuPos ? 'open' : ''}`}>
+              <button
+                id="addHost"
+                type="button"
+                className="btn sidebar-new-btn"
+                onClick={() => {
+                  setAddMenuPos(null);
+                  setSortMenuPos(null);
+                  onAddHost();
+                }}
+              >
+                <Plus size={14} strokeWidth={2.2} className="sidebar-new-plus" />
+                <span>新建主机</span>
+              </button>
+              <span className="sidebar-new-divider" aria-hidden="true" />
+              <Tooltip label="导入与导出主机" side="bottom">
+                <button
+                  id="addHostMenuBtn"
+                  type="button"
+                  className={`sidebar-new-caret ${addMenuPos ? 'open' : ''}`}
+                  aria-label="更多主机操作"
+                  aria-expanded={Boolean(addMenuPos)}
+                  aria-haspopup="menu"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSortMenuPos(null);
+                    if (addMenuPos) {
+                      setAddMenuPos(null);
+                      return;
+                    }
+                    const splitEl = e.currentTarget.closest('.sidebar-new-split');
+                    const rect = (splitEl ?? e.currentTarget).getBoundingClientRect();
+                    const menuW = Math.max(Math.round(rect.width), 160);
+                    setAddMenuPos({
+                      left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)),
+                      top: rect.bottom + 6,
+                      width: menuW,
+                    });
+                  }}
+                >
+                  <ChevronDown size={13.5} strokeWidth={2.1} />
+                </button>
+              </Tooltip>
+            </div>
             <Tooltip label={`排序：${SORT_OPTIONS.find((o) => o.id === sortMode)?.label}`} side="bottom">
               <button
                 id="sortHostsBtn"
@@ -416,6 +456,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                 aria-label="主机排序"
                 onClick={(e) => {
                   e.stopPropagation();
+                  setAddMenuPos(null);
                   if (sortMenuPos) {
                     setSortMenuPos(null);
                     return;
@@ -439,6 +480,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                   className="btn sidebar-sort-btn"
                   aria-label="批量管理"
                   onClick={() => {
+                    setAddMenuPos(null);
                     setSortMenuPos(null);
                     setSelectMode(true);
                   }}
@@ -700,32 +742,8 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
         </div>
       ) : (
         <div className="sidebar-footer">
-          <div className="sidebar-footer-group sidebar-file-actions">
-            <Tooltip label="导入主机配置" side="top">
-              <button
-                id="importSshBtn"
-                type="button"
-                className="icon-btn"
-                aria-label="导入主机配置"
-                onClick={onOpenImportSSH}
-              >
-                <Download size={14} strokeWidth={1.7} />
-              </button>
-            </Tooltip>
-            <Tooltip label="导出主机配置" side="top">
-              <button
-                id="exportHostsBtn"
-                type="button"
-                className="icon-btn"
-                aria-label="导出主机配置"
-                onClick={() => onOpenExportHosts([])}
-              >
-                <Upload size={14} strokeWidth={1.7} />
-              </button>
-            </Tooltip>
-          </div>
           <div className="sidebar-footer-group">
-            <Tooltip label={hideHostIp ? '显示主机 IP' : '隐藏主机 IP（隐私模式）'} side="top">
+            <Tooltip label={hideHostIp ? '显示主机 IP' : '隐藏主机 IP'} side="top">
               <button
                 id="toggleHideIpBtn"
                 type="button"
@@ -749,6 +767,8 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                 </button>
               </Tooltip>
             )}
+          </div>
+          <div className="sidebar-footer-group">
             <Tooltip label="SSH 密钥管理" side="top">
               <button
                 id="keysBtn"
@@ -852,6 +872,52 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             >
               <FolderMinus size={13} />
               <span>移出分组（默认）</span>
+            </button>
+          </div>
+        </>
+      )}
+
+      {addMenuPos && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 139 }}
+            onClick={() => setAddMenuPos(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setAddMenuPos(null);
+            }}
+          />
+          <div
+            id="addHostMenu"
+            role="menu"
+            className="context-menu add-host-popover"
+            style={{ left: addMenuPos.left, top: addMenuPos.top, minWidth: addMenuPos.width }}
+          >
+            <button
+              id="importSshBtn"
+              type="button"
+              role="menuitem"
+              className="context-menu-item"
+              onClick={() => {
+                setAddMenuPos(null);
+                onOpenImportSSH();
+              }}
+            >
+              <Download size={13.5} strokeWidth={1.9} className="add-host-menu-icon is-import" />
+              <span>导入主机</span>
+            </button>
+            <button
+              id="exportHostsBtn"
+              type="button"
+              role="menuitem"
+              className="context-menu-item"
+              onClick={() => {
+                setAddMenuPos(null);
+                onOpenExportHosts([]);
+              }}
+            >
+              <Upload size={13.5} strokeWidth={1.9} className="add-host-menu-icon is-export" />
+              <span>导出主机</span>
             </button>
           </div>
         </>

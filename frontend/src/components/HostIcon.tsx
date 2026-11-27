@@ -2,36 +2,31 @@ import React from 'react';
 import type { HostIconId, Profile, ProfileColor } from '../types/shell';
 import { profileColorHex } from '../lib/themes';
 
-interface BrandTheme {
-  tileBg: string;
-  brandColor: string;
-}
-
-const BRAND_THEMES: Record<Exclude<HostIconId, ''>, BrandTheme> = {
-  ubuntu: { tileBg: '#E95420', brandColor: '#E95420' },
-  debian: { tileBg: '#C7174F', brandColor: '#D70A53' },
-  centos: { tileBg: '#8E3B9E', brandColor: '#932279' },
-  rocky: { tileBg: '#10A37F', brandColor: '#10A37F' },
-  alpine: { tileBg: '#0D77A8', brandColor: '#0D77A8' },
-  arch: { tileBg: '#1793D1', brandColor: '#1793D1' },
-  fedora: { tileBg: '#3B6EB8', brandColor: '#3B6EB8' },
-  linux: { tileBg: '#2F6FED', brandColor: '#2F6FED' },
-  windows: { tileBg: '#0078D4', brandColor: '#0078D4' },
-  docker: { tileBg: '#1D63ED', brandColor: '#1D63ED' },
+const BRAND_TILE_BG: Record<Exclude<HostIconId, ''>, string> = {
+  ubuntu: '#E95420',
+  debian: '#C7174F',
+  centos: '#8E3B9E',
+  rocky: '#10A37F',
+  alpine: '#0D77A8',
+  arch: '#1793D1',
+  fedora: '#3B6EB8',
+  linux: '#2F6FED',
+  windows: '#0078D4',
+  docker: '#1D63ED',
 };
 
-export const HOST_ICONS: { id: HostIconId; label: string; brandColor: string; darkColor: string }[] = [
-  { id: '', label: '自动', brandColor: '#6e6e73', darkColor: '#a1a1a6' },
-  { id: 'ubuntu', label: 'Ubuntu', brandColor: BRAND_THEMES.ubuntu.brandColor, darkColor: BRAND_THEMES.ubuntu.brandColor },
-  { id: 'debian', label: 'Debian', brandColor: BRAND_THEMES.debian.brandColor, darkColor: BRAND_THEMES.debian.brandColor },
-  { id: 'centos', label: 'CentOS', brandColor: BRAND_THEMES.centos.brandColor, darkColor: BRAND_THEMES.centos.brandColor },
-  { id: 'rocky', label: 'Rocky', brandColor: BRAND_THEMES.rocky.brandColor, darkColor: BRAND_THEMES.rocky.brandColor },
-  { id: 'alpine', label: 'Alpine', brandColor: BRAND_THEMES.alpine.brandColor, darkColor: BRAND_THEMES.alpine.brandColor },
-  { id: 'arch', label: 'Arch', brandColor: BRAND_THEMES.arch.brandColor, darkColor: BRAND_THEMES.arch.brandColor },
-  { id: 'fedora', label: 'Fedora', brandColor: BRAND_THEMES.fedora.brandColor, darkColor: BRAND_THEMES.fedora.brandColor },
-  { id: 'linux', label: 'Linux', brandColor: BRAND_THEMES.linux.brandColor, darkColor: BRAND_THEMES.linux.brandColor },
-  { id: 'windows', label: 'Windows', brandColor: BRAND_THEMES.windows.brandColor, darkColor: BRAND_THEMES.windows.brandColor },
-  { id: 'docker', label: 'Docker', brandColor: BRAND_THEMES.docker.brandColor, darkColor: BRAND_THEMES.docker.brandColor },
+export const HOST_ICONS: { id: HostIconId; label: string }[] = [
+  { id: '', label: '自动' },
+  { id: 'ubuntu', label: 'Ubuntu' },
+  { id: 'debian', label: 'Debian' },
+  { id: 'centos', label: 'CentOS' },
+  { id: 'rocky', label: 'Rocky' },
+  { id: 'alpine', label: 'Alpine' },
+  { id: 'arch', label: 'Arch' },
+  { id: 'fedora', label: 'Fedora' },
+  { id: 'linux', label: 'Linux' },
+  { id: 'windows', label: 'Windows' },
+  { id: 'docker', label: 'Docker' },
 ];
 
 // Inlined 24x24 brand SVG paths (eliminates the ~15 MB simple-icons dependency).
@@ -47,7 +42,7 @@ const OS_ICON_PATHS: Partial<Record<Exclude<HostIconId, ''>, string>> = {
   docker: 'M13.983 11.078h2.119a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.119a.185.185 0 00-.185.185v1.888c0 .102.083.185.185.185m-2.954-5.43h2.118a.186.186 0 00.186-.186V3.574a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m0 2.716h2.118a.187.187 0 00.186-.186V6.29a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.887c0 .102.082.185.185.186m-2.93 0h2.12a.186.186 0 00.184-.186V6.29a.185.185 0 00-.185-.185H8.1a.185.185 0 00-.185.185v1.887c0 .102.083.185.185.186m-2.964 0h2.119a.186.186 0 00.185-.186V6.29a.185.185 0 00-.185-.185H5.136a.186.186 0 00-.186.185v1.887c0 .102.084.185.186.186m5.893 2.715h2.118a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m-2.93 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.083.185.185.185m-2.964 0h2.119a.185.185 0 00.185-.185V9.006a.185.185 0 00-.184-.186h-2.12a.186.186 0 00-.186.186v1.887c0 .102.084.185.186.185m-2.92 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.082.185.185.185M23.763 9.89c-.065-.051-.672-.51-1.954-.51-.338.001-.676.03-1.01.087-.248-1.7-1.653-2.53-1.716-2.566l-.344-.199-.226.327c-.284.438-.49.922-.612 1.43-.23.97-.09 1.882.403 2.661-.595.332-1.55.413-1.744.42H.751a.751.751 0 00-.75.748 11.376 11.376 0 00.692 4.062c.545 1.428 1.355 2.48 2.41 3.124 1.18.723 3.1 1.137 5.275 1.137.983.003 1.963-.086 2.93-.266a12.248 12.248 0 003.823-1.389c.98-.567 1.86-1.288 2.61-2.136 1.252-1.418 1.998-2.997 2.553-4.4h.221c1.372 0 2.215-.549 2.68-1.009.309-.293.55-.65.707-1.046l.098-.288Z',
 };
 
-const VALID_OS_ICONS = new Set<string>(Object.keys(BRAND_THEMES));
+const VALID_OS_ICONS = new Set<string>(Object.keys(BRAND_TILE_BG));
 
 export function detectOSIconFromText(text: string): Exclude<HostIconId, ''> | '' {
   const s = (text || '').toLowerCase();
@@ -109,10 +104,9 @@ export const HostIcon: React.FC<HostIconProps> = ({
 }) => {
   const resolvedIcon = iconOverride !== undefined ? (iconOverride || inferHostIcon(profile)) : inferHostIcon(profile);
   const customColor = colorOverride ?? profile?.color;
-  const theme = BRAND_THEMES[resolvedIcon];
+  const tileColor = customColor ? profileColorHex(customColor) : BRAND_TILE_BG[resolvedIcon];
   const glyphSize = size === 'xs' ? 10.5 : size === 'sm' ? 13 : size === 'lg' ? 18 : 16;
 
-  const tileColor = customColor ? profileColorHex(customColor) : theme.tileBg;
   const styleVars = {
     '--host-tile-bg': tileColor,
   } as React.CSSProperties;

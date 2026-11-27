@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Eye, EyeOff, X } from 'lucide-react';
 import type { AuthMode, HostAgentAccess, HostIconId, Profile, ProfileColor, ProxyType, SystemProxyInfo } from '../types/shell';
-import { PROFILE_COLORS, profileColorHex } from '../lib/themes';
+import { PROFILE_COLORS } from '../lib/themes';
 import { errorMessage, getApi } from '../lib/bridge';
-import { HOST_ICONS, inferHostIcon, renderHostGlyph } from './HostIcon';
+import { HOST_ICONS, HostIcon } from './HostIcon';
 import { Checkbox } from './ui/Checkbox';
+import { ComboBox } from './ui/ComboBox';
 import { Select } from './ui/Select';
 
 interface HostModalProps {
@@ -88,7 +89,7 @@ export const HostModal: React.FC<HostModalProps> = ({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (e.defaultPrevented || document.querySelector('[data-radix-select-viewport]')) return;
+        if (e.defaultPrevented || document.querySelector('[data-radix-select-viewport], [data-combobox-open="true"]')) return;
         onClose();
       }
     };
@@ -383,21 +384,16 @@ export const HostModal: React.FC<HostModalProps> = ({
                     onChange={(e) => setName(e.target.value)}
                   />
                 </div>
-                <div className="field-group" style={{ width: 150 }}>
+                <div className="field-group" style={{ width: 168 }}>
                   <label className="field-label" htmlFor="hostGroup">分组</label>
-                  <input
+                  <ComboBox
                     id="hostGroup"
-                    className="input"
-                    list="shell-groups-datalist"
-                    placeholder="生产 / 测试"
                     value={group}
-                    onChange={(e) => setGroup(e.target.value)}
+                    onChange={setGroup}
+                    options={existingGroups}
+                    placeholder="选择或输入分组"
+                    emptyOptionLabel="不分组"
                   />
-                  <datalist id="shell-groups-datalist">
-                    {existingGroups.map((g) => (
-                      <option key={g} value={g} />
-                    ))}
-                  </datalist>
                 </div>
               </div>
 
@@ -406,23 +402,20 @@ export const HostModal: React.FC<HostModalProps> = ({
                 <div className="icon-picker-row">
                   {HOST_ICONS.map((item) => {
                     const active = icon === item.id;
-                    const glyph = item.id || inferHostIcon({ name, host, group });
                     return (
                       <button
                         key={item.id || 'auto'}
                         type="button"
-                        className={`icon-choice-btn ${active ? 'selected' : ''}`}
-                        style={{
-                          '--host-fg-light': item.id ? item.brandColor : profileColorHex(color),
-                          '--host-fg-dark': item.id ? item.darkColor : profileColorHex(color),
-                        } as React.CSSProperties}
+                        className={`icon-choice-btn ${item.id ? 'is-tile' : 'is-auto'} ${active ? 'selected' : ''}`}
                         title={item.label}
+                        aria-label={item.label}
+                        aria-pressed={active}
                         onClick={() => setIcon(item.id)}
                       >
                         {item.id === '' ? (
-                          <span style={{ fontSize: 10.5, fontWeight: 600 }}>自动</span>
+                          <span>自动</span>
                         ) : (
-                          renderHostGlyph(glyph, 15)
+                          <HostIcon iconOverride={item.id} colorOverride={color} size="sm" />
                         )}
                       </button>
                     );

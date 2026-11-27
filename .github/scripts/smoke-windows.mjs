@@ -15,6 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+const { version: expectedVersion } = JSON.parse(await readFile(new URL('../../frontend/package.json', import.meta.url), 'utf8'));
 const snapshotDir = path.resolve('build/preview');
 await mkdir(snapshotDir, { recursive: true });
 
@@ -30,6 +31,8 @@ async function verifyNativeBinary() {
   await mkdir(store);
   await writeFile(path.join(store, 'agent.json'), JSON.stringify({ enabled: true, port: await freePort() }));
   const env = { ...process.env, LOCALAPPDATA: testProfile, APPDATA: testProfile, SHELL_EXIT_ON_CLOSE: '1' };
+  const cliVersion = await execFileAsync(exePath, ['--version'], { env, timeout: 8000, windowsHide: true });
+  assert.equal(cliVersion.stdout.trim(), `Shell ${expectedVersion}`);
   const runtimeFile = path.join(store, 'bridge-runtime.json');
   const client = spawn(exePath, [], { env });
   const exited = once(client, 'exit');
@@ -71,6 +74,7 @@ async function verifyNativeBinary() {
     const replies = stdout.trim().split(/\r?\n/).map(line => JSON.parse(line));
     assert.deepEqual(replies.map(reply => reply.id), [1, 2]);
     assert.equal(replies[0].result.protocolVersion, '2025-03-26');
+    assert.equal(replies[0].result.serverInfo.version, expectedVersion);
     assert.ok(replies[1].result.tools.some(tool => tool.name === 'shell_connect'));
     console.log('[Stage 1] Packaged MCP client initialized and discovered the desktop tools.');
 
@@ -163,11 +167,11 @@ const BRIDGE_MOCK_SCRIPT = `
     Quit() {},
   };
   window.go = { main: { App: {
-    AppInfo: async () => ({ version: '1.2.0', dataDir: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\Shell' }),
+    AppInfo: async () => ({ version: ${JSON.stringify(expectedVersion)}, dataDir: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\Shell' }),
     OpenDataDir: async () => {},
     CheckForUpdate: async () => ({
-      currentVersion: '1.2.0',
-      latestVersion: '1.2.0',
+      currentVersion: ${JSON.stringify(expectedVersion)},
+      latestVersion: ${JSON.stringify(expectedVersion)},
       hasUpdate: false,
       releaseUrl: 'https://github.com/haoch1/Shell/releases',
       notes: ''
@@ -615,7 +619,7 @@ async function verifyFrontendUI() {
     await shot('15-Settings-AI-CLI');
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(7)').click()`);
-    await sleep(200);
+    await until(() => evaluate(`document.querySelector('#settingsDialog').textContent.includes(${JSON.stringify('v' + expectedVersion)})`), 'about version');
     await shot('14-Settings-About');
 
     // Open Agent & Security tab -> screenshot MCP + Unified Security/Redaction view

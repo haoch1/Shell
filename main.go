@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/haoch1/Shell/frontend"
 	"github.com/haoch1/Shell/internal/agentbridge"
 	"github.com/haoch1/Shell/internal/local"
 	"github.com/wailsapp/wails/v2"
@@ -18,6 +19,15 @@ import (
 
 //go:embed all:frontend/dist
 var embedded embed.FS
+
+// A custom build can override this value with -ldflags '-X main.appVersion=...'.
+var appVersion string
+
+func init() {
+	if appVersion == "" {
+		appVersion = frontend.Version()
+	}
+}
 
 func hasFlag(flag string) bool {
 	for _, arg := range os.Args[1:] {

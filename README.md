@@ -141,6 +141,12 @@ Shell 内置符合 MCP `2025-03-26` 规范的高性能本地桥接服务（持�
 | `Shell-Windows-x64.zip` | 便携压缩包，包含可执行文件、说明文档与开源许可 |
 | `SHA256SUMS.txt` | 发行产物 SHA-256 校验值 |
 
+### 快速使用
+
+打开 Shell，点击「新建主机」，填写地址、端口、用户名并选择密码、私钥或 SSH Agent 认证。连接后可从终端右上方打开 SFTP，或选择「左右分屏」「上下分屏」在同一标签中连接另一台主机。把已连接的标签拖到终端边缘可移动现有会话。
+
+可在「设置 → 关于」查看当前版本，或在 PowerShell 中运行 `./Shell-Windows-x64.exe --version | Out-String`。安装包的版本应与下载页面的标签一致。
+
 ### 运行环境要求与覆盖升级
 - **操作系统**：Windows 10（1903 及以上）或 Windows 11（x64）
 - **运行依赖**：Microsoft Edge WebView2 Runtime（Windows 11 默认内置，Windows 10 缺失时自动引导安装）
@@ -174,11 +180,13 @@ $env:CGO_ENABLED = '0'
 go test -v -count=1 -tags desktop,production,wv2runtime.download ./...
 
 # 3. 编译并打包 Windows x64 便携可执行文件与校验和
-./.github/scripts/package-windows.ps1 -Version 1.0.0
+./.github/scripts/package-windows.ps1
 
 # 4. 执行原生 WebView2 启动校验与端到端 UI 测试
 node .github/scripts/smoke-windows.mjs
 ```
+
+每次功能迭代在 `frontend` 目录用 `npm version minor --no-git-tag-version` 更新版本和锁文件。仅修复问题时使用 `patch`。在 `CHANGELOG.md` 增加对应版本说明后，CI 会从 `frontend/package.json` 读取版本并检查发布标签。
 
 ### 目录结构
 

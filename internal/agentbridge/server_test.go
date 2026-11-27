@@ -29,7 +29,7 @@ func TestMCPStreamableHTTPAuthOriginAndStdioProxy(t *testing.T) {
 	freePort := probeLn.Addr().(*net.TCPAddr).Port
 	_ = probeLn.Close()
 
-	srv := New(stubHandler{})
+	srv := New(stubHandler{}, "fixture-version")
 	const tok = "sh_unit_test_secret_token_0123456789"
 	port, _, err := srv.Start(freePort, tok)
 	if err != nil {

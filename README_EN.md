@@ -46,13 +46,15 @@ Built with Go 1.26, Wails v2 (WebView2), and xterm.js v6. Distributed as a singl
 
 ## Build from Source
 
+The Windows build reads its version from `frontend/package.json`. To check the installed binary, open Settings → About or run `./Shell-Windows-x64.exe --version | Out-String` in PowerShell.
+
 Requires Go 1.26+ (`CGO_ENABLED=0`) and Node.js 22+ on Windows x64.
 
 ```powershell
 cd frontend && npm ci && npm run build && cd ..
 $env:CGO_ENABLED = '0'
 go test -v -count=1 -tags desktop,production,wv2runtime.download ./...
-./.github/scripts/package-windows.ps1 -Version 1.2.0
+./.github/scripts/package-windows.ps1
 node .github/scripts/smoke-windows.mjs
 ```
 

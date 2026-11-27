@@ -1190,7 +1190,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                   <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.03em' }}>Shell</div>
                   <div className="about-badges">
-                    <span className="pill-badge accent mono">v{appInfo?.version || '1.2.0'}</span>
+                    {appInfo?.version && <span className="pill-badge accent mono">v{appInfo.version}</span>}
                     <span className="pill-badge neutral">Windows x64</span>
                     <span className="pill-badge neutral">MIT License</span>
                   </div>

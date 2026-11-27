@@ -17,16 +17,22 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/haoch1/Shell/frontend"
 	"github.com/tc-hib/winres"
 	"github.com/tc-hib/winres/version"
 )
 
 func main() {
-	verStr := flag.String("version", "1.0.0", "SemVer version e.g. 1.0.0")
+	verStr := flag.String("version", frontend.Version(), "Application version from frontend/package.json")
 	outSyso := flag.String("out", "rsrc_windows_amd64.syso", "Output COFF .syso file")
 	icoPath := flag.String("ico", "packaging/windows/Shell.ico", "Output multi-size ICO file")
 	manifestPath := flag.String("manifest", "packaging/windows/Shell.manifest", "Windows manifest XML")
 	flag.Parse()
+	*verStr = strings.TrimPrefix(strings.TrimSpace(*verStr), "v")
+	fv, err := parseVersion4(*verStr)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// 1. Render crisp macOS-style dark squircle icon with minimalist ">_" glyph at multiple sizes.
 	sizes := []int{256, 128, 64, 48, 32, 16}
@@ -64,11 +70,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("read manifest: %v", err)
 	}
+	numericVersion := fmt.Sprintf("%d.%d.%d.%d", fv[0], fv[1], fv[2], fv[3])
+	manifestBytes = bytes.ReplaceAll(manifestBytes, []byte("@SHELL_FILE_VERSION@"), []byte(numericVersion))
 	if err := rs.Set(winres.RT_MANIFEST, winres.ID(1), 0x0409, manifestBytes); err != nil {
 		log.Fatalf("set manifest: %v", err)
 	}
 
-	fv := parseVersion4(*verStr)
 	vi := version.Info{
 		FileVersion:    fv,
 		ProductVersion: fv,
@@ -78,7 +85,7 @@ func main() {
 	vi.Set(0x0409, version.OriginalFilename, "Shell.exe")
 	vi.Set(0x0409, version.InternalName, "Shell")
 	vi.Set(0x0409, version.ProductVersion, *verStr)
-	vi.Set(0x0409, version.FileVersion, fmt.Sprintf("%d.%d.%d.%d", fv[0], fv[1], fv[2], fv[3]))
+	vi.Set(0x0409, version.FileVersion, *verStr)
 	rs.SetVersionInfo(vi)
 
 	out, err := os.Create(*outSyso)
@@ -92,23 +99,24 @@ func main() {
 	fmt.Printf("Generated %s and %s (version %s)\n", *icoPath, *outSyso, *verStr)
 }
 
-func parseVersion4(v string) [4]uint16 {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
-	if idx := strings.IndexByte(v, '-'); idx >= 0 {
-		v = v[:idx]
-	}
-	parts := strings.Split(v, ".")
+func parseVersion4(v string) ([4]uint16, error) {
 	var out [4]uint16
-	for i := 0; i < len(parts) && i < 4; i++ {
-		n, err := strconv.Atoi(parts[i])
-		if err == nil && n >= 0 && n <= 65535 {
-			out[i] = uint16(n)
+	core := v
+	if idx := strings.IndexAny(v, "-+"); idx >= 0 {
+		core = v[:idx]
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return out, fmt.Errorf("expected major.minor.patch for Windows resources, got %q", v)
+	}
+	for i, part := range parts {
+		n, err := strconv.ParseUint(part, 10, 16)
+		if err != nil || strconv.FormatUint(n, 10) != part {
+			return out, fmt.Errorf("invalid Windows resource version component %q", part)
 		}
+		out[i] = uint16(n)
 	}
-	if out == [4]uint16{} {
-		out = [4]uint16{1, 0, 0, 0}
-	}
-	return out
+	return out, nil
 }
 
 func writeICO(filename string, sizes []int, frames [][]byte) error {

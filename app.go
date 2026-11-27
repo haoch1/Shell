@@ -23,8 +23,6 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-var appVersion = "1.2.0"
-
 type liveSession struct {
 	cancel  context.CancelFunc
 	session *remote.Session
@@ -74,7 +72,7 @@ func newApp() *App {
 		sessionApprovals: make(map[string]bool),
 		transfers:        make(map[string]context.CancelFunc),
 	}
-	a.bridge = agentbridge.New(a)
+	a.bridge = agentbridge.New(a, appVersion)
 	return a
 }
 

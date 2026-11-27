@@ -6,8 +6,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/haoch1/Shell/frontend"
 	"github.com/haoch1/Shell/internal/local"
 )
+
+func TestAppInfoUsesManifestVersion(t *testing.T) {
+	if got, want := newApp().AppInfo().Version, frontend.Version(); got != want {
+		t.Fatalf("desktop version %q differs from embedded manifest %q", got, want)
+	}
+}
 
 func TestExplainTerminalStopsOnInvalidRedactionSettings(t *testing.T) {
 	root := t.TempDir()

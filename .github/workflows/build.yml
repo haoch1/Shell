@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: '可选：手动指定发布 Release 的标签（例如 v1.2.0）'
+        description: '可选：发布与 frontend/package.json 版本一致的 v 开头标签'
         required: false
         type: string
 
@@ -48,6 +48,12 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
+
+      - name: Verify release version, lockfile and changelog
+        id: meta
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node .github/scripts/release-metadata.mjs
 
       - name: Build frontend
         working-directory: frontend
@@ -83,23 +89,11 @@ jobs:
           go test -run '^$' -bench '^(BenchmarkSFTPDirectoryBrowse|BenchmarkSFTPTransfer)$' -benchmem -benchtime=3x ./internal/remote
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-      - name: Determine release version
-        id: meta
-        run: |
-          $tag = ''
-          if ('${{ github.ref_type }}' -eq 'tag') {
-            $tag = '${{ github.ref_name }}'
-          } elseif ('${{ inputs.release_tag }}') {
-            $tag = '${{ inputs.release_tag }}'
-          }
-          $ver = if ($tag) { $tag.TrimStart('v') } else { '1.2.0' }
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
       - name: Compile and package Windows x64 executable
-        run: ./.github/scripts/package-windows.ps1 -Version '${{ steps.meta.outputs.version }}'
+        run: ./.github/scripts/package-windows.ps1
 
       - name: Exercise packaged WebView2 application (CDP Smoke Test)
+        id: ui
         run: |
           $runtimes = @("${env:ProgramFiles(x86)}/Microsoft/EdgeWebView/Application/*/msedgewebview2.exe",
                         "$env:LOCALAPPDATA/Microsoft/EdgeWebView/Application/*/msedgewebview2.exe")
@@ -113,6 +107,14 @@ jobs:
           }
           node .github/scripts/smoke-windows.mjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Save frontend bundle for failed UI checks
+        if: failure() && steps.ui.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shell-UI-Diagnostics
+          path: frontend/dist/
+          retention-days: 1
 
       - name: Upload portable package artifact
         uses: actions/upload-artifact@v4
@@ -132,38 +134,19 @@ jobs:
         if: steps.meta.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          $tag = '${{ steps.meta.outputs.tag }}'
-          $notes = @'
-          ## Shell __TAG__
-
-          面向 Windows 的轻量原生 SSH / SFTP 桌面客户端（Go 1.26 + Wails v2 + xterm.js v6）。
-
-          ### v1.2.0 更新亮点
-          - **应用内自动检查与一键更新**：内置纯 Go 版本检测与更新引擎（支持 Windows 系统代理），启动时自动检查新版本，可在「关于 Shell」中一键应用内下载、校验 `SHA256SUMS.txt` 完整性并原子替换重启，无需跳转浏览器手动下载覆盖。
-          - **高性能 MCP 引擎与双执行模式**：
-            - 新增持久化复用 SSH 命令通道（1 RTT 极速响应，高延迟与跳板机提速 3–4 倍）、内存配置缓存、异步审计日志、`--mcp` stdio 长连接池与令牌缓存；工具支持直接传 `host` 自动复用/建立连接并等待就绪返回 `sessionId`。
-            - 新增 **「后台静默（托盘极速）」** 与 **「前台终端可视（自动切页实时回显）」** 两种 MCP 执行方式；命令执行权限默认设为「自动放行」（仍严格遵守显式禁止规则与敏感路径保护）。
-          - **AI 预设与 Antigravity CLI 集成**：API 预设精简为最热门四家（Claude、ChatGPT、Gemini、DeepSeek）并支持自动走 Windows 系统代理与 Anthropic 协议头；本地 CLI 与 MCP 客户端接入升级支持 **Antigravity CLI (`agy`)**。
-          - **界面比例、标签栏与交互全面优化**：
-            - 顶部会话标签新增服务器发行版图标、滚轮横向滚动、溢出 `< / >` 翻页与全部标签下拉切换；修复双击左侧主机误开双连接的问题（已连接主机单击聚焦、右键支持新建并行会话）。
-            - 精简终端配色至 6 套精选方案（3×2 布局）；回调全局组件与字号比例至紧凑平衡尺寸；升级应用图标为高辨识度亮钴蓝配色；统一底部侧栏底栏与状态栏高度与字号基线；锁定主机编辑弹窗「基本连接 / 跳板与代理」双页高度一致。
-            - 修复左侧排序按钮菜单被裁切无法弹出的问题；修复终端顶部持续残留「正在连接」的问题；欢迎页「最近使用」新增一键清空按钮。
-
-          ### 核心特性
-          - **低延迟 SSH 引擎与网络传输**：本机回环二进制 WebSocket 终端数据流、零休眠状态采集、`TCP_NODELAY` 与快速回退拨号；支持密码 / 私钥 / Windows OpenSSH Agent / 交互式 2FA、多级跳板机（`ProxyJump`）、`ForwardAgent`、KeepAlive 与 RTT 延迟监控。
-          - **SFTP、端口转发与资产管理**：侧边 SFTP 文件管理（拖放上传、进度队列、`chmod`、在线编辑）、`-L / -R / -D` 端口转发隧道、轻量 Linux 实时监控、Ed25519 / RSA-4096 密钥生成及 `AES-256-GCM` 加密备份。
-          - **AI 助手与 MCP 集成**：支持自定义 OpenAI 兼容 API 与本地 AI CLI（Claude Code / Codex CLI / Gemini CLI），内置 MCP `2025-03-26` 本地桥接服务（Streamable HTTP + `Shell.exe --mcp` stdio），配套结构化命令权限引擎、自动脱敏、交互审批与 JSONL 审计日志。
-
-          ### 发行产物与升级说明
-          - `Shell-Windows-x64.exe`：单文件便携版可执行程序（无需安装）
-          - `Shell-Windows-x64.zip`：便携压缩包（仅含可执行文件、说明文档与开源许可）
-          - `SHA256SUMS.txt`：SHA-256 校验值文件
-          - **覆盖升级**：所有用户配置、主机列表与加密凭据独立存放在 `%LOCALAPPDATA%\Shell`，升级时先在托盘右键选择「退出 Shell」，再直接替换 `.exe` 或解压覆盖即可保留全部数据。
-          '@
-          $notes = $notes.Replace('__TAG__', $tag)
+          $tag = $env:RELEASE_TAG
           $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          $notes | Set-Content -LiteralPath $notesFile -Encoding utf8
+
+          $buildCommit = git rev-parse HEAD
+          $tagRefs = gh api "repos/$env:GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --jq '.[].ref'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($tagRefs -contains "refs/tags/$tag") {
+            $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/$tag" --jq '.sha'
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            if ($tagCommit -ne $buildCommit) { throw "Release tag $tag points to a different commit." }
+          }
 
           gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
           if ($LASTEXITCODE -eq 0) {
@@ -172,6 +155,6 @@ jobs:
             gh release edit $tag --title "Shell $tag" --notes-file $notesFile --repo $env:GITHUB_REPOSITORY
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           } else {
-            gh release create $tag build/release/Shell-Windows-x64.exe build/release/Shell-Windows-x64.zip build/release/SHA256SUMS.txt --title "Shell $tag" --notes-file $notesFile --repo $env:GITHUB_REPOSITORY
+            gh release create $tag build/release/Shell-Windows-x64.exe build/release/Shell-Windows-x64.zip build/release/SHA256SUMS.txt --target $buildCommit --title "Shell $tag" --notes-file $notesFile --repo $env:GITHUB_REPOSITORY
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }

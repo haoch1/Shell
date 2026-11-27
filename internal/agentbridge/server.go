@@ -48,10 +48,11 @@ type Server struct {
 	pipeID    string
 	token     string
 	handler   Handler
+	version   string
 }
 
-func New(handler Handler) *Server {
-	return &Server{handler: handler}
+func New(handler Handler, version string) *Server {
+	return &Server{handler: handler, version: version}
 }
 
 func (s *Server) Start(port int, token string) (int, string, error) {
@@ -310,7 +311,7 @@ func (s *Server) dispatchMCP(ctx context.Context, req rpcRequest, clientName str
 				},
 				"serverInfo": map[string]any{
 					"name":    "Shell SSH Client",
-					"version": "1.2.0",
+					"version": s.version,
 				},
 				"instructions": "Shell SSH Client MCP Bridge. You can pass `host` (saved host name, IP, or ID) directly to shell_exec, shell_sftp_*, or shell_server_stats for automatic zero-friction connection & persistent-channel execution. Outputs are automatically redacted for secrets/PII.",
 			},

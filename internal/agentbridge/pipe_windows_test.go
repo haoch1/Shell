@@ -31,7 +31,7 @@ func startPipeFixture(t testing.TB, handler http.Handler) string {
 }
 
 func TestPipeDiscoveryAndAuthentication(t *testing.T) {
-	bridge := New(stubHandler{})
+	bridge := New(stubHandler{}, "fixture-version")
 	bridge.SetToken("test")
 	var tcpRequests atomic.Int32
 	tcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +93,7 @@ func TestDesktopStopReleasesPipe(t *testing.T) {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
-	bridge := New(stubHandler{})
+	bridge := New(stubHandler{}, "fixture-version")
 	_, id, err := bridge.Start(port, "test")
 	if err != nil || id == "" {
 		t.Fatalf("pipe startup failed: %v", err)
@@ -117,7 +117,7 @@ func TestDesktopStopReleasesPipe(t *testing.T) {
 }
 
 func BenchmarkStdioDiscoveryPipe(b *testing.B) {
-	bridge := New(stubHandler{})
+	bridge := New(stubHandler{}, "fixture-version")
 	bridge.SetToken("fixture")
 	ep := Endpoint{URL: "http://127.0.0.1:17822/mcp", Token: "fixture", PID: os.Getpid(), PipeID: startPipeFixture(b, http.HandlerFunc(bridge.handleMCP))}
 	benchmarkStdioDiscovery(b, ep)

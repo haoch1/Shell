@@ -158,7 +158,7 @@ func TestBridgeStatusWhileStopping(t *testing.T) {
 }
 
 func BenchmarkStdioDiscovery(b *testing.B) {
-	bridge := New(stubHandler{})
+	bridge := New(stubHandler{}, "fixture-version")
 	bridge.SetToken("fixture")
 	srv := httptest.NewServer(http.HandlerFunc(bridge.handleMCP))
 	defer srv.Close()
@@ -180,7 +180,7 @@ func benchmarkStdioDiscovery(b *testing.B, endpoint Endpoint) {
 }
 
 func TestRealBridgeDiscoveryPreservesLargeID(t *testing.T) {
-	bridge := New(stubHandler{})
+	bridge := New(stubHandler{}, "fixture-version")
 	bridge.SetToken("fixture")
 	srv := httptest.NewServer(http.HandlerFunc(bridge.handleMCP))
 	defer srv.Close()

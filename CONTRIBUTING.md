@@ -40,7 +40,7 @@ $env:CGO_ENABLED = '0'
 go test -v -count=1 -tags desktop,production,wv2runtime.download ./...
 
 # 3. 编译 Windows x64 便携可执行文件与发行包
-./.github/scripts/package-windows.ps1 -Version 1.0.0
+./.github/scripts/package-windows.ps1
 
 # 4. 运行原生 WebView2 启动校验与前端 UI 冒烟测试
 node .github/scripts/smoke-windows.mjs

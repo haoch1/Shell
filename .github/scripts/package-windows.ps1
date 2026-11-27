@@ -1,15 +1,16 @@
 param(
-    [string]$Version = '1.2.0'
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Version = $Version.TrimStart('v')
-if (!$Version) { $Version = '1.2.0' }
-
 $repo = (Resolve-Path "$PSScriptRoot/../..").Path
 Set-Location -LiteralPath $repo
+
+if (!$Version) { $Version = (Get-Content -Raw -LiteralPath 'frontend/package.json' | ConvertFrom-Json).version }
+$Version = $Version -creplace '^v', ''
+if ($Version -cnotmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') { throw "Invalid application version: $Version" }
 
 $package = (New-Item -ItemType Directory -Path 'build/Shell-Windows-x64' -Force).FullName
 $releaseDir = (New-Item -ItemType Directory -Path 'build/release' -Force).FullName
@@ -34,8 +35,11 @@ if ([BitConverter]::ToUInt32($pe, $header) -ne 0x4550 -or
     [BitConverter]::ToUInt16($pe, $header + 24 + 68) -ne 2) {
     throw 'Expected a Windows x64 GUI executable.'
 }
-if ((Get-Item -LiteralPath $app).VersionInfo.ProductName -ne 'Shell') {
-    throw 'Windows version resource missing.'
+$resource = (Get-Item -LiteralPath $app).VersionInfo
+$expectedFixed = ($Version -split '[-+]')[0] + '.0'
+if ($resource.ProductName -cne 'Shell' -or $resource.FileVersion -cne $Version -or $resource.ProductVersion -cne $Version -or
+    $resource.FileVersionRaw.ToString() -ne $expectedFixed -or $resource.ProductVersionRaw.ToString() -ne $expectedFixed) {
+    throw "Windows FileVersion and ProductVersion must match $Version (fixed resource $expectedFixed)."
 }
 
 Copy-Item -LiteralPath README.md -Destination $package -Force

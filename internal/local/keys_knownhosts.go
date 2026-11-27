@@ -287,7 +287,19 @@ func GenerateKey(name, algo, passphrase, comment string) (LocalKeyInfo, error) {
 		os.Remove(privPath)
 		return LocalKeyInfo{}, err
 	}
-	if err := os.WriteFile(pubPath, []byte(pubLine+"\n"), 0644); err != nil {
+	pubFile, err := os.OpenFile(pubPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		os.Remove(privPath)
+		if errors.Is(err, os.ErrExist) {
+			return LocalKeyInfo{}, fmt.Errorf("公钥文件 %s.pub 已存在，请更换名称", name)
+		}
+		return LocalKeyInfo{}, err
+	}
+	_, writeErr := pubFile.WriteString(pubLine + "\n")
+	closeErr := pubFile.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		os.Remove(pubPath)
+		os.Remove(privPath)
 		return LocalKeyInfo{}, err
 	}
 	return LocalKeyInfo{

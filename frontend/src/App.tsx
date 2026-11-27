@@ -48,6 +48,12 @@ import { ChallengeDialog, VerifyHostDialog } from './components/SecurityDialogs'
 import { AgentApprovalDialog } from './components/AgentApprovalDialog';
 import { detectOSIconFromText } from './components/HostIcon';
 
+interface SplitTarget {
+  tabId: string;
+  paneId: string;
+  direction: 'horizontal' | 'vertical';
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   terminalTheme: 'auto',
@@ -81,7 +87,7 @@ export const App: React.FC = () => {
   const [searchOpen, setSearchOpen] = useState(false);
 
   // Modals
-  const [hostModal, updateHostModal] = useState<{ open: boolean; profile: Profile | null }>({
+  const [hostModal, updateHostModal] = useState<{ open: boolean; profile: Profile | null; split?: SplitTarget }>({
     open: false,
     profile: null,
   });
@@ -95,6 +101,7 @@ export const App: React.FC = () => {
     updateHostModal(next);
   }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [splitPicker, setSplitPicker] = useState<{ target: SplitTarget; source: Profile } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [settingsModal, setSettingsModal] = useState<{ open: boolean; tab: SettingsTab }>({
     open: false,
@@ -300,11 +307,23 @@ export const App: React.FC = () => {
     [attachSessionWS],
   );
 
-  const openSessionInNewTab = useCallback(
-    (profile: Profile, secret = '', remember = Boolean(profile.remembered), requestedProfile = '') => {
+  const openSession = useCallback(
+    (profile: Profile, secret = '', remember = Boolean(profile.remembered), requestedProfile = '', split?: SplitTarget) => {
+      if (split) {
+        const tab = tabsRef.current.find(t => t.id === split.tabId);
+        const leaves = tab ? collectLeaves(tab.root) : [];
+        if (!leaves.some(l => l.paneId === split.paneId)) {
+          toast('原窗格已关闭');
+          return;
+        }
+        if (leaves.length >= 6) {
+          toast('单个标签最多支持 6 个分屏');
+          return;
+        }
+      }
       const sessionId = randomId();
       const paneId = randomId();
-      const tabId = randomId();
+      const tabId = split?.tabId ?? randomId();
       const rec: SessionRecord = {
         id: sessionId,
         profile,
@@ -317,21 +336,26 @@ export const App: React.FC = () => {
         remember,
       };
       setSessions((prev) => ({ ...prev, [sessionId]: rec }));
-      setTabs((prev) => [
-        ...prev,
-        {
+      if (split) {
+        setTabs(prev => prev.map(t => t.id === tabId ? {
+          ...t,
+          root: splitPaneNode(t.root, split.paneId, split.direction, paneId, sessionId),
+          activePaneId: paneId,
+        } : t));
+      } else {
+        setTabs(prev => [...prev, {
           id: tabId,
           title: profile.name || profile.host,
           color: profile.color,
           root: { type: 'leaf', paneId, sessionId },
           activePaneId: paneId,
           broadcast: false,
-        },
-      ]);
+        }]);
+      }
       setActiveTabId(tabId);
       startSSHConnection(sessionId, profile, secret, remember, requestedProfile);
     },
-    [startSSHConnection],
+    [startSSHConnection, toast],
   );
 
   const connectOrPromptProfile = useCallback(
@@ -366,12 +390,12 @@ export const App: React.FC = () => {
       }
 
       if (profile.auth === 'agent' || profile.remembered) {
-        openSessionInNewTab(profile, '', Boolean(profile.remembered), requestedProfile);
+        openSession(profile, '', Boolean(profile.remembered), requestedProfile);
       } else {
         setHostModal({ open: true, profile }, requestedProfile);
       }
     },
-    [openSessionInNewTab, setHostModal],
+    [openSession, setHostModal],
   );
 
   const handleClearRecent = useCallback(async () => {
@@ -634,9 +658,10 @@ export const App: React.FC = () => {
     return () => window.clearTimeout(t);
   }, [sidebarOpen, drawer, activeTabId]);
 
-  const handleQuickConnect = useCallback((target: { user: string; host: string; port: number }) => {
+  const handleQuickConnect = useCallback((target: { user: string; host: string; port: number }, split?: SplitTarget) => {
     setHostModal({
       open: true,
+      split,
       profile: {
         id: '',
         name: target.host,
@@ -646,7 +671,7 @@ export const App: React.FC = () => {
         auth: 'password',
       },
     });
-  }, []);
+  }, [setHostModal]);
 
   const writeSessionInput = useCallback((sessionId: string, data: string | Uint8Array) => {
     const s = sessionsRef.current[sessionId];
@@ -777,9 +802,9 @@ export const App: React.FC = () => {
       const srcLeaf = leaves.find((l) => l.paneId === tab.activePaneId) ?? leaves[0];
       const src = srcLeaf ? sessionsRef.current[srcLeaf.sessionId] : undefined;
       if (!src) return;
-      openSessionInNewTab(src.profile, src.secret ?? '', Boolean(src.remember ?? src.profile.remembered));
+      openSession(src.profile, src.secret ?? '', Boolean(src.remember ?? src.profile.remembered));
     },
-    [openSessionInNewTab],
+    [openSession],
   );
 
   const handleSplitPane = useCallback(
@@ -791,44 +816,31 @@ export const App: React.FC = () => {
         toast('单个标签最多支持 6 个分屏');
         return;
       }
-      const sourceLeaf = leaves.find((l) => l.paneId === paneId) ?? leaves[0];
+      const sourceLeaf = leaves.find((l) => l.paneId === paneId);
       const sourceSession = sourceLeaf ? sessionsRef.current[sourceLeaf.sessionId] : undefined;
       if (!sourceSession) return;
 
-      const newSessionId = randomId();
-      const newPaneId = randomId();
-      const rec: SessionRecord = {
-        id: newSessionId,
-        profile: sourceSession.profile,
-        state: 'connecting',
-        startedAt: Date.now(),
-        dir: '.',
-        cols: 80,
-        rows: 24,
-        secret: sourceSession.secret,
-        remember: sourceSession.remember,
-      };
-      setSessions((prev) => ({ ...prev, [newSessionId]: rec }));
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.id === tabId
-            ? {
-                ...t,
-                root: splitPaneNode(t.root, paneId, direction, newPaneId, newSessionId),
-                activePaneId: newPaneId,
-              }
-            : t,
-        ),
-      );
-      startSSHConnection(
-        newSessionId,
-        sourceSession.profile,
-        sourceSession.secret ?? '',
-        Boolean(sourceSession.remember ?? sourceSession.profile.remembered),
-      );
+      setPaletteOpen(false);
+      setSplitPicker({target: {tabId, paneId, direction}, source: sourceSession.profile});
     },
-    [startSSHConnection, toast],
+    [toast],
   );
+
+  const chooseSplitProfile = (profile: Profile) => {
+    if (!splitPicker) return;
+    const {target} = splitPicker;
+    const tab = tabsRef.current.find(t => t.id === target.tabId);
+    const leaf = tab && collectLeaves(tab.root).find(l => l.paneId === target.paneId);
+    const source = leaf && sessionsRef.current[leaf.sessionId];
+    if (!source) return;
+    if (profile.auth === 'agent' || profile.remembered) {
+      openSession(profile, '', Boolean(profile.remembered), '', target);
+    } else if ((profile === source.profile || sameSessionTarget(profile, source.profile)) && source.secret) {
+      openSession(profile, source.secret, false, '', target);
+    } else {
+      setHostModal({open: true, profile, split: target});
+    }
+  };
 
   const handleClosePane = useCallback(
     (tabId: string, paneId: string) => {
@@ -995,7 +1007,7 @@ export const App: React.FC = () => {
     }
     setHostModal({ open: false, profile: null });
     if (andConnect) {
-      openSessionInNewTab(stored, secret, remember, requestedProfile);
+      openSession(stored, secret, remember, requestedProfile, hostModal.split);
     } else {
       toast(`已保存主机「${stored.name}」`);
     }
@@ -1048,7 +1060,10 @@ export const App: React.FC = () => {
         onCloseOtherTabs={handleCloseOtherTabs}
         onCloneTab={handleCloneTab}
         onNewConnection={() => setHostModal({ open: true, profile: null })}
-        onSplit={(dir) => activeTab && activeLeaf && handleSplitPane(activeTab.id, activeLeaf.paneId, dir)}
+        onSplit={(dir, tabId) => {
+          const tab = tabId ? tabs.find(t => t.id === tabId) : activeTab;
+          if (tab) handleSplitPane(tab.id, tab.activePaneId, dir);
+        }}
         onToggleBroadcast={() =>
           activeTab &&
           setTabs((prev) => prev.map((t) => (t.id === activeTab.id ? { ...t, broadcast: !t.broadcast } : t)))
@@ -1291,17 +1306,19 @@ export const App: React.FC = () => {
         />
       )}
 
-      {paletteOpen && (
+      {(paletteOpen || splitPicker) && (
         <CommandPalette
+          key={splitPicker ? `split-${splitPicker.target.paneId}` : 'commands'}
+          splitSource={splitPicker?.source}
           profiles={profiles}
           snippets={snippets}
           hasActiveSession={activeSession?.state === 'connected'}
           isDark={isDark}
-          onClose={() => setPaletteOpen(false)}
-          onConnectProfile={connectOrPromptProfile}
-          onQuickConnect={handleQuickConnect}
+          onClose={() => { setPaletteOpen(false); setSplitPicker(null); }}
+          onConnectProfile={splitPicker ? chooseSplitProfile : connectOrPromptProfile}
+          onQuickConnect={(target) => handleQuickConnect(target, splitPicker?.target)}
           onRunSnippet={(s) => sendCommandToActive(s.command, false)}
-          onNewHost={() => setHostModal({ open: true, profile: null })}
+          onNewHost={() => setHostModal({ open: true, profile: null, split: splitPicker?.target })}
           onImportSSH={() => setImportOpen(true)}
           onSplit={(dir) => activeTab && activeLeaf && handleSplitPane(activeTab.id, activeLeaf.paneId, dir)}
           onToggleSFTP={() => toggleDrawer('sftp')}

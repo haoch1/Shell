@@ -35,7 +35,7 @@ interface TitlebarProps {
   onCloseOtherTabs: (tabId: string) => void;
   onCloneTab: (tabId: string) => void;
   onNewConnection: () => void;
-  onSplit: (dir: 'horizontal' | 'vertical') => void;
+  onSplit: (dir: 'horizontal' | 'vertical', tabId?: string) => void;
   onToggleBroadcast: () => void;
   onOpenSearch: () => void;
   onToggleDrawer: (mode: DrawerMode) => void;
@@ -546,7 +546,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               type="button"
               className="context-menu-item"
               onClick={() => {
-                onSplit('horizontal');
+                onSplit('horizontal', tabMenu.tabId);
                 setTabMenu(null);
               }}
             >
@@ -557,7 +557,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               type="button"
               className="context-menu-item"
               onClick={() => {
-                onSplit('vertical');
+                onSplit('vertical', tabMenu.tabId);
                 setTabMenu(null);
               }}
             >

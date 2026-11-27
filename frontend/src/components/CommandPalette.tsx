@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import type { Profile, Snippet } from '../types/shell';
 import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
+import { sameSessionTarget } from '../lib/sessionAttempt';
 import { HostIcon } from './HostIcon';
 
 interface PaletteAction {
@@ -30,6 +31,7 @@ interface PaletteAction {
 
 interface CommandPaletteProps {
   profiles: Profile[];
+  splitSource?: Profile;
   snippets: Snippet[];
   hasActiveSession: boolean;
   isDark: boolean;
@@ -49,6 +51,7 @@ interface CommandPaletteProps {
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
   profiles,
+  splitSource,
   snippets,
   hasActiveSession,
   isDark,
@@ -82,14 +85,24 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       out.push({
         id: 'quick-connect',
         label: `快速连接 ${parsedQuick.user}@${parsedQuick.host}:${parsedQuick.port}`,
-        subtitle: '立即建立临时 SSH 会话',
         category: '快速连接',
         icon: <Terminal size={14} />,
         run: () => onQuickConnect(parsedQuick),
       });
     }
 
+    if (splitSource) {
+      const currentLabel = '当前主机';
+      if (!q || `${currentLabel} ${splitSource.name} ${splitSource.host}`.toLowerCase().includes(q)) {
+        out.push({id: 'split-current', label: currentLabel, subtitle: `${splitSource.user}@${formatHostDisplay(splitSource.host, splitSource.port)}`,
+          category: '分屏', icon: <HostIcon profile={splitSource} size="sm" />, run: () => onConnectProfile(splitSource)});
+      }
+      if (!q || '新建 SSH 主机'.toLowerCase().includes(q)) {
+        out.push({id: 'split-new', label: '新建 SSH 主机', category: '分屏', icon: <Plus size={14} />, run: onNewHost});
+      }
+    }
     for (const p of profiles) {
+      if (splitSource && sameSessionTarget(splitSource, p)) continue;
       const hay = `${p.name} ${p.host} ${p.user} ${p.group ?? ''} ${(p.tags ?? []).join(' ')}`.toLowerCase();
       if (!q || hay.includes(q)) {
         out.push({
@@ -102,6 +115,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         });
       }
     }
+
+    if (splitSource) return out.slice(0, 24);
 
     const cmds: PaletteAction[] = [
       { id: 'act-new', label: '新建 SSH 主机', subtitle: 'Ctrl+N', category: '操作', icon: <Plus size={14} />, run: onNewHost },
@@ -150,7 +165,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
 
     return out.slice(0, 24);
-  }, [query, profiles, snippets, hasActiveSession, isDark]);
+  }, [query, profiles, snippets, splitSource, hasActiveSession, isDark, onClose, onConnectProfile, onQuickConnect,
+    onNewHost, onImportSSH, onToggleAI, onOpenSettings, onToggleTheme, onToggleSFTP, onToggleTunnels, onSplit, onRunSnippet]);
 
   useEffect(() => {
     setSelectedIdx(0);
@@ -164,12 +180,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   return (
     <div id="commandPalette" className="spotlight-backdrop" onClick={onClose}>
-      <div className="spotlight-box" onClick={(e) => e.stopPropagation()}>
+      <div className="spotlight-box" role="dialog" aria-modal="true" aria-label={splitSource ? '选择分屏主机' : '命令面板'} onClick={(e) => e.stopPropagation()}>
         <div className="spotlight-input-row">
           <Search size={16} style={{ color: 'var(--ink-tertiary)', flexShrink: 0 }} />
           <input
             ref={inputRef}
-            placeholder="搜索主机、命令片段、操作，或输入 user@host 快速连接…"
+            aria-label={splitSource ? '选择分屏主机' : '搜索命令'}
+            placeholder={splitSource ? '选择分屏主机，或输入 user@host…' : '搜索主机、命令片段、操作，或输入 user@host 快速连接…'}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {

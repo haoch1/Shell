@@ -641,8 +641,11 @@ async function verifyFrontendUI() {
     await sleep(250);
     await shot('09-Terminal-Dark');
 
+    const { verifySplitWorkspace } = await import('./split-workspace.mjs');
+    await verifySplitWorkspace({ call, evaluate, until, click });
+
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 16 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions, and captured 17 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

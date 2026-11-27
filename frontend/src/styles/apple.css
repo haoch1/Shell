@@ -1077,40 +1077,48 @@ html, body, #root {
   display: flex;
 }
 
-/* Split Pane Tree */
-.split-container {
-  display: flex;
-  width: 100%;
-  height: 100%;
+/* Keep terminal elements in place while resizing their split rectangles. */
+.workspace-layout {
+  position: relative;
+  flex: 1;
   min-width: 0;
   min-height: 0;
 }
 
-.split-container.horizontal { flex-direction: row; }
-.split-container.vertical { flex-direction: column; }
-
-.split-branch {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  overflow: hidden;
+.terminal-slot { position: absolute; }
+.terminal-slot[data-drop-edge]::after {
+  content: '';
+  position: absolute;
+  z-index: 9;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
+.terminal-slot[data-drop-edge="left"]::after { inset: 0 50% 0 0; }
+.terminal-slot[data-drop-edge="right"]::after { inset: 0 0 0 50%; }
+.terminal-slot[data-drop-edge="top"]::after { inset: 0 0 50% 0; }
+.terminal-slot[data-drop-edge="bottom"]::after { inset: 50% 0 0 0; }
+.pane-mini-bar[draggable] { cursor: grab; }
 
 .split-handle {
   flex-shrink: 0;
   background: var(--border-hairline);
   transition: background 140ms ease;
-  position: relative;
+  position: absolute;
+  touch-action: none;
   z-index: 5;
 }
 
 .split-handle.horizontal {
   width: 3px;
+  transform: translateX(-50%);
   cursor: col-resize;
 }
 
 .split-handle.vertical {
   height: 3px;
+  transform: translateY(-50%);
   cursor: row-resize;
 }
 

@@ -27,6 +27,7 @@ import { copyToClipboard, openExternalURL, readFromClipboard } from '../lib/brid
 
 interface TerminalPaneProps {
   paneId: string;
+  onDragPane: (e: React.DragEvent) => void;
   session: SessionRecord;
   settings: AppSettings;
   focused: boolean;
@@ -48,6 +49,7 @@ interface TerminalPaneProps {
 
 export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   paneId,
+  onDragPane,
   session,
   settings,
   focused,
@@ -329,12 +331,13 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   return (
     <div
       data-pane-id={paneId}
+      data-session-id={session.id}
       className={`pane-box ${multiPane ? 'multi-pane' : ''} ${focused ? 'focused' : ''}`}
       onMouseDown={onFocus}
       onContextMenu={handleContextMenu}
     >
       {multiPane && (
-        <div className="pane-mini-bar">
+        <div className="pane-mini-bar" draggable onDragStart={onDragPane} title="拖动此会话到终端边缘分屏">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <span className={`tab-dot ${session.state}`} />
             <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

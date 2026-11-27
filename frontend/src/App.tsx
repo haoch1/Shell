@@ -33,6 +33,8 @@ import { Titlebar } from './components/Titlebar';
 import { Sidebar } from './components/Sidebar';
 import { WelcomeView } from './components/WelcomeView';
 import { SplitWorkspace } from './components/SplitWorkspace';
+import { movePane } from './lib/paneLayout';
+import { usePaneDrag } from './lib/usePaneDrag';
 import { StatusBar } from './components/StatusBar';
 import { SftpDrawer } from './components/SftpDrawer';
 import { TunnelsDrawer } from './components/TunnelsDrawer';
@@ -92,7 +94,9 @@ export const App: React.FC = () => {
     profile: null,
   });
   const promptForVisibleConnect = useRef('');
+  const hostModalGeneration = useRef(0);
   const setHostModal = useCallback((next: typeof hostModal, requestedProfile = '') => {
+    hostModalGeneration.current++;
     const previous = promptForVisibleConnect.current;
     promptForVisibleConnect.current = requestedProfile;
     if (previous && previous !== requestedProfile) {
@@ -995,11 +999,16 @@ export const App: React.FC = () => {
     keepExisting: boolean,
     andConnect: boolean,
   ) => {
+    const generation = hostModalGeneration.current;
     const api = getApi();
     const stored =
       typeof api.SaveProfileWithSecret === 'function'
         ? await api.SaveProfileWithSecret(p, secret, remember, keepExisting)
         : await api.SaveProfile(p);
+    if (hostModalGeneration.current !== generation) {
+      await reloadData();
+      return;
+    }
     let requestedProfile = '';
     if (andConnect && promptForVisibleConnect.current === stored.id && hostModal.profile && sameSessionTarget(stored, hostModal.profile)) {
       requestedProfile = stored.id;
@@ -1029,6 +1038,15 @@ export const App: React.FC = () => {
     toast(`已批量删除 ${ids.length} 台主机`);
   };
 
+  const paneDrag = usePaneDrag(tabs, (source, target, edge) => {
+    const splitId = randomId();
+    setTabs(prev => movePane(prev, source, target, edge, splitId));
+    setActiveTabId(target.tabId);
+    const from = tabs.find(tab => tab.id === source.tabId);
+    const moved = from && collectLeaves(from.root).find(leaf => leaf.paneId === source.paneId);
+    if (moved) requestAnimationFrame(() => terminalBus.get(moved.sessionId)?.term.focus());
+  });
+
   const handleSaveProfileTunnels = async (p: Profile, tunnels: TunnelRule[]) => {
     await getApi().SaveProfile({ ...p, tunnels });
     await reloadData();
@@ -1045,6 +1063,7 @@ export const App: React.FC = () => {
   return (
     <div className="app-frame">
       <Titlebar
+        paneDrag={paneDrag}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         profiles={profiles}
@@ -1143,59 +1162,41 @@ export const App: React.FC = () => {
                   onOpenPalette={() => setPaletteOpen(true)}
                 />
               ) : (
-                tabs.map((tab) => {
-                  const visible = tab.id === activeTabId;
-                  const leaves = collectLeaves(tab.root);
-                  return (
-                    <div
-                      key={tab.id}
-                      style={{
-                        display: visible ? 'flex' : 'none',
-                        width: '100%',
-                        height: '100%',
-                        position: 'relative',
-                      }}
-                    >
-                      <SplitWorkspace
-                        node={tab.root}
-                        activePaneId={tab.activePaneId}
-                        multiPane={leaves.length > 1}
-                        sessions={sessions}
-                        settings={settings}
-                        onFocusPane={(paneId) =>
-                          setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, activePaneId: paneId } : t)))
-                        }
-                        onRatioChange={(splitId, ratio) =>
-                          setTabs((prev) =>
-                            prev.map((t) => (t.id === tab.id ? { ...t, root: updateSplitRatio(t.root, splitId, ratio) } : t)),
-                          )
-                        }
-                        onPaneInput={(paneId, sid, data) => handlePaneInput(tab.id, paneId, sid, data)}
-                        onPaneResize={handlePaneResize}
-                        onPaneCwdChange={handlePaneCwdChange}
-                        onReconnectPane={(paneId, sid) => handleReconnectPane(tab.id, paneId, sid)}
-                        onClosePane={(paneId) => handleClosePane(tab.id, paneId)}
-                        onSplitPane={(paneId, dir) => handleSplitPane(tab.id, paneId, dir)}
-                        onOpenSearch={() => setSearchOpen(true)}
-                        onOpenSFTP={() => setDrawer('sftp')}
-                        onExplainSelection={(text) => {
-                          setExplainText(text);
-                          setDrawer('ai');
-                        }}
-                        onExportLog={async (sess, content) => {
-                          try {
-                            const dest = await getApi().SaveTranscript(`${sess.profile.name}.log`, content);
-                            if (dest) toast('终端日志已导出');
-                          } catch (ex) {
-                            toast(errorMessage(ex));
-                          }
-                        }}
-                        onFontZoom={handleFontZoom}
-                        onToast={toast}
-                      />
-                    </div>
-                  );
-                })
+                <SplitWorkspace
+                  tabs={tabs}
+                  activeTabId={activeTabId}
+                  paneDrag={paneDrag}
+                  sessions={sessions}
+                  settings={settings}
+                  onFocusPane={(tabId, paneId) =>
+                    setTabs(prev => prev.map(t => t.id === tabId && t.activePaneId !== paneId ? {...t, activePaneId: paneId} : t))
+                  }
+                  onRatioChange={(tabId, splitId, ratio) =>
+                    setTabs(prev => prev.map(t => t.id === tabId ? {...t, root: updateSplitRatio(t.root, splitId, ratio)} : t))
+                  }
+                  onPaneInput={handlePaneInput}
+                  onPaneResize={handlePaneResize}
+                  onPaneCwdChange={handlePaneCwdChange}
+                  onReconnectPane={handleReconnectPane}
+                  onClosePane={handleClosePane}
+                  onSplitPane={handleSplitPane}
+                  onOpenSearch={() => setSearchOpen(true)}
+                  onOpenSFTP={() => setDrawer('sftp')}
+                  onExplainSelection={(text) => {
+                    setExplainText(text);
+                    setDrawer('ai');
+                  }}
+                  onExportLog={async (sess, content) => {
+                    try {
+                      const dest = await getApi().SaveTranscript(`${sess.profile.name}.log`, content);
+                      if (dest) toast('终端日志已导出');
+                    } catch (ex) {
+                      toast(errorMessage(ex));
+                    }
+                  }}
+                  onFontZoom={handleFontZoom}
+                  onToast={toast}
+                />
               )}
 
               {searchOpen && activeSession && (

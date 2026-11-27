@@ -217,6 +217,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             items.map((item, idx) => (
               <div
                 key={item.id}
+                data-action-id={item.id}
                 className={`spotlight-item ${idx === selectedIdx ? 'selected' : ''}`}
                 onMouseEnter={() => setSelectedIdx(idx)}
                 onClick={() => execute(item)}

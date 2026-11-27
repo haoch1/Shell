@@ -21,8 +21,10 @@ import type { DrawerMode, Profile, SessionRecord, WorkspaceTab } from '../types/
 import { collectLeaves } from '../lib/utils';
 import { getRuntime } from '../lib/bridge';
 import { HostIcon } from './HostIcon';
+import type { usePaneDrag } from '../lib/usePaneDrag';
 
 interface TitlebarProps {
+  paneDrag: ReturnType<typeof usePaneDrag>;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   profiles: Profile[];
@@ -43,6 +45,7 @@ interface TitlebarProps {
 }
 
 export const Titlebar: React.FC<TitlebarProps> = ({
+  paneDrag,
   sidebarOpen,
   onToggleSidebar,
   profiles,
@@ -225,11 +228,16 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           {tabs.map((tab) => {
             const st = tabState(tab);
             const prof = tabProfile(tab);
-            const active = tab.id === activeTabId;
+            const active = tab.id === (paneDrag.hoverTab ?? activeTabId);
             return (
               <div
                 key={tab.id}
                 data-tab-id={tab.id}
+                draggable
+                onDragStart={(e) => paneDrag.start(e, {tabId: tab.id, paneId: tab.activePaneId})}
+                onDragEnd={paneDrag.end}
+                onDragOver={(e) => paneDrag.overTab(e, tab.id)}
+                onDragLeave={paneDrag.leaveTab}
                 role="tab"
                 aria-selected={active}
                 className={`tab-item ${active ? 'active' : ''}`}
@@ -245,7 +253,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                     onCloseTab(tab.id);
                   }
                 }}
-                title={prof ? `${tab.title} (${prof.user}@${prof.host}:${prof.port})` : tab.title}
+                title={(prof ? `${tab.title} (${prof.user}@${prof.host}:${prof.port})` : tab.title) + '\n拖动当前会话到终端边缘分屏'}
               >
                 <span className="tab-icon-wrap">
                   <HostIcon profile={prof} size="xs" />

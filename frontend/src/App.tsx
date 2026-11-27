@@ -51,6 +51,7 @@ import { RemoteEditorModal } from './components/RemoteEditorModal';
 import { TerminalSearchBar } from './components/TerminalSearchBar';
 import { ChallengeDialog, VerifyHostDialog } from './components/SecurityDialogs';
 import { AgentApprovalDialog } from './components/AgentApprovalDialog';
+import { TooltipProvider } from './components/ui/Tooltip';
 import { detectOSIconFromText } from './components/HostIcon';
 
 interface SplitTarget {
@@ -887,6 +888,18 @@ export const App: React.FC = () => {
     [closeSessionBackend],
   );
 
+  const handleCloseAllTabs = useCallback(() => {
+    for (const tab of tabsRef.current) {
+      for (const leaf of collectLeaves(tab.root)) {
+        closeSessionBackend(leaf.sessionId);
+      }
+    }
+    setTabs([]);
+    setActiveTabId(null);
+    setSearchOpen(false);
+    setDrawer((cur) => (cur === 'sftp' || cur === 'tunnels' ? 'none' : cur));
+  }, [closeSessionBackend]);
+
   const handleCloneTab = useCallback(
     (tabId: string) => {
       const tab = tabsRef.current.find((t) => t.id === tabId);
@@ -1188,6 +1201,7 @@ export const App: React.FC = () => {
   const activeApproval = !activeVerify && !activeChallenge ? approvalQueue[0] ?? null : null;
 
   return (
+    <TooltipProvider>
     <div className="app-frame">
       <Titlebar
         paneDrag={paneDrag}
@@ -1205,6 +1219,7 @@ export const App: React.FC = () => {
         }}
         onCloseTab={handleCloseTab}
         onCloseOtherTabs={handleCloseOtherTabs}
+        onCloseAllTabs={handleCloseAllTabs}
         onCloneTab={handleCloneTab}
         onDetachPane={handleDetachPane}
         onNewConnection={() => setHostModal({ open: true, profile: null })}
@@ -1305,6 +1320,7 @@ export const App: React.FC = () => {
                   tabs={tabs}
                   activeTabId={activeTabId}
                   paneDrag={paneDrag}
+                  profiles={profiles}
                   sessions={sessions}
                   settings={settings}
                   onFocusPane={(tabId, paneId) =>
@@ -1602,5 +1618,6 @@ export const App: React.FC = () => {
         </div>
       )}
     </div>
+    </TooltipProvider>
   );
 };

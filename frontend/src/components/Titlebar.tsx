@@ -23,6 +23,7 @@ import type { DrawerMode, Profile, SessionRecord, WorkspaceTab } from '../types/
 import { collectLeaves, formatHostDisplay } from '../lib/utils';
 import { getRuntime } from '../lib/bridge';
 import { HostIcon } from './HostIcon';
+import { Tooltip } from './ui/Tooltip';
 import type { usePaneDrag } from '../lib/usePaneDrag';
 
 function profileDisplayName(profile?: Profile, hideHostIp = false): string {
@@ -49,6 +50,7 @@ interface TitlebarProps {
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onCloseOtherTabs: (tabId: string) => void;
+  onCloseAllTabs: () => void;
   onCloneTab: (tabId: string) => void;
   onDetachPane: (tabId: string, paneId: string) => void;
   onNewConnection: () => void;
@@ -72,6 +74,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onSelectTab,
   onCloseTab,
   onCloseOtherTabs,
+  onCloseAllTabs,
   onCloneTab,
   onDetachPane,
   onNewConnection,
@@ -83,10 +86,31 @@ export const Titlebar: React.FC<TitlebarProps> = ({
 }) => {
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [allTabsMenu, setAllTabsMenu] = useState<{ left: number; top: number } | null>(null);
+  const [tabFilter, setTabFilter] = useState('');
   const [maximised, setMaximised] = useState(false);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const stripRef = useRef<HTMLDivElement>(null);
+  const tabFilterRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!allTabsMenu) {
+      setTabFilter('');
+      return;
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setAllTabsMenu(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    const frame = requestAnimationFrame(() => tabFilterRef.current?.focus());
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [allTabsMenu]);
 
   const profileById = useMemo(() => {
     const map = new Map<string, Profile>();
@@ -206,16 +230,17 @@ export const Titlebar: React.FC<TitlebarProps> = ({
       }}
     >
       <div className="titlebar-group">
-        <button
-          id="toggleSidebar"
-          type="button"
-          className={`icon-btn ${sidebarOpen ? 'active' : ''}`}
-          title="切换侧栏 (Ctrl+B)"
-          aria-label="切换侧栏"
-          onClick={onToggleSidebar}
-        >
-          <PanelLeft size={14} strokeWidth={1.7} />
-        </button>
+        <Tooltip label="切换侧栏" shortcut="Ctrl+B" side="bottom">
+          <button
+            id="toggleSidebar"
+            type="button"
+            className={`icon-btn ${sidebarOpen ? 'active' : ''}`}
+            aria-label="切换侧栏"
+            onClick={onToggleSidebar}
+          >
+            <PanelLeft size={14} strokeWidth={1.7} />
+          </button>
+        </Tooltip>
         <div className="brand-pill">
           <span className="brand-icon">&gt;<span>_</span></span>
           <span>Shell</span>
@@ -229,9 +254,9 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             className="tab-scroll-btn"
             title="向左滚动标签"
             aria-label="向左滚动标签"
-            onClick={() => scrollTabsBy(-200)}
+            onClick={() => scrollTabsBy(-260)}
           >
-            <ChevronLeft size={13} />
+            <ChevronLeft size={14} />
           </button>
         )}
 
@@ -295,13 +320,14 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 <button
                   type="button"
                   className="tab-close"
+                  title={`关闭 ${title}`}
                   aria-label={`关闭 ${title}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onCloseTab(tab.id);
                   }}
                 >
-                  <X size={11} strokeWidth={2} />
+                  <X size={12.5} strokeWidth={2} />
                 </button>
               </div>
             );
@@ -314,19 +340,19 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             className="tab-scroll-btn"
             title="向右滚动标签"
             aria-label="向右滚动标签"
-            onClick={() => scrollTabsBy(200)}
+            onClick={() => scrollTabsBy(260)}
           >
-            <ChevronRight size={13} />
+            <ChevronRight size={14} />
           </button>
         )}
 
-        {(hasOverflow || tabs.length > 5) && (
+        {(hasOverflow || tabs.length >= 4) && (
           <button
             id="allTabsBtn"
             type="button"
-            className={`tab-scroll-btn ${allTabsMenu ? 'active' : ''}`}
-            title={`全部会话 (${tabs.length})`}
-            aria-label="展开全部会话标签"
+            className={`tab-count-btn ${allTabsMenu ? 'active' : ''}`}
+            title={`全部已打开会话 (${tabs.length}) · Ctrl+Tab 快速切换`}
+            aria-label={`展开全部会话标签 (${tabs.length})`}
             onClick={(e) => {
               e.stopPropagation();
               if (allTabsMenu) {
@@ -334,129 +360,140 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 return;
               }
               const rect = e.currentTarget.getBoundingClientRect();
-              const menuW = 220;
+              const menuW = 276;
               setAllTabsMenu({
                 left: Math.max(8, Math.min(rect.right - menuW, window.innerWidth - menuW - 8)),
                 top: rect.bottom + 6,
               });
             }}
           >
-            <ChevronDown size={13} />
+            <span className="tabular">{tabs.length}</span>
+            <ChevronDown size={12.5} strokeWidth={2} />
           </button>
         )}
 
-        <button
-          id="newTabBtn"
-          type="button"
-          className="icon-btn tab-add"
-          title="新建连接 (Ctrl+N)"
-          aria-label="新建连接"
-          onClick={onNewConnection}
-        >
-          <Plus size={14} strokeWidth={1.8} />
-        </button>
+        <Tooltip label="新建连接" shortcut="Ctrl+N" side="bottom">
+          <button
+            id="newTabBtn"
+            type="button"
+            className="icon-btn tab-add"
+            aria-label="新建连接"
+            onClick={onNewConnection}
+          >
+            <Plus size={14} strokeWidth={1.8} />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="titlebar-group">
         {activeTab && (
           <>
-            <button
-              type="button"
-              className="icon-btn"
-              title="终端内搜索 (Ctrl+Shift+F)"
-              aria-label="搜索终端"
-              onClick={onOpenSearch}
-            >
-              <Search size={14} strokeWidth={1.75} />
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              title="左右分屏"
-              aria-label="左右分屏"
-              onClick={() => onSplit('horizontal')}
-            >
-              <SplitSquareHorizontal size={14} strokeWidth={1.75} />
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              title="上下分屏"
-              aria-label="上下分屏"
-              onClick={() => onSplit('vertical')}
-            >
-              <SplitSquareVertical size={14} strokeWidth={1.75} />
-            </button>
-            {isMultiPane && (
+            <Tooltip label="终端内搜索" shortcut="Ctrl+Shift+F" side="bottom">
               <button
                 type="button"
-                className={`icon-btn ${activeTab.broadcast ? 'active' : ''}`}
-                title="广播输入到当前标签所有分屏"
-                aria-label="广播输入"
-                onClick={onToggleBroadcast}
+                className="icon-btn"
+                aria-label="搜索终端"
+                onClick={onOpenSearch}
               >
-                <Radio size={14} strokeWidth={1.75} />
+                <Search size={14} strokeWidth={1.75} />
               </button>
+            </Tooltip>
+            <Tooltip label="左右分屏" side="bottom">
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="左右分屏"
+                onClick={() => onSplit('horizontal')}
+              >
+                <SplitSquareHorizontal size={14} strokeWidth={1.75} />
+              </button>
+            </Tooltip>
+            <Tooltip label="上下分屏" side="bottom">
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="上下分屏"
+                onClick={() => onSplit('vertical')}
+              >
+                <SplitSquareVertical size={14} strokeWidth={1.75} />
+              </button>
+            </Tooltip>
+            {isMultiPane && (
+              <Tooltip label="广播输入到所有分屏" side="bottom">
+                <button
+                  type="button"
+                  className={`icon-btn ${activeTab.broadcast ? 'active' : ''}`}
+                  aria-label="广播输入"
+                  onClick={onToggleBroadcast}
+                >
+                  <Radio size={14} strokeWidth={1.75} />
+                </button>
+              </Tooltip>
             )}
             <span className="titlebar-divider" />
-            <button
-              id="sftpBtn"
-              type="button"
-              className={`icon-btn ${drawer === 'sftp' ? 'active' : ''}`}
-              disabled={!isConnected}
-              title="SFTP 文件管理"
-              aria-label="SFTP 文件管理"
-              onClick={() => onToggleDrawer('sftp')}
-            >
-              <FolderOpen size={14} strokeWidth={1.75} />
-            </button>
+            <Tooltip label="SFTP 文件管理" side="bottom">
+              <button
+                id="sftpBtn"
+                type="button"
+                className={`icon-btn ${drawer === 'sftp' ? 'active' : ''}`}
+                disabled={!isConnected}
+                aria-label="SFTP 文件管理"
+                onClick={() => onToggleDrawer('sftp')}
+              >
+                <FolderOpen size={14} strokeWidth={1.75} />
+              </button>
+            </Tooltip>
 
-            <button
-              id="tunnelsBtn"
-              type="button"
-              className={`icon-btn ${drawer === 'tunnels' ? 'active' : ''}`}
-              disabled={!isConnected}
-              title="端口转发隧道"
-              aria-label="端口转发隧道"
-              onClick={() => onToggleDrawer('tunnels')}
-            >
-              <ArrowLeftRight size={14} strokeWidth={1.75} />
-            </button>
+            <Tooltip label="端口转发隧道" side="bottom">
+              <button
+                id="tunnelsBtn"
+                type="button"
+                className={`icon-btn ${drawer === 'tunnels' ? 'active' : ''}`}
+                disabled={!isConnected}
+                aria-label="端口转发隧道"
+                onClick={() => onToggleDrawer('tunnels')}
+              >
+                <ArrowLeftRight size={14} strokeWidth={1.75} />
+              </button>
+            </Tooltip>
           </>
         )}
 
-        <button
-          id="snippetsBtn"
-          type="button"
-          className={`icon-btn ${drawer === 'snippets' ? 'active' : ''}`}
-          title="快捷命令片段"
-          aria-label="快捷命令片段"
-          onClick={() => onToggleDrawer('snippets')}
-        >
-          <Code2 size={14} strokeWidth={1.75} />
-        </button>
+        <Tooltip label="快捷命令片段" side="bottom">
+          <button
+            id="snippetsBtn"
+            type="button"
+            className={`icon-btn ${drawer === 'snippets' ? 'active' : ''}`}
+            aria-label="快捷命令片段"
+            onClick={() => onToggleDrawer('snippets')}
+          >
+            <Code2 size={14} strokeWidth={1.75} />
+          </button>
+        </Tooltip>
 
-        <button
-          id="aiOpen"
-          type="button"
-          className={`icon-btn ${drawer === 'ai' ? 'active-purple' : ''}`}
-          title="AI 命令助手 (Ctrl+Shift+A)"
-          aria-label="AI 命令助手"
-          onClick={() => onToggleDrawer('ai')}
-        >
-          <Sparkles size={14} strokeWidth={1.75} />
-        </button>
+        <Tooltip label="AI 命令助手" shortcut="Ctrl+Shift+A" side="bottom">
+          <button
+            id="aiOpen"
+            type="button"
+            className={`icon-btn ${drawer === 'ai' ? 'active-purple' : ''}`}
+            aria-label="AI 命令助手"
+            onClick={() => onToggleDrawer('ai')}
+          >
+            <Sparkles size={14} strokeWidth={1.75} />
+          </button>
+        </Tooltip>
 
-        <button
-          id="paletteBtn"
-          type="button"
-          className="icon-btn"
-          title="命令面板 (Ctrl+K)"
-          aria-label="命令面板"
-          onClick={onOpenPalette}
-        >
-          <Command size={14} strokeWidth={1.75} />
-        </button>
+        <Tooltip label="命令面板" shortcut="Ctrl+K" side="bottom">
+          <button
+            id="paletteBtn"
+            type="button"
+            className="icon-btn"
+            aria-label="命令面板"
+            onClick={onOpenPalette}
+          >
+            <Command size={14} strokeWidth={1.75} />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="win-controls">
@@ -502,70 +539,123 @@ export const Titlebar: React.FC<TitlebarProps> = ({
         </button>
       </div>
 
-      {allTabsMenu && (
+      {allTabsMenu && (() => {
+        const q = tabFilter.trim().toLowerCase();
+        const filteredTabs = tabs.filter((tab) => {
+          if (!q) return true;
+          const { prof, title } = tabInfo(tab);
+          const hay = `${title} ${prof?.host ?? ''} ${prof?.group ?? ''}`.toLowerCase();
+          return hay.includes(q);
+        });
+        return (
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 139 }} onClick={() => setAllTabsMenu(null)} />
           <div
-            className="context-menu"
+            className="context-menu tabs-switcher-popover"
             style={{
               left: allTabsMenu.left,
               top: allTabsMenu.top,
-              width: 220,
-              maxHeight: '60vh',
-              overflowY: 'auto',
+              width: 276,
             }}
           >
-            {tabs.map((tab) => {
-              const st = tabState(tab);
-              const { leaves, prof, isSplit, title } = tabInfo(tab);
-              const active = tab.id === activeTabId;
-              return (
-                <div
-                  key={tab.id}
-                  className={`context-menu-item ${active ? 'active-row' : ''}`}
-                  style={{ justifyContent: 'space-between', paddingRight: 6 }}
-                  title={isSplit ? `${title} (${leaves.length} 个分屏)` : prof && !hideHostIp ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port)})` : title}
-                  onClick={() => {
-                    onSelectTab(tab.id);
-                    setAllTabsMenu(null);
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 1, opacity: st === 'closed' ? 0.55 : 1 }}>
-                    {isSplit ? (
-                      <Columns2 size={12} strokeWidth={1.8} className="tab-split-icon" aria-hidden="true" />
-                    ) : (
-                      <HostIcon profile={prof} size="xs" />
-                    )}
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {title}
-                    </span>
-                    {isSplit && <span className="tab-split-count tabular" style={{ marginLeft: 'auto' }}>{leaves.length}</span>}
-                    {st === 'connecting' && (
-                      <span
-                        className="tab-connecting-dot"
-                        style={{ marginLeft: isSplit ? 0 : 'auto' }}
-                        aria-hidden="true"
-                      />
-                    )}
-                  </div>
+            <div className="tabs-switcher-header">
+              <span className="tabs-switcher-title tabular">已打开会话 ({tabs.length})</span>
+              {tabs.length > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  {activeTabId && (
+                    <button
+                      type="button"
+                      className="tabs-switcher-action"
+                      onClick={() => {
+                        onCloseOtherTabs(activeTabId);
+                        setAllTabsMenu(null);
+                      }}
+                    >
+                      关闭其他
+                    </button>
+                  )}
                   <button
                     type="button"
-                    className="host-action-btn"
-                    style={{ width: 18, height: 18, flexShrink: 0 }}
-                    aria-label={`关闭 ${title}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onCloseTab(tab.id);
+                    className="tabs-switcher-action danger"
+                    onClick={() => {
+                      onCloseAllTabs();
+                      setAllTabsMenu(null);
                     }}
                   >
-                    <X size={11} />
+                    关闭全部
                   </button>
                 </div>
-              );
-            })}
+              )}
+            </div>
+            {tabs.length >= 4 && (
+              <div className="tabs-switcher-search">
+                <Search size={12.5} strokeWidth={1.8} />
+                <input
+                  ref={tabFilterRef}
+                  className="input"
+                  placeholder="筛选已打开会话…"
+                  value={tabFilter}
+                  onChange={(e) => setTabFilter(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && filteredTabs.length > 0) {
+                      e.preventDefault();
+                      onSelectTab(filteredTabs[0].id);
+                      setAllTabsMenu(null);
+                    }
+                  }}
+                />
+              </div>
+            )}
+            <div className="tabs-switcher-list">
+              {filteredTabs.length === 0 ? (
+                <div className="tabs-switcher-empty">未找到匹配会话</div>
+              ) : (
+                filteredTabs.map((tab) => {
+                  const st = tabState(tab);
+                  const { leaves, prof, isSplit, title } = tabInfo(tab);
+                  const active = tab.id === activeTabId;
+                  return (
+                    <div
+                      key={tab.id}
+                      className={`tabs-switcher-row ${active ? 'active' : ''}`}
+                      title={isSplit ? `${title} (${leaves.length} 个分屏)` : prof && !hideHostIp ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port)})` : title}
+                      onClick={() => {
+                        onSelectTab(tab.id);
+                        setAllTabsMenu(null);
+                      }}
+                    >
+                      <div className="tabs-switcher-main" style={{ opacity: st === 'closed' ? 0.55 : 1 }}>
+                        {isSplit ? (
+                          <Columns2 size={13} strokeWidth={1.8} className="tab-split-icon" aria-hidden="true" />
+                        ) : (
+                          <HostIcon profile={prof} size="xs" />
+                        )}
+                        <span className="tabs-switcher-name">{title}</span>
+                        {isSplit && <span className="tab-split-count tabular">{leaves.length}</span>}
+                        {st === 'connecting' && <span className="tab-connecting-dot" aria-hidden="true" />}
+                        {st === 'connected' && <span className="tabs-switcher-live-dot" aria-hidden="true" />}
+                      </div>
+                      <button
+                        type="button"
+                        className="tabs-switcher-close"
+                        title={`关闭 ${title}`}
+                        aria-label={`关闭 ${title}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCloseTab(tab.id);
+                        }}
+                      >
+                        <X size={14} strokeWidth={2} />
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         </>
-      )}
+        );
+      })()}
 
       {tabMenu && (() => {
         const menuTab = tabs.find((t) => t.id === tabMenu.tabId);
@@ -646,22 +736,9 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               </>
             )}
             <div className="context-menu-sep" />
-            {tabs.length > 1 && (
-              <button
-                type="button"
-                className="context-menu-item"
-                onClick={() => {
-                  onCloseOtherTabs(tabMenu.tabId);
-                  setTabMenu(null);
-                }}
-              >
-                <X size={13} />
-                关闭其他标签
-              </button>
-            )}
             <button
               type="button"
-              className="context-menu-item danger"
+              className="context-menu-item"
               onClick={() => {
                 onCloseTab(tabMenu.tabId);
                 setTabMenu(null);
@@ -670,6 +747,32 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               <X size={13} />
               关闭此标签
             </button>
+            {tabs.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  className="context-menu-item"
+                  onClick={() => {
+                    onCloseOtherTabs(tabMenu.tabId);
+                    setTabMenu(null);
+                  }}
+                >
+                  <X size={13} />
+                  关闭其他标签
+                </button>
+                <button
+                  type="button"
+                  className="context-menu-item danger"
+                  onClick={() => {
+                    onCloseAllTabs();
+                    setTabMenu(null);
+                  }}
+                >
+                  <X size={13} />
+                  关闭所有标签
+                </button>
+              </>
+            )}
           </div>
         </>
         );

@@ -53,7 +53,7 @@ interface TitlebarProps {
   onCloseAllTabs: () => void;
   onCloneTab: (tabId: string) => void;
   onDetachPane: (tabId: string, paneId: string) => void;
-  onNewConnection: () => void;
+  onNewConnection?: () => void;
   onSplit: (dir: 'horizontal' | 'vertical', tabId?: string) => void;
   onToggleBroadcast: () => void;
   onOpenSearch: () => void;
@@ -77,7 +77,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onCloseAllTabs,
   onCloneTab,
   onDetachPane,
-  onNewConnection,
+  onNewConnection: _onNewConnection,
   onSplit,
   onToggleBroadcast,
   onOpenSearch,
@@ -373,13 +373,13 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           </button>
         )}
 
-        <Tooltip label="新建连接" shortcut="Ctrl+N" side="bottom">
+        <Tooltip label="新建标签 / 命令面板" shortcut="Ctrl+K" side="bottom">
           <button
             id="newTabBtn"
             type="button"
             className="icon-btn tab-add"
-            aria-label="新建连接"
-            onClick={onNewConnection}
+            aria-label="新建标签或打开命令面板"
+            onClick={onOpenPalette}
           >
             <Plus size={14} strokeWidth={1.8} />
           </button>

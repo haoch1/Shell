@@ -588,11 +588,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           >
                             <div className="theme-swatch-box theme-swatch-auto">
                               <span className="theme-swatch-half light">
-                                <span style={{ color: '#2563EB' }}>&gt;_</span>
+                                <span style={{ color: '#0969DA' }}>&gt;_</span>
                                 <span style={{ fontSize: 9, opacity: 0.72 }}>浅色</span>
                               </span>
                               <span className="theme-swatch-half dark">
-                                <span style={{ color: '#56E39F' }}>&gt;_</span>
+                                <span style={{ color: '#56D364' }}>&gt;_</span>
                                 <span style={{ fontSize: 9, opacity: 0.78 }}>深色</span>
                               </span>
                             </div>

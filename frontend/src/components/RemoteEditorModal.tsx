@@ -198,13 +198,13 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
             borderRadius: '2px',
           },
           '.cm-searchMatch': {
-            backgroundColor: 'rgba(251, 191, 36, 0.26)',
-            outline: '1px solid rgba(251, 191, 36, 0.55)',
+            backgroundColor: 'color-mix(in srgb, var(--orange) 24%, transparent)',
+            outline: '1px solid color-mix(in srgb, var(--orange) 52%, transparent)',
             borderRadius: '2px',
           },
           '.cm-searchMatch.cm-searchMatch-selected': {
-            backgroundColor: 'rgba(245, 158, 11, 0.48)',
-            outline: '1px solid #FBBF24',
+            backgroundColor: 'color-mix(in srgb, var(--orange) 44%, transparent)',
+            outline: '1px solid var(--orange)',
           },
           '&.cm-focused .cm-matchingBracket, &.cm-focused .cm-nonmatchingBracket': {
             backgroundColor: 'color-mix(in srgb, var(--accent) 22%, transparent)',
@@ -215,28 +215,28 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
         { dark: true },
       );
 
-      const darkHighlightStyle = HighlightStyle.define([
-        { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: '#7D8B9E', fontStyle: 'italic' },
-        { tag: [tags.keyword, tags.controlKeyword, tags.definitionKeyword, tags.moduleKeyword, tags.modifier], color: '#C792EA' },
-        { tag: [tags.operator, tags.operatorKeyword, tags.derefOperator], color: '#89DDFF' },
-        { tag: [tags.string, tags.docString, tags.character, tags.attributeValue], color: '#98E39A' },
-        { tag: [tags.regexp, tags.escape, tags.special(tags.string)], color: '#F78C6C' },
-        { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom, tags.unit], color: '#F6B96B' },
+      const paletteHighlightStyle = HighlightStyle.define([
+        { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: 'var(--syn-comment)', fontStyle: 'italic' },
+        { tag: [tags.keyword, tags.controlKeyword, tags.definitionKeyword, tags.moduleKeyword, tags.modifier], color: 'var(--syn-keyword)' },
+        { tag: [tags.operator, tags.operatorKeyword, tags.derefOperator], color: 'var(--syn-operator)' },
+        { tag: [tags.string, tags.docString, tags.character, tags.attributeValue], color: 'var(--syn-string)' },
+        { tag: [tags.regexp, tags.escape, tags.special(tags.string)], color: 'var(--syn-regexp)' },
+        { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom, tags.unit], color: 'var(--syn-number)' },
         { tag: [tags.variableName, tags.self], color: 'var(--ink-primary)' },
-        { tag: [tags.definition(tags.variableName), tags.function(tags.variableName), tags.function(tags.propertyName)], color: '#7CC4FA' },
-        { tag: [tags.propertyName, tags.attributeName], color: '#7DD3FC' },
-        { tag: [tags.typeName, tags.className, tags.namespace, tags.macroName], color: '#FCD34D' },
-        { tag: [tags.tagName], color: '#F87171' },
-        { tag: [tags.labelName, tags.meta, tags.annotation, tags.processingInstruction], color: '#A5B4FC' },
+        { tag: [tags.definition(tags.variableName), tags.function(tags.variableName), tags.function(tags.propertyName)], color: 'var(--syn-func)' },
+        { tag: [tags.propertyName, tags.attributeName], color: 'var(--syn-prop)' },
+        { tag: [tags.typeName, tags.className, tags.namespace, tags.macroName], color: 'var(--syn-type)' },
+        { tag: [tags.tagName], color: 'var(--syn-tag)' },
+        { tag: [tags.labelName, tags.meta, tags.annotation, tags.processingInstruction], color: 'var(--syn-label)' },
         { tag: [tags.punctuation, tags.separator, tags.bracket], color: 'var(--ink-secondary)' },
-        { tag: [tags.heading], color: '#7CC4FA', fontWeight: '600' },
+        { tag: [tags.heading], color: 'var(--syn-func)', fontWeight: '600' },
         { tag: [tags.strong], fontWeight: '600', color: 'var(--ink-primary)' },
         { tag: [tags.emphasis], fontStyle: 'italic', color: 'var(--ink-primary)' },
         { tag: [tags.link, tags.url], color: 'var(--accent)', textDecoration: 'underline' },
-        { tag: [tags.inserted], color: '#34D399', backgroundColor: 'rgba(52, 211, 153, 0.14)' },
-        { tag: [tags.deleted], color: '#FB7185', backgroundColor: 'rgba(251, 113, 133, 0.15)' },
-        { tag: [tags.changed], color: '#FBBF24', backgroundColor: 'rgba(251, 191, 36, 0.14)' },
-        { tag: [tags.invalid], color: '#FF6B7A', textDecoration: 'underline wavy' },
+        { tag: [tags.inserted], color: 'var(--syn-inserted)', backgroundColor: 'color-mix(in srgb, var(--syn-inserted) 14%, transparent)' },
+        { tag: [tags.deleted], color: 'var(--syn-deleted)', backgroundColor: 'color-mix(in srgb, var(--syn-deleted) 14%, transparent)' },
+        { tag: [tags.changed], color: 'var(--syn-changed)', backgroundColor: 'color-mix(in srgb, var(--syn-changed) 14%, transparent)' },
+        { tag: [tags.invalid], color: 'var(--syn-invalid)', textDecoration: 'underline wavy' },
       ]);
 
       const lightEditorChrome = EditorView.theme(
@@ -273,13 +273,13 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
             borderRadius: '2px',
           },
           '.cm-searchMatch': {
-            backgroundColor: 'rgba(245, 158, 11, 0.24)',
-            outline: '1px solid rgba(217, 119, 6, 0.45)',
+            backgroundColor: 'color-mix(in srgb, var(--orange) 24%, transparent)',
+            outline: '1px solid color-mix(in srgb, var(--orange) 50%, transparent)',
             borderRadius: '2px',
           },
           '.cm-searchMatch.cm-searchMatch-selected': {
-            backgroundColor: 'rgba(245, 158, 11, 0.48)',
-            outline: '1px solid #D97706',
+            backgroundColor: 'color-mix(in srgb, var(--orange) 42%, transparent)',
+            outline: '1px solid var(--orange)',
           },
           '&.cm-focused .cm-matchingBracket, &.cm-focused .cm-nonmatchingBracket': {
             backgroundColor: 'color-mix(in srgb, var(--accent) 16%, transparent)',
@@ -290,29 +290,7 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
         { dark: false },
       );
 
-      const lightHighlightStyle = HighlightStyle.define([
-        { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: '#64748B', fontStyle: 'italic' },
-        { tag: [tags.keyword, tags.controlKeyword, tags.definitionKeyword, tags.moduleKeyword, tags.modifier], color: '#7C3AED' },
-        { tag: [tags.operator, tags.operatorKeyword, tags.derefOperator], color: '#0284C7' },
-        { tag: [tags.string, tags.docString, tags.character, tags.attributeValue], color: '#15803D' },
-        { tag: [tags.regexp, tags.escape, tags.special(tags.string)], color: '#C2410C' },
-        { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom, tags.unit], color: '#B45309' },
-        { tag: [tags.variableName, tags.self], color: 'var(--ink-primary)' },
-        { tag: [tags.definition(tags.variableName), tags.function(tags.variableName), tags.function(tags.propertyName)], color: '#0369A1' },
-        { tag: [tags.propertyName, tags.attributeName], color: '#0F766E' },
-        { tag: [tags.typeName, tags.className, tags.namespace, tags.macroName], color: '#9A3412' },
-        { tag: [tags.tagName], color: '#BE123C' },
-        { tag: [tags.labelName, tags.meta, tags.annotation, tags.processingInstruction], color: '#4F46E5' },
-        { tag: [tags.punctuation, tags.separator, tags.bracket], color: 'var(--ink-secondary)' },
-        { tag: [tags.heading], color: '#0369A1', fontWeight: '600' },
-        { tag: [tags.strong], fontWeight: '600', color: 'var(--ink-primary)' },
-        { tag: [tags.emphasis], fontStyle: 'italic', color: 'var(--ink-secondary)' },
-        { tag: [tags.link, tags.url], color: 'var(--accent)', textDecoration: 'underline' },
-        { tag: [tags.inserted], color: '#15803D', backgroundColor: 'rgba(22, 163, 74, 0.12)' },
-        { tag: [tags.deleted], color: '#BE123C', backgroundColor: 'rgba(225, 29, 72, 0.12)' },
-        { tag: [tags.changed], color: '#B45309', backgroundColor: 'rgba(217, 119, 6, 0.12)' },
-        { tag: [tags.invalid], color: '#DC2626', textDecoration: 'underline wavy' },
-      ]);
+      const paletteSyntaxExt = syntaxHighlighting(paletteHighlightStyle);
 
       return {
         Compartment: stateMod.Compartment,
@@ -350,8 +328,8 @@ function loadCodeMirrorRuntime(): Promise<CodeMirrorRuntime> {
         openSearchPanel,
         closeSearchPanel,
         searchPanelOpen,
-        darkThemeExt: [darkEditorChrome, syntaxHighlighting(darkHighlightStyle)],
-        lightThemeExt: [lightEditorChrome, syntaxHighlighting(lightHighlightStyle)],
+        darkThemeExt: [darkEditorChrome, paletteSyntaxExt],
+        lightThemeExt: [lightEditorChrome, paletteSyntaxExt],
         editorLanguages: editorLang.EDITOR_LANGUAGES,
         detectLanguageId: editorLang.detectLanguageId,
         loadLanguageExtension: editorLang.loadLanguageExtension,

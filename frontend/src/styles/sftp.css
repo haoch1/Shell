@@ -497,24 +497,17 @@
   justify-content: center;
 }
 
-/* File-kind color palette (readable in Light & Dark modes) */
+/* File-kind color palette (harmonized across all global palettes) */
 .sftp-kind-dir { color: var(--accent); }
 .sftp-kind-config { color: var(--orange); }
 .sftp-kind-shell { color: var(--green); }
 .sftp-kind-archive { color: var(--purple); }
 .sftp-kind-file { color: var(--ink-secondary); }
-
-:root .sftp-kind-code { color: #0284c7; }
-:root .sftp-kind-log { color: #ca8a04; }
-:root .sftp-kind-key { color: #ea580c; }
-:root .sftp-kind-image { color: #db2777; }
-:root .sftp-kind-doc { color: #4f46e5; }
-
-[data-theme="dark"] .sftp-kind-code { color: #5ea2ff; }
-[data-theme="dark"] .sftp-kind-log { color: #facc15; }
-[data-theme="dark"] .sftp-kind-key { color: #fb923c; }
-[data-theme="dark"] .sftp-kind-image { color: #f472b6; }
-[data-theme="dark"] .sftp-kind-doc { color: #818cf8; }
+.sftp-kind-code { color: var(--sftp-code); }
+.sftp-kind-log { color: var(--sftp-log); }
+.sftp-kind-key { color: var(--sftp-key); }
+.sftp-kind-image { color: var(--sftp-image); }
+.sftp-kind-doc { color: var(--sftp-doc); }
 
 .sftp-row-main {
   flex: 1;

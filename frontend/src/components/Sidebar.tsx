@@ -377,7 +377,6 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               }
             }}
           />
-          <span className="kbd-hint">⌃K</span>
         </div>
 
         {selectMode ? (

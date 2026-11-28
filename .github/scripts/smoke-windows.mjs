@@ -7,7 +7,7 @@ import { verifyHostExport, verifyEmptyHostExport } from './host-export.mjs';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
@@ -33,12 +33,12 @@ async function verifyNativeBinary() {
 
   const testProfile = await mkdtemp(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'shell-native-'));
   const store = path.join(testProfile, 'Shell');
-  await mkdir(store);
-  await writeFile(path.join(store, 'agent.json'), JSON.stringify({ enabled: true, port: await freePort() }));
+  await mkdir(path.join(store, 'config'), { recursive: true });
+  await writeFile(path.join(store, 'config', 'agent.json'), JSON.stringify({ enabled: true, port: await freePort() }));
   const env = { ...process.env, LOCALAPPDATA: testProfile, APPDATA: testProfile, SHELL_EXIT_ON_CLOSE: '1' };
   const cliVersion = await execFileAsync(exePath, ['--version'], { env, timeout: 8000, windowsHide: true });
   assert.equal(cliVersion.stdout.trim(), `Shell ${expectedVersion}`);
-  const runtimeFile = path.join(store, 'bridge-runtime.json');
+  const runtimeFile = path.join(store, 'runtime', 'bridge.json');
   const client = spawn(exePath, [], { env });
   const exited = once(client, 'exit');
 
@@ -83,6 +83,21 @@ async function verifyNativeBinary() {
     assert.ok(replies[1].result.tools.some(tool => tool.name === 'shell_connect'));
     console.log('[Stage 1] Packaged MCP client initialized and discovered the desktop tools.');
 
+    // Verify clean v1.6.0 5-folder data layout (ZERO loose files in Shell/ root!)
+    const allowedRootDirs = new Set(['config', 'security', 'logs', 'runtime', 'cache']);
+    const liveRootEntries = await readdir(store, { withFileTypes: true });
+    const liveRootFiles = liveRootEntries.filter(e => !e.isDirectory()).map(e => e.name);
+    const liveRootDirs = liveRootEntries.filter(e => e.isDirectory()).map(e => e.name);
+    assert.deepEqual(liveRootFiles, [], 'Expected ZERO loose files in Shell/ root while running, got ' + JSON.stringify(liveRootFiles));
+    assert.ok(
+      liveRootDirs.every(d => allowedRootDirs.has(d)),
+      'Expected only clean v1.6.0 subdirectories in Shell/ root, got ' + JSON.stringify(liveRootDirs),
+    );
+    assert.ok(existsSync(path.join(store, 'config', 'agent.json')), 'Expected config/agent.json');
+    assert.ok(existsSync(path.join(store, 'security', 'agent-token.dpapi')), 'Expected security/agent-token.dpapi');
+    assert.ok(existsSync(path.join(store, 'runtime', 'bridge.json')), 'Expected runtime/bridge.json');
+    assert.ok(existsSync(path.join(store, 'cache', 'WebView2')), 'Expected cache/WebView2/');
+
     // Send WM_CLOSE cleanly via MainWindow and verify exit code 0
     await execFileAsync('powershell.exe', [
       '-NoProfile',
@@ -96,9 +111,34 @@ async function verifyNativeBinary() {
       }),
     ]);
     assert.equal(code, 0, 'Expected Shell.exe clean exit code 0');
-    console.log('[Stage 1] Verified real Shell.exe Win32 window, WebView2 renderer startup, and clean shutdown.');
+
+    // Verify shutdown runtime cleanup left ZERO loose root files and cleaned runtime/bridge.json
+    const exitRootEntries = await readdir(store, { withFileTypes: true });
+    const exitRootFiles = exitRootEntries.filter(e => !e.isDirectory()).map(e => e.name);
+    assert.deepEqual(exitRootFiles, [], 'Expected ZERO loose files in Shell/ root after clean exit, got ' + JSON.stringify(exitRootFiles));
+    assert.equal(existsSync(runtimeFile), false, 'Expected runtime/bridge.json removed on clean shutdown');
+
+    // Verify --cleanup-data refuses unrelated directories and cleanly removes isolated DataDir (without touching real HKCU registry)
+    const decoyDir = await mkdtemp(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'shell-decoy-'));
+    try {
+      let refused = false;
+      try {
+        await execFileAsync(exePath, ['--cleanup-data', '--pid', '0', '--dir', decoyDir], { env, timeout: 8000, windowsHide: true });
+      } catch (err) {
+        refused = err?.code === 3;
+      }
+      assert.equal(refused, true, 'Expected --cleanup-data to strictly refuse non-DataDir paths with exit code 3');
+      assert.equal(existsSync(decoyDir), true, 'Refused decoy directory must remain untouched');
+    } finally {
+      await rm(decoyDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    await execFileAsync(exePath, ['--cleanup-data', '--pid', '0', '--dir', store], { env, timeout: 15000, windowsHide: true });
+    assert.equal(existsSync(store), false, 'Expected --cleanup-data to cleanly remove isolated Shell DataDir');
+    console.log('[Stage 1] Verified real Shell.exe Win32 window, WebView2 renderer, clean 5-folder layout, shutdown cleanup, and --cleanup-data guard.');
   } finally {
     if (client.exitCode === null) client.kill();
+    await rm(testProfile, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -138,12 +178,21 @@ const BRIDGE_MOCK_SCRIPT = `
   const listeners = new Map();
   const emit = (ev, ...args) => { for (const fn of listeners.get(ev) || []) fn(...args); };
   let settings = {
-    theme: 'light', terminalTheme: 'auto',
+    theme: 'light', terminalTheme: 'auto', defaultLocalShell: '',
     fontFamily: '"Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, "Sarasa Mono SC", "Maple Mono SC NF", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", monospace',
     fontSize: 13, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
     showTelemetry: true, syntaxHighlight: true, autoReconnect: true, confirmMultilinePaste: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false, groupOrder: []
   };
+  let autoStartEnabled = false;
+  window.__uninstallCalls = [];
+  const localShells = [
+    { id: 'pwsh', name: 'PowerShell 7', command: 'C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe', args: ['-NoLogo'], icon: 'powershell', category: 'shell', isDefault: true },
+    { id: 'powershell', name: 'Windows PowerShell', command: 'C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe', args: ['-NoLogo'], icon: 'powershell', category: 'shell' },
+    { id: 'cmd', name: '命令提示符', command: 'C:\\\\Windows\\\\System32\\\\cmd.exe', icon: 'cmd', category: 'shell' },
+    { id: 'git-bash', name: 'Git Bash', command: 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe', args: ['--login', '-i'], icon: 'git', category: 'shell' },
+    { id: 'wsl:Ubuntu', name: 'WSL · Ubuntu', command: 'C:\\\\Windows\\\\System32\\\\wsl.exe', args: ['-d', 'Ubuntu', '--cd', '~'], icon: 'ubuntu', category: 'wsl' }
+  ];
   let profiles = new URLSearchParams(location.search).has('empty-hosts') ? [] : [
     { id: 'p1', name: 'Tokyo Production', group: '生产集群', icon: 'ubuntu', pinned: true, host: '10.24.0.10', port: 22, user: 'deploy', auth: 'agent', keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 300 },
     { id: 'p2', name: 'SG - AWS', group: '生产集群', icon: 'debian', host: '2406:da18:b15:8000:4839:f12a:9c3b:4e21', port: 58222, user: 'root', auth: 'password', remembered: true, keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 7200 },
@@ -175,6 +224,33 @@ const BRIDGE_MOCK_SCRIPT = `
   window.go = { main: { App: {
     AppInfo: async () => ({ version: ${JSON.stringify(expectedVersion)}, dataDir: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Local\\\\Shell' }),
     OpenDataDir: async () => {},
+    GetAutoStart: async () => autoStartEnabled,
+    SetAutoStart: async (enabled) => { autoStartEnabled = Boolean(enabled); return autoStartEnabled; },
+    UninstallAndQuit: async (removeData) => { window.__uninstallCalls.push(Boolean(removeData)); },
+    LocalShells: async () => localShells,
+    StartLocalTerminal: async (id, shellId, cwd) => {
+      const sh = localShells.find(x => x.id === shellId) || localShells[0];
+      window.__lastLocalSessionId = id;
+      setTimeout(() => {
+        const isWsl = sh.category === 'wsl';
+        const activeDir = cwd || (isWsl ? '/home/haochi/projects/shell' : 'C:\\\\Users\\\\haochi\\\\Projects\\\\Shell');
+        const osc99 = '\\x1b]9;9;' + activeDir + '\\x07';
+        const banner = isWsl
+          ? osc99 + '\\x1b[32mhaochi@wsl-ubuntu\\x1b[0m:\\x1b[34m~/projects/shell\\x1b[0m$ git status -sb\\r\\n'
+            + '\\x1b[32m## main...origin/main\\x1b[0m\\r\\n'
+            + '\\x1b[32mhaochi@wsl-ubuntu\\x1b[0m:\\x1b[34m~/projects/shell\\x1b[0m$ '
+          : osc99 + '\\x1b[36mPowerShell 7.5.1\\x1b[0m\\r\\n\\r\\n'
+            + '\\x1b[32mPS ' + activeDir + '>\\x1b[0m git log -n 3 --oneline\\r\\n'
+            + '\\x1b[33m8a4c21f\\x1b[0m feat(localpty): 原生 Windows ConPTY 本地终端与多 Shell/WSL 自动探测\\r\\n'
+            + '\\x1b[33m5b1e90d\\x1b[0m feat(storage): 重构五目录本地数据架构与无痕卸载清理\\r\\n'
+            + '\\x1b[33m3d7a012\\x1b[0m feat(ai): 支持本地 AI CLI 可用模型列表实时刷新\\r\\n'
+            + '\\x1b[32mPS ' + activeDir + '>\\x1b[0m go test ./internal/localpty\\r\\n'
+            + '\\x1b[32mok  \\tgithub.com/haoch1/Shell/internal/localpty\\t0.421s\\x1b[0m\\r\\n'
+            + '\\x1b[32mPS ' + activeDir + '>\\x1b[0m ';
+        emit('ssh:data', id, btoa(unescape(encodeURIComponent(banner))));
+      }, 60);
+      return sh;
+    },
     CheckForUpdate: async () => ({
       currentVersion: ${JSON.stringify(expectedVersion)},
       latestVersion: ${JSON.stringify(expectedVersion)},
@@ -398,7 +474,16 @@ const BRIDGE_MOCK_SCRIPT = `
     ExportBackup: async () => '',
     ImportBackup: async () => ({ profiles: 0, snippets: 0, secrets: 0 }),
     AIConfig: async () => ({ mode: 'api', endpoint: 'https://api.anthropic.com/v1', model: 'claude-sonnet-5-5', hasKey: false, cliCommand: 'agy', ready: true }),
-    FetchAIModels: async () => ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2', 'claude-haiku-5-5'],
+    FetchAIModels: async (cfg) => {
+      if (cfg && cfg.mode === 'cli') {
+        const cmd = String(cfg.cliCommand || '').trim().toLowerCase();
+        if (cmd.includes('codex')) return ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-terra', 'gpt-6.1-sol'];
+        if (cmd.includes('agy')) return ['gemini-4-neon-high', 'gemini-4-neon-medium', 'claude-sonnet-5-5-high', 'claude-opus-5-5-high'];
+        if (cmd.includes('claude')) return ['claude-sonnet-5-5', 'sonnet', 'opus', 'haiku'];
+        return ['custom-local-model'];
+      }
+      return ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2', 'claude-haiku-5-5'];
+    },
     DetectAICLIs: async () => [
       { id: 'claude', name: 'Claude Code', command: 'claude', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Roaming\\\\npm\\\\claude.cmd' },
       { id: 'codex', name: 'Codex CLI', command: 'codex', installed: true, path: 'C:\\\\Users\\\\haochi\\\\AppData\\\\Roaming\\\\npm\\\\codex.cmd' },
@@ -579,6 +664,42 @@ async function verifyFrontendUI() {
     await until(() => evaluate("document.querySelectorAll('.host-row').length === 3"), 'initial workbench render');
     await sleep(250);
     await shot('01-Workbench-Light');
+
+    // Verify v1.6.0 Workbench refinements: no .group-count, clean pointer cursor on draggable groups, local terminal entrypoints, morphing maximize icon, and calmed deep-crimson --red-solid
+    const workbenchV16Audit = await evaluate(`(() => {
+      const draggableHeaders = [...document.querySelectorAll('.group-header.draggable')];
+      const draggableCursors = draggableHeaders.map(el => getComputedStyle(el).cursor);
+      const maxIcon = document.querySelector('.win-max-icon');
+      return {
+        groupCountBadges: document.querySelectorAll('.group-count').length,
+        draggableCount: draggableHeaders.length,
+        draggableCursors,
+        hasWelcomeLocalBtn: Boolean(document.querySelector('#welcomeLocalTermBtn')),
+        hasWelcomeLocalMenuBtn: Boolean(document.querySelector('#welcomeLocalShellMenuBtn')),
+        hasTitlebarLocalBtn: Boolean(document.querySelector('#newLocalTermBtn')),
+        hasTitlebarLocalMenuBtn: Boolean(document.querySelector('#localShellMenuBtn')),
+        hasMorphMaxIcon: Boolean(maxIcon && maxIcon.querySelector('.win-max-front') && maxIcon.querySelector('.win-max-back')),
+        redSolid: getComputedStyle(document.documentElement).getPropertyValue('--red-solid').trim().toLowerCase(),
+      };
+    })()`);
+    assert.equal(workbenchV16Audit.groupCountBadges, 0, 'Expected zero .group-count badges in sidebar, got ' + JSON.stringify(workbenchV16Audit));
+    assert.ok(
+      workbenchV16Audit.draggableCount >= 2 && workbenchV16Audit.draggableCursors.every(c => c === 'pointer'),
+      'Expected cursor: pointer (not grab) on all .group-header.draggable headers, got ' + JSON.stringify(workbenchV16Audit),
+    );
+    assert.equal(workbenchV16Audit.hasWelcomeLocalBtn, true, 'Expected #welcomeLocalTermBtn on WelcomeView');
+    assert.equal(workbenchV16Audit.hasWelcomeLocalMenuBtn, true, 'Expected #welcomeLocalShellMenuBtn on WelcomeView');
+    assert.equal(workbenchV16Audit.hasTitlebarLocalBtn, true, 'Expected #newLocalTermBtn in TitleBar');
+    assert.equal(workbenchV16Audit.hasTitlebarLocalMenuBtn, true, 'Expected #localShellMenuBtn in TitleBar');
+    assert.equal(workbenchV16Audit.hasMorphMaxIcon, true, 'Expected unified morphing .win-max-icon in TitleBar');
+    assert.equal(workbenchV16Audit.redSolid, '#b91c26', 'Expected calmed deep-crimson --red-solid #b91c26 in light mode, got ' + workbenchV16Audit.redSolid);
+
+    // Exercise titlebar local shell dropdown (#localShellMenuBtn -> #localShellMenu with 5 shells + WSL separator)
+    await click('#localShellMenuBtn');
+    await until(() => evaluate("document.querySelectorAll('#localShellMenu .local-shell-item').length === 5 && !!document.querySelector('#localShellMenu .context-menu-sep')"), 'titlebar local shell dropdown menu');
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('#localShellMenu')"), 'closed titlebar local shell dropdown');
 
     // Verify sidebar sort button popover actually opens inside viewport and stays neutral after non-default sort
     await click('#sortHostsBtn');
@@ -933,8 +1054,9 @@ async function verifyFrontendUI() {
         hasKbdBadge: Boolean(box?.querySelector('.spotlight-kbd')),
       };
     })()`);
-    assert.equal(paletteAudit.groups[0], '服务器', 'Expected 服务器 as first section in Command Palette, got ' + JSON.stringify(paletteAudit));
-    assert.equal(paletteAudit.groups[1], '操作', 'Expected 操作 immediately after 服务器 in Command Palette, got ' + JSON.stringify(paletteAudit));
+    assert.equal(paletteAudit.groups[0], '本地终端', 'Expected 本地终端 as first section in Command Palette, got ' + JSON.stringify(paletteAudit));
+    assert.equal(paletteAudit.groups[1], '服务器', 'Expected 服务器 as second section in Command Palette, got ' + JSON.stringify(paletteAudit));
+    assert.equal(paletteAudit.groups[2], '操作', 'Expected 操作 immediately after 服务器 in Command Palette, got ' + JSON.stringify(paletteAudit));
     assert.equal(paletteAudit.firstActionId, 'act-new', 'Expected 新建 SSH 主机 (act-new) first in 操作 section, got ' + JSON.stringify(paletteAudit));
     assert.ok(paletteAudit.firstActionText.includes('新建 SSH 主机'), 'Expected 新建 SSH 主机 label, got ' + JSON.stringify(paletteAudit));
     assert.equal(paletteAudit.hasKbdBadge, true, 'Expected shortcut badge (.spotlight-kbd) in Command Palette');
@@ -1281,6 +1403,22 @@ async function verifyFrontendUI() {
     await sleep(200);
     await shot('15-Settings-AI-CLI');
 
+    // Exercise Local AI CLI live model refresh & searchable dropdown (Codex CLI -> #fetchCliModelsBtn -> #cliModelMenu)
+    await evaluate(`[...document.querySelectorAll('#settingsDialog .provider-card')].find(el => el.textContent.includes('Codex CLI'))?.click()`);
+    await until(() => evaluate("document.querySelector('#cliCommand')?.value === 'codex'"), 'selected Codex CLI card');
+    await click('#fetchCliModelsBtn');
+    await until(
+      () =>
+        evaluate(
+          "!!document.querySelector('#cliModelMenu') && (document.querySelector('#cliModelMenu')?.textContent || '').includes('已获取 4 个可用模型') && (document.querySelector('#cliModelMenu')?.textContent || '').includes('使用 CLI 默认模型（留空）') && document.querySelectorAll('#cliModelMenu [role=\"option\"]').length === 5",
+        ),
+      'fetched Codex CLI live models dropdown',
+    );
+    await sleep(150);
+    await shot('40-Settings-AI-CLI-Models');
+    await evaluate(`[...document.querySelectorAll('#cliModelMenu [role="option"]')].find(el => el.textContent.trim() === 'gpt-6.2-sol')?.click()`);
+    await until(() => evaluate("document.querySelector('#cliModel')?.value === 'gpt-6.2-sol' && !document.querySelector('#cliModelMenu')"), 'selected live CLI model from dropdown');
+
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(7)').click()`);
     await until(() => evaluate(`document.querySelector('#settingsDialog').textContent.includes(${JSON.stringify('v' + expectedVersion)})`), 'about version');
     await sleep(200);
@@ -1293,11 +1431,63 @@ async function verifyFrontendUI() {
       return btns;
     })()`);
     assert.ok(
-      aboutAlign.length >= 3 &&
+      aboutAlign.length >= 4 &&
         aboutAlign.every(b => Math.abs(b.width - aboutAlign[0].width) <= 1.5 && Math.abs(b.right - aboutAlign[0].right) <= 1.5),
       'Expected About tab vertical action buttons aligned in width and right edge, got ' + JSON.stringify(aboutAlign),
     );
     await shot('14-Settings-About');
+
+    // Verify smooth check-for-updates animation: permanent .update-check-icon, zero width jump, 正在检查… pill, and >= 600ms display duration
+    const beforeCheckMeta = await evaluate(`(() => {
+      const btn = document.querySelector('#checkUpdateBtn');
+      const icon = btn?.querySelector('.update-check-icon');
+      return {
+        hasIcon: Boolean(icon),
+        width: btn ? btn.getBoundingClientRect().width : 0,
+      };
+    })()`);
+    assert.equal(beforeCheckMeta.hasIcon, true, 'Expected permanent .update-check-icon inside #checkUpdateBtn');
+    assert.ok(beforeCheckMeta.width >= 97, 'Expected fixed min-width on #checkUpdateBtn, got ' + JSON.stringify(beforeCheckMeta));
+    const checkStartedAt = Date.now();
+    await evaluate("document.querySelector('#checkUpdateBtn')?.click()");
+    await until(
+      () =>
+        evaluate(
+          "Boolean(document.querySelector('#checkUpdateBtn.is-checking .update-check-icon.is-spinning')) && (document.querySelector('#settingsDialog .pref-row-stack')?.textContent || '').includes('正在检查…')",
+        ),
+      'smooth update checking active state',
+    );
+    const duringCheckWidth = await evaluate("document.querySelector('#checkUpdateBtn')?.getBoundingClientRect().width ?? 0");
+    assert.ok(
+      Math.abs(duringCheckWidth - beforeCheckMeta.width) <= 0.5,
+      `Expected zero horizontal jump on #checkUpdateBtn during check: before=${beforeCheckMeta.width}, during=${duringCheckWidth}`,
+    );
+    await until(
+      () =>
+        evaluate(
+          "!document.querySelector('#checkUpdateBtn.is-checking') && (document.querySelector('#settingsDialog .pref-row-stack')?.textContent || '').includes('已是最新')",
+        ),
+      'update check settled back to 已是最新',
+    );
+    const checkElapsedMs = Date.now() - checkStartedAt;
+    assert.ok(checkElapsedMs >= 600, `Expected smooth >= 600ms minimum check-update animation duration, got ${checkElapsedMs}ms`);
+
+    // Verify portable zero-trace uninstall confirmation dialog opens & closes cleanly on Escape without closing SettingsModal or triggering uninstall
+    await click('#openUninstallBtn');
+    await until(
+      () =>
+        evaluate(
+          "!!document.querySelector('#uninstallConfirmDialog') && Boolean(document.querySelector('#uninstallConfirmDialog input[type=\"checkbox\"]')?.checked) && (document.querySelector('#uninstallConfirmDialog')?.textContent || '').includes('确认清理并退出')",
+        ),
+      'uninstall confirm modal',
+    );
+    await sleep(160);
+    await shot('43-Settings-Uninstall-Dialog');
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('#uninstallConfirmDialog')"), 'closed uninstall confirm modal on Escape');
+    assert.equal(await evaluate("!!document.querySelector('#settingsDialog')"), true, 'Escape on #uninstallConfirmDialog must keep #settingsDialog open');
+    assert.deepEqual(await evaluate('window.__uninstallCalls'), [], 'Canceling uninstall dialog must never invoke UninstallAndQuit');
 
     // Verify seamless in-app update progress bar inside About tab (no stray horizontal divider above bar, no duplicate status text)
     await evaluate(`window.runtime.EventsEmit('update:progress', { phase: 'downloading', message: '正在下载新版本…', percent: 68, downloaded: 10800000, total: 15850000 })`);
@@ -1343,8 +1533,33 @@ async function verifyFrontendUI() {
     // Switch back to Appearance and switch to Dark theme
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(1)').click()`);
     await sleep(200);
+    // Verify Windows auto-start switch (#autoStartSwitch) toggles cleanly via mock bindings
+    assert.equal(await evaluate("document.querySelector('#autoStartSwitch')?.getAttribute('aria-checked')"), 'false', 'Expected #autoStartSwitch initially false');
+    await click('#autoStartSwitch');
+    await until(() => evaluate("document.querySelector('#autoStartSwitch')?.getAttribute('aria-checked') === 'true'"), 'enabled #autoStartSwitch');
+    await click('#autoStartSwitch');
+    await until(() => evaluate("document.querySelector('#autoStartSwitch')?.getAttribute('aria-checked') === 'false'"), 'disabled #autoStartSwitch');
+
     await evaluate(`document.querySelector('#settingsDialog .segmented button:nth-child(2)').click()`);
     await sleep(250);
+    const darkRedSolid = await evaluate("getComputedStyle(document.documentElement).getPropertyValue('--red-solid').trim().toLowerCase()");
+    assert.equal(darkRedSolid, '#b62324', 'Expected calmed deep-crimson --red-solid #b62324 in dark mode, got ' + darkRedSolid);
+
+    // Verify Default Local Shell selector (#defaultLocalShellSelect) shows concise 自动（PowerShell 7） and opens cleanly with detected shells
+    await until(() => evaluate("!!document.querySelector('#defaultLocalShellSelect') && (document.querySelector('#defaultLocalShellSelect')?.textContent || '').includes('自动（PowerShell 7）')"), 'default local shell selector with 自动（PowerShell 7）');
+    await evaluate(`document.querySelector('#defaultLocalShellSelect')?.scrollIntoView({ block: 'center' })`);
+    await sleep(120);
+    await click('#defaultLocalShellSelect');
+    await until(
+      () =>
+        evaluate(
+          "document.querySelectorAll('[data-radix-select-viewport] [role=\"option\"]').length >= 6 && (document.querySelector('[data-radix-select-viewport]')?.textContent || '').includes('自动（PowerShell 7）') && (document.querySelector('[data-radix-select-viewport]')?.textContent || '').includes('WSL · Ubuntu')",
+        ),
+      'default local shell select options',
+    );
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('[data-radix-select-viewport]')"), 'closed default local shell selector');
     // Verify syntax highlighting toggle
     const syntaxSwitchChecked = await evaluate(`(() => {
       const row = [...document.querySelectorAll('#settingsDialog .pref-row')].find(r => r.textContent?.includes('终端语法高亮'));
@@ -1415,12 +1630,12 @@ async function verifyFrontendUI() {
       theme: document.documentElement.dataset.theme,
       sidebarVar: getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim(),
       sidebarBg: getComputedStyle(document.querySelector('.sidebar')).backgroundColor,
-      cached: JSON.parse(localStorage.getItem('shell:appearance:v1') || 'null'),
+      cached: JSON.parse(localStorage.getItem('shell:appearance:v2') || 'null'),
     }))()`);
     assert.equal(tokyoState.palette, 'tokyo-night');
     assert.equal(tokyoState.theme, 'dark');
     assert.equal(tokyoState.sidebarBg, 'rgb(31, 35, 53)', 'Expected Tokyo Night Storm sidebar bg #1F2335, got ' + JSON.stringify(tokyoState));
-    assert.deepEqual(tokyoState.cached, { theme: 'dark', terminalTheme: 'tokyo-night' }, 'Expected localStorage shell:appearance:v1 persisted for Tokyo Night');
+    assert.deepEqual(tokyoState.cached, { theme: 'dark', terminalTheme: 'tokyo-night' }, 'Expected localStorage shell:appearance:v2 persisted for Tokyo Night');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings for Tokyo Night screenshot');
     await sleep(250);
@@ -1435,12 +1650,12 @@ async function verifyFrontendUI() {
       theme: document.documentElement.dataset.theme,
       sidebarVar: getComputedStyle(document.documentElement).getPropertyValue('--bg-sidebar').trim(),
       sidebarBg: getComputedStyle(document.querySelector('.sidebar')).backgroundColor,
-      cached: JSON.parse(localStorage.getItem('shell:appearance:v1') || 'null'),
+      cached: JSON.parse(localStorage.getItem('shell:appearance:v2') || 'null'),
     }))()`);
     assert.equal(warmState.palette, 'warm-paper');
     assert.equal(warmState.theme, 'light');
     assert.equal(warmState.sidebarBg, 'rgb(242, 233, 225)', 'Expected Rosé Pine Dawn Warm Paper sidebar bg #F2E9E1, got ' + JSON.stringify(warmState));
-    assert.deepEqual(warmState.cached, { theme: 'light', terminalTheme: 'warm-paper' }, 'Expected localStorage shell:appearance:v1 persisted for Warm Paper');
+    assert.deepEqual(warmState.cached, { theme: 'light', terminalTheme: 'warm-paper' }, 'Expected localStorage shell:appearance:v2 persisted for Warm Paper');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings for Warm Paper screenshot');
     await sleep(250);
@@ -1450,8 +1665,8 @@ async function verifyFrontendUI() {
     await until(() => evaluate("document.querySelectorAll('#settingsDialog .theme-tile').length === 6"), 'reopened settings to restore Obsidian Graphite');
     await selectGlobalPalette('曜石深灰');
     await until(() => evaluate("document.documentElement.dataset.palette === 'shell-dark' && document.documentElement.dataset.theme === 'dark'"), 'restored Obsidian Graphite global palette');
-    const obsidianCache = await evaluate("JSON.parse(localStorage.getItem('shell:appearance:v1') || 'null')");
-    assert.deepEqual(obsidianCache, { theme: 'dark', terminalTheme: 'shell-dark' }, 'Expected localStorage shell:appearance:v1 persisted for Obsidian Graphite');
+    const obsidianCache = await evaluate("JSON.parse(localStorage.getItem('shell:appearance:v2') || 'null')");
+    assert.deepEqual(obsidianCache, { theme: 'dark', terminalTheme: 'shell-dark' }, 'Expected localStorage shell:appearance:v2 persisted for Obsidian Graphite');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings after restoring Obsidian Graphite');
     await sleep(250);
@@ -1917,6 +2132,55 @@ async function verifyFrontendUI() {
     await evaluate(`[...document.querySelectorAll('.context-menu-item')].find(el => el.textContent.trim() === '关闭所有标签')?.click()`);
     await until(() => evaluate("document.querySelectorAll('.tab-item').length === 0"), 'all tabs closed via context menu');
 
+    // Exercise Native Local Terminal (Dark + Light + mixed Local/SSH split)
+    await click('#welcomeLocalTermBtn');
+    await until(
+      () =>
+        evaluate(
+          "!!document.querySelector('.pane-xterm-wrap .xterm-screen') && (document.querySelector('.pane-xterm-wrap .xterm-rows')?.textContent || '').includes('PowerShell 7.5.1') && (document.querySelector('.statusbar-left')?.textContent || '').includes('C:\\\\Users\\\\haochi\\\\Projects\\\\Shell')",
+        ),
+      'native local terminal session & OSC 9;9 cwd',
+    );
+    await sleep(220);
+    const localTermAudit = await evaluate(`(() => ({
+      hasSftpBtn: Boolean(document.querySelector('#sftpBtn')),
+      hasTunnelsBtn: Boolean(document.querySelector('#tunnelsBtn')),
+      hasTelemetry: Boolean(document.querySelector('.statusbar-right .telemetry-trigger')),
+      statusLeft: document.querySelector('.statusbar-left')?.textContent?.trim() || '',
+      statusRight: document.querySelector('.statusbar-right')?.textContent?.trim() || '',
+      tabLabel: document.querySelector('.tab-item.active .tab-label')?.textContent?.trim() || '',
+    }))()`);
+    assert.equal(localTermAudit.hasSftpBtn, false, 'Local terminal must hide #sftpBtn, got ' + JSON.stringify(localTermAudit));
+    assert.equal(localTermAudit.hasTunnelsBtn, false, 'Local terminal must hide #tunnelsBtn, got ' + JSON.stringify(localTermAudit));
+    assert.equal(localTermAudit.hasTelemetry, false, 'Local terminal must not show remote server telemetry, got ' + JSON.stringify(localTermAudit));
+    assert.ok(localTermAudit.statusLeft.includes('PowerShell 7') && localTermAudit.statusLeft.includes('C:\\Users\\haochi\\Projects\\Shell'), 'Expected shell name + OSC 9;9 cwd in local statusbar-left, got ' + JSON.stringify(localTermAudit));
+    assert.ok(localTermAudit.statusRight.includes('本机终端') && /\d+\s*×\s*\d+/.test(localTermAudit.statusRight), 'Expected 本机终端 badge + cols × rows in local statusbar-right, got ' + JSON.stringify(localTermAudit));
+    await shot('41-Local-Terminal-Dark');
+
+    // Verify mixed Local Terminal + SSH horizontal split coexists cleanly
+    await click('button[aria-label="左右分屏"]');
+    await until(() => evaluate("!!document.querySelector('[role=\"dialog\"][aria-label=\"选择分屏主机\"]')"), 'mixed local+SSH split picker');
+    await click('#commandPalette [data-action-id="host-p1"]');
+    await until(
+      () =>
+        evaluate(
+          "document.querySelectorAll('.pane-box.multi-pane').length === 2 && document.querySelectorAll('.pane-box.multi-pane .xterm-screen').length === 2 && !document.querySelector('.pane-connect-trace')",
+        ),
+      'mixed local terminal + SSH split panes connected',
+    );
+    await click('.pane-box.multi-pane.focused .pane-mini-bar button[aria-label="关闭此分屏"]');
+    await until(() => evaluate("document.querySelectorAll('.pane-box').length === 1 && !document.querySelector('.pane-box.multi-pane')"), 'closed SSH split pane leaving local terminal');
+
+    // Capture Light Mode Native Local Terminal screenshot, then restore Dark Mode & close local tab
+    await click('button[aria-label="切换深浅色外观"]');
+    await until(() => evaluate("document.documentElement.dataset.theme === 'light'"), 'switched local terminal to light theme');
+    await sleep(220);
+    await shot('42-Local-Terminal-Light');
+    await click('button[aria-label="切换深浅色外观"]');
+    await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"), 'restored dark theme after local terminal capture');
+    await click('.tab-item.active .tab-close');
+    await until(() => evaluate("document.querySelectorAll('.tab-item').length === 0"), 'closed local terminal tab');
+
     // Verify Dark Mode split New Host dropdown menu + HostModal solid OS icons + frosted Group ComboBox
     const darkNewHostBg = await evaluate("getComputedStyle(document.querySelector('.sidebar-new-split')).backgroundColor");
     assert.equal(darkNewHostBg, 'rgb(47, 129, 247)', 'Expected GitHub Dark accent #2F81F7 .sidebar-new-split in dark mode, got ' + darkNewHostBg);
@@ -1947,7 +2211,7 @@ async function verifyFrontendUI() {
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 39 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 43 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

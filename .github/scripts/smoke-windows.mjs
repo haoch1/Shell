@@ -17,16 +17,18 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const { version: expectedVersion } = JSON.parse(await readFile(new URL('../../frontend/package.json', import.meta.url), 'utf8'));
-const outDirIdx = process.argv.indexOf('--out-dir');
-const cliOutDir = outDirIdx !== -1 && process.argv[outDirIdx + 1] ? process.argv[outDirIdx + 1] : '';
-const snapshotDir = path.resolve(cliOutDir || process.env.SHELL_SMOKE_DIR || 'build/preview');
+function cliArg(flag) {
+  const idx = process.argv.indexOf(flag);
+  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : '';
+}
+const snapshotDir = path.resolve(cliArg('--screenshots') || cliArg('--out-dir') || process.env.SHELL_SMOKE_DIR || 'build/preview');
 await mkdir(snapshotDir, { recursive: true });
 
 // =========================================================================
 // Stage 1: Real Shell.exe native WebView2 startup & clean shutdown test
 // =========================================================================
 async function verifyNativeBinary() {
-  const exePath = path.resolve('build/Shell-Windows-x64/Shell.exe');
+  const exePath = path.resolve(cliArg('--exe') || 'build/Shell-Windows-x64/Shell.exe');
   assert.ok(existsSync(exePath), 'Expected compiled Shell.exe at ' + exePath);
 
   const testProfile = await mkdtemp(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'shell-native-'));
@@ -445,7 +447,7 @@ async function verifyFrontendUI() {
     return;
   }
 
-  const distDir = path.resolve('frontend/dist');
+  const distDir = path.resolve(cliArg('--dist') || 'frontend/dist');
   const httpPort = await freePort();
   const server = http.createServer(async (req, res) => {
     try {
@@ -668,7 +670,10 @@ async function verifyFrontendUI() {
       'Expected zero visible border box on #toggleHideIpBtn when toggled on, got ' + JSON.stringify({ width: hiddenPrivacy.hideBtnBorderWidth, color: hiddenPrivacy.hideBtnBorderColor }),
     );
     assert.ok(
-      hiddenPrivacy.hideBtnColor !== 'rgb(0, 113, 227)' && hiddenPrivacy.hideBtnColor !== 'rgb(10, 132, 255)',
+      hiddenPrivacy.hideBtnColor !== 'rgb(9, 105, 218)' &&
+        hiddenPrivacy.hideBtnColor !== 'rgb(47, 129, 247)' &&
+        hiddenPrivacy.hideBtnColor !== 'rgb(0, 113, 227)' &&
+        hiddenPrivacy.hideBtnColor !== 'rgb(10, 132, 255)',
       'Expected neutral icon color on #toggleHideIpBtn when toggled on, got ' + hiddenPrivacy.hideBtnColor,
     );
     assert.ok(
@@ -791,20 +796,46 @@ async function verifyFrontendUI() {
     await click('#batchGroupPopover button[type="submit"]');
     await until(() => evaluate("window.go.main.App.Profiles().then(list => list.find(x => x.id === 'p3')?.group === '开发测试')"), 'batch assign custom group and restore');
 
-    // Verify prominent accent-blue split New Host CTA before opening HostModal
+    // Verify sidebar search box has zero shortcut badge & prominent unified split New Host CTA before opening HostModal
+    const hasSidebarSearchKbd = await evaluate("Boolean(document.querySelector('.sidebar .search-box .kbd-hint'))");
+    assert.equal(hasSidebarSearchKbd, false, 'Expected zero .kbd-hint shortcut badge inside .sidebar .search-box');
+
     const newHostStyle = await evaluate(`(() => {
       const split = document.querySelector('.sidebar-new-split');
       const btn = document.querySelector('#addHost');
       const caret = document.querySelector('#addHostMenuBtn');
+      const r = btn?.getBoundingClientRect();
       return {
         splitBg: split ? getComputedStyle(split).backgroundColor : '',
+        btnBg: btn ? getComputedStyle(btn).backgroundColor : '',
         btnColor: btn ? getComputedStyle(btn).color : '',
         hasCaret: Boolean(caret),
+        btnCenter: r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null,
       };
     })()`);
-    assert.equal(newHostStyle.splitBg, 'rgb(0, 113, 227)', 'Expected vibrant accent-blue .sidebar-new-split in light mode, got ' + JSON.stringify(newHostStyle));
+    assert.equal(newHostStyle.splitBg, 'rgb(9, 105, 218)', 'Expected GitHub Light accent #0969DA .sidebar-new-split in light mode, got ' + JSON.stringify(newHostStyle));
+    assert.equal(newHostStyle.btnBg, 'rgba(0, 0, 0, 0)', 'Expected transparent #addHost background inside unified .sidebar-new-split, got ' + JSON.stringify(newHostStyle));
     assert.equal(newHostStyle.btnColor, 'rgb(255, 255, 255)', 'Expected pure white text on #addHost, got ' + JSON.stringify(newHostStyle));
     assert.equal(newHostStyle.hasCaret, true, 'Expected #addHostMenuBtn dropdown caret inside split button');
+
+    // Hovering #addHost must lift .sidebar-new-split uniformly while #addHost stays transparent (zero two-tone split disconnect)
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...newHostStyle.btnCenter });
+    await sleep(220);
+    const newHostHover = await evaluate(`(() => {
+      const split = document.querySelector('.sidebar-new-split');
+      const btn = document.querySelector('#addHost');
+      const caret = document.querySelector('#addHostMenuBtn');
+      return {
+        splitHoverBg: split ? getComputedStyle(split).backgroundColor : '',
+        btnHoverBg: btn ? getComputedStyle(btn).backgroundColor : '',
+        caretBg: caret ? getComputedStyle(caret).backgroundColor : '',
+      };
+    })()`);
+    assert.equal(newHostHover.splitHoverBg, 'rgb(5, 80, 174)', 'Expected .sidebar-new-split to lift uniformly to --accent-hover (#0550AE) when hovering #addHost, got ' + JSON.stringify(newHostHover));
+    assert.equal(newHostHover.btnHoverBg, 'rgba(0, 0, 0, 0)', 'Expected #addHost to keep transparent background on hover (zero split-in-half disconnect), got ' + JSON.stringify(newHostHover));
+    assert.equal(newHostHover.caretBg, 'rgba(0, 0, 0, 0)', 'Expected #addHostMenuBtn to remain transparent when hovering #addHost, got ' + JSON.stringify(newHostHover));
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 0, y: 0 });
+    await sleep(200);
 
     // Host modal (Basic + Jump/Proxy identical height, solid OS tiles, frosted Group ComboBox & zero vertical clipping guard)
     await click('#addHost');
@@ -1380,7 +1411,7 @@ async function verifyFrontendUI() {
     }))()`);
     assert.equal(tokyoState.palette, 'tokyo-night');
     assert.equal(tokyoState.theme, 'dark');
-    assert.equal(tokyoState.sidebarBg, 'rgb(34, 37, 54)', 'Expected Tokyo Night sidebar bg #222536, got ' + JSON.stringify(tokyoState));
+    assert.equal(tokyoState.sidebarBg, 'rgb(31, 35, 53)', 'Expected Tokyo Night Storm sidebar bg #1F2335, got ' + JSON.stringify(tokyoState));
     assert.deepEqual(tokyoState.cached, { theme: 'dark', terminalTheme: 'tokyo-night' }, 'Expected localStorage shell:appearance:v1 persisted for Tokyo Night');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings for Tokyo Night screenshot');
@@ -1400,7 +1431,7 @@ async function verifyFrontendUI() {
     }))()`);
     assert.equal(warmState.palette, 'warm-paper');
     assert.equal(warmState.theme, 'light');
-    assert.equal(warmState.sidebarBg, 'rgb(234, 228, 215)', 'Expected Warm Paper sidebar bg #eae4d7, got ' + JSON.stringify(warmState));
+    assert.equal(warmState.sidebarBg, 'rgb(242, 233, 225)', 'Expected Rosé Pine Dawn Warm Paper sidebar bg #F2E9E1, got ' + JSON.stringify(warmState));
     assert.deepEqual(warmState.cached, { theme: 'light', terminalTheme: 'warm-paper' }, 'Expected localStorage shell:appearance:v1 persisted for Warm Paper');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings for Warm Paper screenshot');
@@ -1416,7 +1447,7 @@ async function verifyFrontendUI() {
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings after restoring Obsidian Graphite');
     await sleep(250);
-    // Verify 曜石深灰 (#1B1C20) elevated graphite terminal background, crisp cursor (#F8FAFC), vivid ANSI green (#56E39F), CJK sans-serif font stack, no blue active accent bars & full tab title visibility
+    // Verify 曜石深灰 (GitHub Dark #161B22) terminal background, crisp cursor (#58A6FF), vivid ANSI green (#56D364), CJK sans-serif font stack, no blue active accent bars & full tab title visibility
     const darkPaletteAudit = await evaluate(`(() => {
       const wrap = document.querySelector('.pane-xterm-wrap');
       const bg = wrap ? getComputedStyle(wrap).backgroundColor : '';
@@ -1426,9 +1457,15 @@ async function verifyFrontendUI() {
       const greenColor = greenSpan ? getComputedStyle(greenSpan).color : '';
       const styleText = [...document.querySelectorAll('.pane-xterm-wrap style')].map(s => s.textContent || '').join('\\n');
       const cursorEl = document.querySelector('.pane-xterm-wrap .xterm-cursor');
-      const cursorBoxShadow = cursorEl ? getComputedStyle(cursorEl).boxShadow : '';
-      const hasCrispCursor = /#f8fafc/i.test(styleText) || styleText.includes('248, 250, 252') || cursorBoxShadow.includes('248, 250, 252');
-      const hasCrispGreen = /#56e39f/i.test(styleText) || greenColor === 'rgb(86, 227, 159)';
+      const cursorStyle = cursorEl ? getComputedStyle(cursorEl) : null;
+      const cursorBoxShadow = cursorStyle ? cursorStyle.boxShadow : '';
+      const hasCrispCursor =
+        /#58a6ff/i.test(styleText) ||
+        styleText.includes('88, 166, 255') ||
+        cursorBoxShadow.includes('88, 166, 255') ||
+        cursorStyle?.backgroundColor === 'rgb(88, 166, 255)' ||
+        cursorStyle?.borderLeftColor === 'rgb(88, 166, 255)';
+      const hasCrispGreen = /#56d364/i.test(styleText) || greenColor === 'rgb(86, 211, 100)';
       const activeTab = document.querySelector('.tab-item.active');
       const activeHost = document.querySelector('.host-row.active');
       const tabAfterContent = activeTab ? getComputedStyle(activeTab, '::after').content : null;
@@ -1437,10 +1474,10 @@ async function verifyFrontendUI() {
       const tabFullVisible = firstTabLabel ? firstTabLabel.scrollWidth <= firstTabLabel.clientWidth + 1 : false;
       return { bg, xtermFontFamily, greenColor, cursorBoxShadow, hasCrispCursor, hasCrispGreen, tabAfterContent, hostBeforeContent, tabFullVisible };
     })()`);
-    assert.equal(darkPaletteAudit.bg, 'rgb(27, 28, 32)', 'Expected 曜石深灰 canvas background #1B1C20, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.greenColor, 'rgb(86, 227, 159)', 'Expected crisp 曜石深灰 ANSI green #56E39F, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.hasCrispCursor, true, 'Expected crisp neutral cursor #F8FAFC in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.hasCrispGreen, true, 'Expected crisp green #56E39F in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.bg, 'rgb(22, 27, 34)', 'Expected GitHub Dark canvas background #161B22, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.greenColor, 'rgb(86, 211, 100)', 'Expected crisp GitHub Dark ANSI green #56D364, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCrispCursor, true, 'Expected crisp GitHub Dark cursor #58A6FF in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCrispGreen, true, 'Expected crisp green #56D364 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
     assert.ok(darkPaletteAudit.xtermFontFamily.includes('Microsoft YaHei'), 'Expected .xterm-rows computed fontFamily to include Microsoft YaHei CJK sans-serif fallback, got ' + JSON.stringify(darkPaletteAudit.xtermFontFamily));
     assert.equal(darkPaletteAudit.tabAfterContent, 'none', 'Expected no blue ::after accent bar on .tab-item.active, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.hostBeforeContent, 'none', 'Expected no blue ::before accent bar on .host-row.active, got ' + JSON.stringify(darkPaletteAudit));
@@ -1507,7 +1544,114 @@ async function verifyFrontendUI() {
     await sleep(220);
     await shot('36-Terminal-CJK-Dark');
 
-    // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #1B1C20 canvas)
+    // Emit realistic RegionRestrictionCheck + IPQuality mixed CJK/English ANSI output & verify ALL remaining palettes end-to-end (37 Light ANSI, 38 Warm Paper, 39 Catppuccin Mocha)
+    await evaluate(`(() => {
+      const sid = window.__lastConnectedSessionId;
+      if (!sid) throw new Error('Missing active session id for multi-palette ANSI capture');
+      const payload = [
+        '\\x1b[2J\\x1b[H',
+        '\\x1b[1;36m** 正在测试IPv6解锁情况 — RegionRestrictionCheck + IPQuality 综合检测 **\\x1b[0m',
+        '\\x1b[1;34m============[ Multination / 流媒体与 AI 区域解锁检测 ]============\\x1b[0m',
+        '  Dazn:                           \\x1b[32mYes (Region: SG)\\x1b[0m',
+        '  Disney+:                        \\x1b[1;32mYes (Region: SG)\\x1b[0m  \\x1b[36m[4K HDR / 原生解锁]\\x1b[0m',
+        '  Netflix:                        \\x1b[1;32mYes (Region: SG)\\x1b[0m  \\x1b[32m完整解锁 (Originals & Licensed)\\x1b[0m',
+        '  YouTube Premium:                \\x1b[32mYes (Region: SG)\\x1b[0m',
+        '  ChatGPT / OpenAI API:           \\x1b[1;32mYes (Region: SG)\\x1b[0m  \\x1b[35mWeb + API 直连\\x1b[0m',
+        '  Claude / Anthropic:             \\x1b[33mMaybe (WAF Blocked)\\x1b[0m  \\x1b[1;33m需验证 ASN 路由\\x1b[0m',
+        '  Bahamut Anime (动画疯):         \\x1b[31mNo (Region: CN)\\x1b[0m',
+        '  Bilibili 港澳台限定:            \\x1b[1;31mNo (Region: CN)\\x1b[0m',
+        '  IPv6 Connectivity:              \\x1b[1;33mIPv6 Not Supported\\x1b[0m',
+        '',
+        '\\x1b[1;36m** 正在测试IPv6解锁情况 — IPQuality 风险与属性摘要 **\\x1b[0m',
+        '  \\x1b[1mASN / 归属地:\\x1b[0m                  \\x1b[34mAS16509 Amazon AWS\\x1b[0m  \\x1b[32m[SG] 新加坡 (Singapore)\\x1b[0m',
+        '  \\x1b[1m风险评级 (IPQS / Scamalytics):\\x1b[0m  \\x1b[1;32m低风险 (0/100)\\x1b[0m | \\x1b[33m中等警告 (35/100)\\x1b[0m | \\x1b[31m高危拦截 (92/100)\\x1b[0m',
+        '  \\x1b[1m常规与加粗对比校验:\\x1b[0m            \\x1b[32mNormal Green\\x1b[0m / \\x1b[1;32mBold Green\\x1b[0m  \\x1b[33mNormal Yellow\\x1b[0m / \\x1b[1;33mBold Yellow\\x1b[0m  \\x1b[31mNormal Red\\x1b[0m / \\x1b[1;31mBold Red\\x1b[0m  \\x1b[36mNormal Cyan\\x1b[0m / \\x1b[1;36mBold Cyan\\x1b[0m',
+        '',
+        'deploy@tokyo-production:~/app$ ',
+      ].join('\\r\\n');
+      window.runtime.EventsEmit('ssh:data', sid, btoa(unescape(encodeURIComponent(payload))));
+    })()`);
+    await until(
+      () =>
+        evaluate(
+          "(document.querySelector('.pane-xterm-wrap .xterm-rows')?.textContent || '').includes('Yes (Region: SG)') && (document.querySelector('.pane-xterm-wrap .xterm-rows')?.textContent || '').includes('正在测试IPv6解锁情况')",
+        ),
+      'RegionRestrictionCheck + IPQuality ANSI payload rendered',
+    );
+
+    const switchGlobalPaletteAndClose = async (label, expectedPalette, expectedTheme) => {
+      await click('#settingsBtn');
+      await until(() => evaluate("!!document.querySelector('#settingsDialog')"), `reopened settings for ${expectedPalette}`);
+      await evaluate(`document.querySelector('.settings-nav-btn:nth-child(1)')?.click()`);
+      await until(() => evaluate("document.querySelectorAll('#settingsDialog .theme-tile').length === 6"), `appearance palette grid for ${expectedPalette}`);
+      await selectGlobalPalette(label);
+      await until(
+        () =>
+          evaluate(
+            `document.documentElement.dataset.palette === ${JSON.stringify(expectedPalette)} && document.documentElement.dataset.theme === ${JSON.stringify(expectedTheme)}`,
+          ),
+        `switched global palette to ${expectedPalette}`,
+      );
+      await click('#settingsDialog button[aria-label="关闭设置"]');
+      await until(() => evaluate("!document.querySelector('#settingsDialog')"), `closed settings for ${expectedPalette}`);
+      await sleep(250);
+    };
+
+    // 37: Light Mode (shell-light / GitHub Light) crisp ANSI contrast
+    await switchGlobalPaletteAndClose('极简浅白', 'shell-light', 'light');
+    const lightAnsiAudit = await evaluate(`(() => {
+      const wrap = document.querySelector('.pane-xterm-wrap');
+      const greenSpan = document.querySelector('.pane-xterm-wrap .xterm-fg-2');
+      const split = document.querySelector('.sidebar-new-split');
+      return {
+        canvasBg: wrap ? getComputedStyle(wrap).backgroundColor : '',
+        greenColor: greenSpan ? getComputedStyle(greenSpan).color : '',
+        splitBg: split ? getComputedStyle(split).backgroundColor : '',
+      };
+    })()`);
+    assert.equal(lightAnsiAudit.canvasBg, 'rgb(255, 255, 255)', 'Expected GitHub Light terminal canvas #FFFFFF, got ' + JSON.stringify(lightAnsiAudit));
+    assert.equal(lightAnsiAudit.greenColor, 'rgb(17, 99, 41)', 'Expected high-contrast GitHub Light ANSI green #116329, got ' + JSON.stringify(lightAnsiAudit));
+    assert.equal(lightAnsiAudit.splitBg, 'rgb(9, 105, 218)', 'Expected GitHub Light accent #0969DA on .sidebar-new-split, got ' + JSON.stringify(lightAnsiAudit));
+    await shot('37-Terminal-Light-ANSI');
+
+    // 38: Warm Paper (warm-paper / Rosé Pine Dawn) terminal + pine-teal harmonized chrome
+    await switchGlobalPaletteAndClose('暖纸米白', 'warm-paper', 'light');
+    const warmTermAudit = await evaluate(`(() => {
+      const wrap = document.querySelector('.pane-xterm-wrap');
+      const sidebar = document.querySelector('.sidebar');
+      const split = document.querySelector('.sidebar-new-split');
+      return {
+        canvasBg: wrap ? getComputedStyle(wrap).backgroundColor : '',
+        sidebarBg: sidebar ? getComputedStyle(sidebar).backgroundColor : '',
+        splitBg: split ? getComputedStyle(split).backgroundColor : '',
+      };
+    })()`);
+    assert.equal(warmTermAudit.canvasBg, 'rgb(250, 244, 237)', 'Expected Rosé Pine Dawn terminal canvas #FAF4ED, got ' + JSON.stringify(warmTermAudit));
+    assert.equal(warmTermAudit.sidebarBg, 'rgb(242, 233, 225)', 'Expected Rosé Pine Dawn sidebar #F2E9E1, got ' + JSON.stringify(warmTermAudit));
+    assert.equal(warmTermAudit.splitBg, 'rgb(40, 105, 131)', 'Expected Rosé Pine Dawn pine-teal accent #286983 on .sidebar-new-split, got ' + JSON.stringify(warmTermAudit));
+    await shot('38-Palette-WarmPaper-Terminal');
+
+    // 39: Catppuccin Mocha (catppuccin-mocha) terminal + mauve harmonized chrome
+    await switchGlobalPaletteAndClose('摩卡暮紫', 'catppuccin-mocha', 'dark');
+    const mochaTermAudit = await evaluate(`(() => {
+      const wrap = document.querySelector('.pane-xterm-wrap');
+      const sidebar = document.querySelector('.sidebar');
+      const split = document.querySelector('.sidebar-new-split');
+      return {
+        canvasBg: wrap ? getComputedStyle(wrap).backgroundColor : '',
+        sidebarBg: sidebar ? getComputedStyle(sidebar).backgroundColor : '',
+        splitBg: split ? getComputedStyle(split).backgroundColor : '',
+      };
+    })()`);
+    assert.equal(mochaTermAudit.canvasBg, 'rgb(30, 30, 46)', 'Expected Catppuccin Mocha terminal canvas #1E1E2E, got ' + JSON.stringify(mochaTermAudit));
+    assert.equal(mochaTermAudit.sidebarBg, 'rgb(24, 24, 37)', 'Expected Catppuccin Mocha sidebar #181825, got ' + JSON.stringify(mochaTermAudit));
+    assert.equal(mochaTermAudit.splitBg, 'rgb(139, 108, 232)', 'Expected Catppuccin Mocha mauve-indigo accent #8B6CE8 on .sidebar-new-split, got ' + JSON.stringify(mochaTermAudit));
+    await shot('39-Palette-CatppuccinMocha-Terminal');
+
+    // Restore shell-dark cleanly before downstream dark-mode checks
+    await switchGlobalPaletteAndClose('曜石深灰', 'shell-dark', 'dark');
+
+    // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #161B22 canvas)
     await click('#sftpBtn');
     await until(() => evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'SFTP drawer in dark theme');
     await evaluate(`(() => {
@@ -1520,7 +1664,7 @@ async function verifyFrontendUI() {
       bg: getComputedStyle(document.querySelector('.remote-editor-cm-host .cm-editor')).backgroundColor,
     }))()`);
     assert.equal(cmDarkCheck.lang, 'Nginx', 'Expected Nginx auto-detection, got ' + JSON.stringify(cmDarkCheck));
-    assert.equal(cmDarkCheck.bg, 'rgb(27, 28, 32)', 'Expected Dark CodeMirror 6 editor canvas #1B1C20, got ' + cmDarkCheck.bg);
+    assert.equal(cmDarkCheck.bg, 'rgb(22, 27, 34)', 'Expected Dark CodeMirror 6 editor canvas #161B22, got ' + cmDarkCheck.bg);
     await shot('25-Remote-Editor-Dark');
     await click('.modal-sheet.editor button[aria-label="关闭"]');
     await until(() => evaluate("!document.querySelector('.modal-sheet.editor')"), 'closed dark editor');
@@ -1766,7 +1910,7 @@ async function verifyFrontendUI() {
 
     // Verify Dark Mode split New Host dropdown menu + HostModal solid OS icons + frosted Group ComboBox
     const darkNewHostBg = await evaluate("getComputedStyle(document.querySelector('.sidebar-new-split')).backgroundColor");
-    assert.equal(darkNewHostBg, 'rgb(10, 132, 255)', 'Expected crisp #0A84FF .sidebar-new-split in dark mode, got ' + darkNewHostBg);
+    assert.equal(darkNewHostBg, 'rgb(47, 129, 247)', 'Expected GitHub Dark accent #2F81F7 .sidebar-new-split in dark mode, got ' + darkNewHostBg);
     await click('#addHostMenuBtn');
     await until(() => evaluate("!!document.querySelector('#addHostMenu #importSshBtn') && !!document.querySelector('#addHostMenu #exportHostsBtn')"), 'dark add-host split menu');
     await sleep(160);
@@ -1794,7 +1938,7 @@ async function verifyFrontendUI() {
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 36 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 39 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

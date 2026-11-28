@@ -113,9 +113,42 @@ func TestTermWSServerAuthOriginAndBinaryFraming(t *testing.T) {
 		t.Fatalf("expected pong (0xA), got op=%x err=%v", pongOp, err)
 	}
 
-	// Verify Enqueue returns false deterministically once closed.
-	srv.CloseSession("test-sess")
+	// Natural exit must drain queued output before sending the close frame. Some
+	// payloads cross the batching boundary; others share a batch with the close.
+	final := [][]byte{
+		bytes.Repeat([]byte("w"), 64<<10),
+		bytes.Repeat([]byte("v"), 64<<10),
+		[]byte("last terminal line\r\n"),
+	}
+	for _, chunk := range final {
+		if !srv.SendOutput("test-sess", chunk) {
+			t.Fatal("terminal disconnected before its final output was queued")
+		}
+	}
+	finished := make(chan struct{})
+	go func() {
+		srv.FinishSession("test-sess")
+		close(finished)
+	}()
+	var received bytes.Buffer
+	for {
+		_, op, payload, err := readWSFrame(br, 1<<20)
+		if err != nil {
+			t.Fatalf("read final terminal output: %v", err)
+		}
+		if op == 0x8 {
+			break
+		}
+		if op != 0x2 {
+			t.Fatalf("unexpected opcode %x", op)
+		}
+		received.Write(payload)
+	}
+	if !bytes.Equal(received.Bytes(), bytes.Join(final, nil)) {
+		t.Fatalf("terminal output before close: got %d bytes", received.Len())
+	}
+	<-finished
 	if ok := srv.SendOutput("test-sess", []byte("after-close")); ok {
-		t.Fatal("expected SendOutput after CloseSession to return false")
+		t.Fatal("expected SendOutput after FinishSession to return false")
 	}
 }

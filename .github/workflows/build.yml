@@ -60,7 +60,7 @@ jobs:
         run: |
           npm ci
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --experimental-strip-types --test tests/sessionAttempt.test.mjs tests/paneLayout.test.mjs tests/hostDisplay.test.mjs tests/terminalHighlight.test.mjs tests/connectError.test.mjs tests/editorLang.test.mjs tests/sftpUtils.test.mjs
+          node --experimental-strip-types --test
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

@@ -130,6 +130,27 @@ func (s *termWSServer) CloseSession(sessionID string) {
 	}
 }
 
+// FinishSession flushes the final output of a naturally exited terminal before closing its socket.
+func (s *termWSServer) FinishSession(sessionID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	c := s.conns[sessionID]
+	s.mu.Unlock()
+	if c == nil {
+		return
+	}
+	timer := time.AfterFunc(time.Second, c.Close)
+	defer timer.Stop()
+	select {
+	case c.outCh <- nil:
+	case <-c.done:
+		return
+	}
+	<-c.done
+}
+
 func isAllowedWSOrigin(origin string) bool {
 	if origin == "" {
 		return true
@@ -248,51 +269,47 @@ func (c *termWSConn) Close() {
 	})
 }
 
-// writeLoop uses adaptive coalescing: the first chunk when idle is flushed in 0 ms
-// (instant keystroke echo), while burst floods batch up to 64 KiB within 3 ms.
+// writeLoop coalesces already queued output and flushes immediately.
 func (c *termWSConn) writeLoop() {
 	const maxBatch = 64 << 10
-	buf := make([]byte, 0, maxBatch)
-	var coalesceTimer *time.Timer
-	defer func() {
-		if coalesceTimer != nil {
-			coalesceTimer.Stop()
-		}
-	}()
+	var batch []byte
+	defer c.Close()
 	for {
+		var payload []byte
 		select {
 		case <-c.done:
 			return
-		case first := <-c.outCh:
-			buf = append(buf[:0], first...)
-			// Drain any already-queued chunks immediately without waiting.
-			for len(buf) < maxBatch {
-				select {
-				case more := <-c.outCh:
-					buf = append(buf, more...)
-				default:
-					goto flush
+		case payload = <-c.outCh:
+		}
+		if payload == nil {
+			_ = c.writeFrame(0x8, nil)
+			return
+		}
+		batch = batch[:0]
+		finished := false
+	drain:
+		for len(payload) < maxBatch {
+			select {
+			case more := <-c.outCh:
+				if more == nil {
+					finished = true
+					break drain
 				}
-			}
-		flush:
-			if err := c.writeFrame(0x2, buf); err != nil {
-				c.Close()
-				return
-			}
-			// If traffic is still arriving right after a large burst, coalesce briefly (3ms)
-			// so WebView2 xterm.js parses larger smooth frames instead of hundreds of tiny ones.
-			if len(buf) >= 2048 && len(c.outCh) > 0 {
-				if coalesceTimer == nil {
-					coalesceTimer = time.NewTimer(3 * time.Millisecond)
-				} else {
-					coalesceTimer.Reset(3 * time.Millisecond)
+				if len(batch) == 0 {
+					batch = append(batch, payload...)
 				}
-				select {
-				case <-c.done:
-					return
-				case <-coalesceTimer.C:
-				}
+				batch = append(batch, more...)
+				payload = batch
+			default:
+				break drain
 			}
+		}
+		if err := c.writeFrame(0x2, payload); err != nil {
+			return
+		}
+		if finished {
+			_ = c.writeFrame(0x8, nil)
+			return
 		}
 	}
 }

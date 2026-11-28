@@ -909,11 +909,6 @@ export const App: React.FC = () => {
         terminalBus.writeBytes(id, decodeBase64(b64));
       }),
       onDesktopEvent<[string, string]>('ssh:end', (id, message) => {
-        const ws = wsMapRef.current.get(id);
-        if (ws) {
-          ws.close();
-          wsMapRef.current.delete(id);
-        }
         setVerifyQueue((q) => q.filter((r) => r.id !== id));
         setChallengeQueue((q) => q.filter((r) => r.id !== id));
         const curSnap = sessionsRef.current[id];
@@ -948,7 +943,13 @@ export const App: React.FC = () => {
             },
           };
         });
-        terminalBus.writeln(id, `\r\n\x1b[90m[${cleanMsg}]\x1b[0m`);
+        const writeEnd = () => terminalBus.writeln(id, `\r\n\x1b[90m[${cleanMsg}]\x1b[0m`);
+        const ws = wsMapRef.current.get(id);
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING)) {
+          ws.addEventListener('close', writeEnd, { once: true });
+        } else {
+          writeEnd();
+        }
         if (shouldAutoReconnect) {
           const existing = reconnectTimersRef.current.get(id);
           if (existing !== undefined) window.clearTimeout(existing);

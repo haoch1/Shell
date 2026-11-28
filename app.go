@@ -948,9 +948,7 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 				message = err.Error()
 			}
 			remove()
-			if a.ws != nil {
-				a.ws.CloseSession(id)
-			}
+			a.ws.FinishSession(id)
 			if a.ctx != nil {
 				runtime.EventsEmit(a.ctx, "ssh:end", id, message)
 			}
@@ -1118,9 +1116,7 @@ func (a *App) StartLocalTerminal(id, shellID, cwd string, cols, rows int) (local
 				message = exitErr.Error()
 			}
 			remove()
-			if a.ws != nil {
-				a.ws.CloseSession(id)
-			}
+			a.ws.FinishSession(id)
 			if a.ctx != nil {
 				runtime.EventsEmit(a.ctx, "ssh:end", id, message)
 			}

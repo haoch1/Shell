@@ -144,6 +144,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [keys, setKeys] = useState<LocalKeyInfo[]>([]);
   const [appInfo, setAppInfo] = useState<AppInfoView | null>(null);
   const [sysProxy, setSysProxy] = useState<SystemProxyInfo | null>(null);
+  const [lastUpdateProgress, setLastUpdateProgress] = useState<UpdateProgress | null>(null);
+
+  useEffect(() => {
+    if (updateProgress && updateProgress.phase !== 'error') {
+      setLastUpdateProgress(updateProgress);
+    }
+  }, [updateProgress]);
+
+  const showUpdateProgress = Boolean(updateProgress && updateProgress.phase !== 'error');
+  const displayUpdateProgress = showUpdateProgress ? updateProgress : lastUpdateProgress;
 
   // Key generation state
   const [genOpen, setGenOpen] = useState(false);
@@ -1592,68 +1602,71 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="pref-section">
                   <div className="pref-section-title">软件更新</div>
                   <div className="pref-group">
-                    <div className="pref-row">
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="pref-row-label" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                          <span>版本更新</span>
-                          {updateInfo?.hasUpdate ? (
-                            <span className="pill-badge accent mono">发现新版本 v{updateInfo.latestVersion}</span>
-                          ) : updateInfo ? (
-                            <span className="pill-badge safe">已是最新</span>
-                          ) : null}
+                    <div className="pref-row pref-row-stack">
+                      <div className="pref-row-main">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="pref-row-label" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                            <span>版本更新</span>
+                            {updateInfo?.hasUpdate ? (
+                              <span className="pill-badge accent mono update-badge-in">发现新版本 v{updateInfo.latestVersion}</span>
+                            ) : updateInfo ? (
+                              <span className="pill-badge safe update-badge-in">已是最新</span>
+                            ) : null}
+                          </div>
                         </div>
-                        {updateProgress && <div className="pref-row-sub">{updateProgress.message}</div>}
-                      </div>
-                      <div className="pref-row-actions">
-                        {updateInfo?.hasUpdate && onApplyUpdate && (
+                        <div className="pref-row-actions">
+                          {updateInfo?.hasUpdate && onApplyUpdate && (
+                            <button
+                              id="applyUpdateBtn"
+                              type="button"
+                              className="btn btn-primary btn-sm btn-pref-action update-badge-in"
+                              disabled={updatingApp}
+                              onClick={() => void onApplyUpdate()}
+                            >
+                              {updatingApp && <Loader2 size={12} className="spin" />}
+                              {updatingApp ? '更新中…' : '立即更新'}
+                            </button>
+                          )}
                           <button
-                            id="applyUpdateBtn"
+                            id="checkUpdateBtn"
                             type="button"
-                            className="btn btn-primary btn-sm btn-pref-action"
-                            disabled={updatingApp}
-                            onClick={() => void onApplyUpdate()}
+                            className="btn btn-sm btn-pref-action"
+                            disabled={checkingUpdate || updatingApp}
+                            onClick={() => void onCheckUpdate?.()}
                           >
-                            {updatingApp && <Loader2 size={12} className="spin" />}
-                            {updatingApp ? '更新中…' : '立即更新'}
+                            {checkingUpdate && <Loader2 size={12} className="spin" />}
+                            检查更新
                           </button>
-                        )}
-                        <button
-                          id="checkUpdateBtn"
-                          type="button"
-                          className="btn btn-sm btn-pref-action"
-                          disabled={checkingUpdate || updatingApp}
-                          onClick={() => void onCheckUpdate?.()}
-                        >
-                          {checkingUpdate && <Loader2 size={12} className="spin" />}
-                          检查更新
-                        </button>
+                        </div>
+                      </div>
+
+                      <div className={`update-reveal ${showUpdateProgress ? 'is-open' : ''}`} aria-hidden={!showUpdateProgress}>
+                        <div className="update-reveal-inner">
+                          <div className="update-progress-panel">
+                            <div className="update-progress-track">
+                              <div
+                                className="update-progress-fill"
+                                style={{ width: `${Math.max(4, Math.min(100, displayUpdateProgress?.percent || 8))}%` }}
+                              />
+                            </div>
+                            <div className="update-progress-meta mono">
+                              <span>{displayUpdateProgress?.message || ''}</span>
+                              <span>
+                                {displayUpdateProgress && displayUpdateProgress.total > 0
+                                  ? `${(displayUpdateProgress.downloaded / 1048576).toFixed(1)} / ${(displayUpdateProgress.total / 1048576).toFixed(1)} MB (${displayUpdateProgress.percent}%)`
+                                  : `${displayUpdateProgress?.percent ?? 0}%`}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className={`update-reveal ${updateError ? 'is-open' : ''}`} aria-hidden={!updateError}>
+                        <div className="update-reveal-inner">
+                          <p className="error-text" style={{ margin: '8px 0 0' }}>{updateError}</p>
+                        </div>
                       </div>
                     </div>
-
-                    {updateProgress && updateProgress.phase !== 'error' && (
-                      <div style={{ padding: '0 14px 10px' }}>
-                        <div className="update-progress-track">
-                          <div
-                            className="update-progress-fill"
-                            style={{ width: `${Math.max(4, Math.min(100, updateProgress.percent || 8))}%` }}
-                          />
-                        </div>
-                        <div className="mono" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--ink-tertiary)', marginTop: 4 }}>
-                          <span>{updateProgress.message}</span>
-                          <span>
-                            {updateProgress.total > 0
-                              ? `${(updateProgress.downloaded / 1048576).toFixed(1)} / ${(updateProgress.total / 1048576).toFixed(1)} MB (${updateProgress.percent}%)`
-                              : `${updateProgress.percent}%`}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-
-                    {updateError && (
-                      <div style={{ padding: '0 14px 10px' }}>
-                        <p className="error-text">{updateError}</p>
-                      </div>
-                    )}
 
                     <div className="pref-row">
                       <span className="pref-row-label">启动时自动检查更新</span>

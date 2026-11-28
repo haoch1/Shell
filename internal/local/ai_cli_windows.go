@@ -165,6 +165,30 @@ func hasCLIFlag(args []string, names ...string) bool {
 	return false
 }
 
+func hasCodexConfigOverride(args []string, key string) bool {
+	matchesKey := func(val string) bool {
+		k, _, ok := strings.Cut(strings.TrimSpace(val), "=")
+		return ok && strings.EqualFold(strings.TrimSpace(k), key)
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if (a == "-c" || a == "--config") && i+1 < len(args) {
+			if matchesKey(args[i+1]) {
+				return true
+			}
+			i++
+			continue
+		}
+		if after, ok := strings.CutPrefix(a, "-c="); ok && matchesKey(after) {
+			return true
+		}
+		if after, ok := strings.CutPrefix(a, "--config="); ok && matchesKey(after) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildCLICommandArgs(s AISettings, fullPrompt string) (bin string, args []string, stdinPrompt string) {
 	bin = strings.TrimSpace(s.CLICommand)
 	extra := splitCLIArgs(strings.TrimSpace(s.CLIArgs))
@@ -188,6 +212,9 @@ func buildCLICommandArgs(s AISettings, fullPrompt string) (bin string, args []st
 		if !hasCLIFlag(extra, "--output-format") {
 			args = append(args, "--output-format", "text")
 		}
+		if !hasCLIFlag(extra, "--no-session-persistence") {
+			args = append(args, "--no-session-persistence")
+		}
 		if model != "" && !hasCLIFlag(extra, "--model") {
 			args = append(args, "--model", model)
 		}
@@ -203,6 +230,12 @@ func buildCLICommandArgs(s AISettings, fullPrompt string) (bin string, args []st
 		}
 		if !hasCLIFlag(extra, "--ephemeral") {
 			args = append(args, "--ephemeral")
+		}
+		if !hasCodexConfigOverride(extra, "history.persistence") {
+			args = append(args, "-c", `history.persistence="none"`)
+		}
+		if !hasCodexConfigOverride(extra, "notify") {
+			args = append(args, "-c", "notify=[]")
 		}
 		if !hasCLIFlag(extra, "--color") {
 			args = append(args, "--color", "never")
@@ -380,49 +413,56 @@ func truncateUTF8(s string, maxBytes int) string {
 	return s[:n]
 }
 
-func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt string, onDelta func(string)) (string, error) {
-	if err := validateCLISettings(s); err != nil {
-		return "", err
-	}
-	bin := strings.TrimSpace(s.CLICommand)
-	resolved, err := resolveCLIBinary(bin)
-	if err != nil {
-		return "", fmt.Errorf("未在本机 PATH 中找到命令「%s」，请先安装对应 CLI 或填写可执行文件完整路径", bin)
-	}
-
-	fullPrompt := userPrompt
-	if strings.TrimSpace(systemPrompt) != "" {
-		fullPrompt = strings.TrimSpace(systemPrompt) + "\n\n" + userPrompt
-	}
-	_, args, stdinText := buildCLICommandArgs(s, fullPrompt)
-
-	var codexOutFile string
-	if cliBaseName(bin) == "codex" && stdinText != "" && len(args) >= 2 && args[0] == "exec" && args[len(args)-1] == "-" && !hasCLIFlag(args, "-o", "--output-last-message") {
-		if tmpFile, tmpErr := os.CreateTemp("", "shell-codex-out-*.txt"); tmpErr == nil {
-			codexOutFile = tmpFile.Name()
-			_ = tmpFile.Close()
-			defer os.Remove(codexOutFile)
-			withOut := make([]string, 0, len(args)+2)
-			withOut = append(withOut, args[:len(args)-1]...)
-			withOut = append(withOut, "-o", codexOutFile, "-")
-			args = withOut
+func withEnvOverride(env []string, key, value string) []string {
+	prefix := strings.ToUpper(key) + "="
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if len(kv) >= len(prefix) && strings.EqualFold(kv[:len(prefix)], prefix) {
+			continue
 		}
+		out = append(out, kv)
 	}
+	return append(out, key+"="+value)
+}
 
+func stripCLIFlag(args []string, flag string) ([]string, bool) {
+	out := make([]string, 0, len(args))
+	removed := false
+	for _, a := range args {
+		if a == flag {
+			removed = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, removed
+}
+
+func isUnsupportedNoSessionPersistenceErr(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "no-session-persistence") ||
+		strings.Contains(lower, "unknown option") ||
+		strings.Contains(lower, "unrecognized")
+}
+
+func execLocalAICLIOnce(ctx context.Context, resolved, bin, base string, args []string, stdinText, codexOutFile string, onDelta func(string)) (string, string, error) {
 	cmd, job := prepareCLICommand(ctx, resolved, args...)
 	defer job.close()
+	if base == "claude" {
+		cmd.Env = withEnvOverride(os.Environ(), "CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1")
+	}
 	if stdinText != "" {
 		cmd.Stdin = strings.NewReader(stdinText + "\n")
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	stderr := cappedBuffer{limit: 64 << 10}
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("无法启动本地 CLI「%s」：%v", bin, err)
+		return "", "", fmt.Errorf("无法启动本地 CLI「%s」：%v", bin, err)
 	}
 	job.assign(cmd.Process.Pid)
 	if ctx.Err() != nil {
@@ -472,15 +512,16 @@ func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt s
 				break
 			}
 			_ = cmd.Wait()
-			return "", networkError(ctx, rErr)
+			return "", stderr.buf.String(), networkError(ctx, rErr)
 		}
 	}
 
+	rawErr := ansiEscapeRe.ReplaceAllString(stderr.buf.String(), "")
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() != nil {
-			return "", networkError(ctx, ctx.Err())
+			return "", rawErr, networkError(ctx, ctx.Err())
 		}
-		errMsg := strings.TrimSpace(ansiEscapeRe.ReplaceAllString(stderr.buf.String(), ""))
+		errMsg := strings.TrimSpace(rawErr)
 		if errMsg == "" {
 			errMsg = strings.TrimSpace(out.String())
 		}
@@ -488,9 +529,9 @@ func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt s
 			errMsg = truncateUTF8(errMsg, 320) + "…"
 		}
 		if errMsg != "" {
-			return "", fmt.Errorf("本地 CLI「%s」执行失败：%s", bin, errMsg)
+			return "", rawErr, fmt.Errorf("本地 CLI「%s」执行失败：%s", bin, errMsg)
 		}
-		return "", fmt.Errorf("本地 CLI「%s」退出异常：%v", bin, err)
+		return "", rawErr, fmt.Errorf("本地 CLI「%s」退出异常：%v", bin, err)
 	}
 
 	result := strings.TrimSpace(out.String())
@@ -509,9 +550,153 @@ func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt s
 		}
 	}
 	if result == "" {
-		return "", fmt.Errorf("本地 CLI「%s」未返回输出，请检查登录状态或命令行参数", bin)
+		return "", rawErr, fmt.Errorf("本地 CLI「%s」未返回输出，请检查登录状态或命令行参数", bin)
 	}
-	return result, nil
+	return result, rawErr, nil
+}
+
+func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt string, onDelta func(string)) (string, error) {
+	if err := validateCLISettings(s); err != nil {
+		return "", err
+	}
+	bin := strings.TrimSpace(s.CLICommand)
+	resolved, err := resolveCLIBinary(bin)
+	if err != nil {
+		return "", fmt.Errorf("未在本机 PATH 中找到命令「%s」，请先安装对应 CLI 或填写可执行文件完整路径", bin)
+	}
+
+	fullPrompt := userPrompt
+	if strings.TrimSpace(systemPrompt) != "" {
+		fullPrompt = strings.TrimSpace(systemPrompt) + "\n\n" + userPrompt
+	}
+	_, args, stdinText := buildCLICommandArgs(s, fullPrompt)
+	base := cliBaseName(bin)
+
+	var codexOutFile string
+	if base == "codex" && stdinText != "" && len(args) >= 2 && args[0] == "exec" && args[len(args)-1] == "-" && !hasCLIFlag(args, "-o", "--output-last-message") {
+		if tmpFile, tmpErr := os.CreateTemp("", "shell-codex-out-*.txt"); tmpErr == nil {
+			codexOutFile = tmpFile.Name()
+			_ = tmpFile.Close()
+			defer os.Remove(codexOutFile)
+			withOut := make([]string, 0, len(args)+2)
+			withOut = append(withOut, args[:len(args)-1]...)
+			withOut = append(withOut, "-o", codexOutFile, "-")
+			args = withOut
+		}
+	}
+
+	result, rawStderr, runErr := execLocalAICLIOnce(ctx, resolved, bin, base, args, stdinText, codexOutFile, onDelta)
+	if runErr != nil && ctx.Err() == nil && base == "claude" && isUnsupportedNoSessionPersistenceErr(rawStderr) {
+		if fallbackArgs, removed := stripCLIFlag(args, "--no-session-persistence"); removed {
+			result, _, runErr = execLocalAICLIOnce(ctx, resolved, bin, base, fallbackArgs, stdinText, codexOutFile, onDelta)
+		}
+	}
+	return result, runErr
+}
+
+func buildLocalShellExecArgs(shellCmd, shellID string, shellArgs []string, command string) (exe string, args []string, isCmd bool) {
+	exe = strings.TrimSpace(shellCmd)
+	idLower := strings.ToLower(strings.TrimSpace(shellID))
+	base := cliBaseName(exe)
+
+	kind := idLower
+	switch {
+	case kind == "pwsh" || kind == "powershell" || base == "pwsh" || base == "powershell":
+		if exe == "" {
+			if kind == "pwsh" {
+				exe = "pwsh.exe"
+			} else {
+				exe = "powershell.exe"
+			}
+		}
+		psCmd := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; " + command
+		return exe, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", psCmd}, false
+	case kind == "cmd" || base == "cmd":
+		if exe == "" {
+			exe = "cmd.exe"
+		}
+		return exe, []string{"/d", "/s", "/c", command}, true
+	case kind == "git-bash" || kind == "bash" || base == "bash" || base == "sh":
+		if exe == "" {
+			exe = "bash.exe"
+		}
+		return exe, []string{"-lc", command}, false
+	case strings.HasPrefix(kind, "wsl") || base == "wsl":
+		if exe == "" {
+			exe = "wsl.exe"
+		}
+		var out []string
+		for i := 0; i < len(shellArgs); i++ {
+			if shellArgs[i] == "-d" && i+1 < len(shellArgs) {
+				out = append(out, "-d", shellArgs[i+1])
+				break
+			}
+		}
+		out = append(out, "--", "sh", "-lc", command)
+		return exe, out, false
+	default:
+		if exe == "" {
+			exe = "powershell.exe"
+			psCmd := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; " + command
+			return exe, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", psCmd}, false
+		}
+		return exe, []string{"-c", command}, false
+	}
+}
+
+// RunLocalShellCommand executes a single non-interactive command in the specified local Windows shell
+// without flashing a console window and terminates the entire process tree cleanly on cancellation.
+func RunLocalShellCommand(ctx context.Context, shellCmd string, shellID string, shellArgs []string, cwd string, command string) (stdout, stderr string, exitCode int, durationMs int64, err error) {
+	exe, args, isCmd := buildLocalShellExecArgs(shellCmd, shellID, shellArgs, command)
+	resolved := exe
+	if !filepath.IsAbs(resolved) && !strings.ContainsAny(resolved, `\/`) {
+		if found, lErr := exec.LookPath(resolved); lErr == nil && found != "" {
+			resolved = found
+		}
+	}
+
+	cmd, job := prepareCLICommand(ctx, resolved, args...)
+	defer job.close()
+	if isCmd {
+		// Preserve inner quotes and compound operators (`&&`, `|`) verbatim for cmd.exe /d /s /c "...".
+		singleLine := strings.ReplaceAll(strings.ReplaceAll(command, "\r\n", " & "), "\n", " & ")
+		cmd.SysProcAttr.CmdLine = windows.ComposeCommandLine([]string{resolved, "/d", "/s", "/c"}) + ` "` + singleLine + `"`
+	}
+	if d := strings.TrimSpace(cwd); d != "" {
+		if st, sErr := os.Stat(d); sErr == nil && st.IsDir() {
+			cmd.Dir = d
+		}
+	}
+	cmd.Stdin = bytes.NewReader(nil)
+	const limit = 256 << 10
+	outBuf := cappedBuffer{limit: limit}
+	errBuf := cappedBuffer{limit: limit}
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	start := time.Now()
+	if startErr := cmd.Start(); startErr != nil {
+		return "", "", -1, time.Since(start).Milliseconds(), fmt.Errorf("无法启动本机 Shell「%s」：%w", exe, startErr)
+	}
+	job.assign(cmd.Process.Pid)
+	if ctx.Err() != nil {
+		job.terminate()
+	}
+	waitErr := cmd.Wait()
+	durationMs = time.Since(start).Milliseconds()
+	stdout = ansiEscapeRe.ReplaceAllString(outBuf.buf.String(), "")
+	stderr = ansiEscapeRe.ReplaceAllString(errBuf.buf.String(), "")
+	if waitErr != nil {
+		if ctx.Err() != nil {
+			return stdout, stderr, -1, durationMs, ctx.Err()
+		}
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			return stdout, stderr, exitErr.ExitCode(), durationMs, nil
+		}
+		return stdout, stderr, -1, durationMs, waitErr
+	}
+	return stdout, stderr, 0, durationMs, nil
 }
 
 func cliBaseName(cmd string) string {

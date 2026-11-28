@@ -27,11 +27,13 @@ import (
 )
 
 type liveSession struct {
-	cancel   context.CancelFunc
-	session  *remote.Session
-	localPTY *localpty.Session
-	isLocal  bool
-	profile  local.Profile
+	cancel     context.CancelFunc
+	session    *remote.Session
+	localPTY   *localpty.Session
+	isLocal    bool
+	localShell localpty.ShellProfile
+	localCwd   string
+	profile    local.Profile
 }
 
 type App struct {
@@ -1064,8 +1066,10 @@ func (a *App) StartLocalTerminal(id, shellID, cwd string, cols, rows int) (local
 
 	ctx, cancel := context.WithCancel(a.baseContext())
 	entry := &liveSession{
-		cancel:  cancel,
-		isLocal: true,
+		cancel:     cancel,
+		isLocal:    true,
+		localShell: shell,
+		localCwd:   strings.TrimSpace(cwd),
 		profile: local.Profile{
 			Name: shell.Name,
 			Host: "local",

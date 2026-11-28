@@ -367,6 +367,11 @@ export interface AgentApprovalRequest {
   canRememberSession: boolean;
 }
 
+export interface AgentTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface AgentStepEvent {
   step: number;
   kind: 'thought' | 'tool_call' | 'tool_result' | 'final' | 'error';

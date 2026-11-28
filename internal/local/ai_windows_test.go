@@ -156,16 +156,16 @@ func TestLocalAICLIExecutionAndPersistence(t *testing.T) {
 	isolated(t)
 
 	// Verify preset arg builders for claude, codex, agy, gemini, extra flag dedup, and custom {prompt}.
-	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "claude", CLIModel: "sonnet"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--output-format text --model sonnet -p" {
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "claude", CLIModel: "sonnet"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--output-format text --no-session-persistence --model sonnet -p" {
 		t.Fatalf("unexpected claude args=%v stdin=%q", args, stdin)
 	}
-	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "claude", CLIModel: "sonnet", CLIArgs: "--output-format json --max-turns 2"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--model sonnet --output-format json --max-turns 2 -p" {
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "claude", CLIModel: "sonnet", CLIArgs: "--output-format json --no-session-persistence --max-turns 2"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--model sonnet --output-format json --no-session-persistence --max-turns 2 -p" {
 		t.Fatalf("unexpected claude custom args=%v stdin=%q", args, stdin)
 	}
-	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "exec --skip-git-repo-check --ephemeral --color never -s read-only -m o3 -" {
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3"}, "hello"); stdin != "hello" || strings.Join(args, " ") != `exec --skip-git-repo-check --ephemeral -c history.persistence="none" -c notify=[] --color never -s read-only -m o3 -` {
 		t.Fatalf("unexpected codex args=%v stdin=%q", args, stdin)
 	}
-	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3", CLIArgs: "-s workspace-write --color always"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "exec --skip-git-repo-check --ephemeral -m o3 -s workspace-write --color always -" {
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3", CLIArgs: `-s workspace-write --color always -c 'history.persistence="save-all"' --config='notify=["bell"]'`}, "hello"); stdin != "hello" || strings.Join(args, " ") != `exec --skip-git-repo-check --ephemeral -m o3 -s workspace-write --color always -c history.persistence="save-all" --config=notify=["bell"] -` {
 		t.Fatalf("unexpected codex custom args=%v stdin=%q", args, stdin)
 	}
 	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "agy", CLIModel: "gemini-2.5-pro"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--output-format text --disable-slash-commands --model gemini-2.5-pro" {
@@ -1117,6 +1117,7 @@ func TestAnthropicAgentLoopNativeToolUse(t *testing.T) {
 		context.Background(),
 		"检查磁盘状态",
 		"prod-web (root@10.0.0.1:22)",
+		nil,
 		[]ToolDefinition{{
 			Name:        "shell_exec",
 			Description: "Execute shell command",
@@ -1244,6 +1245,7 @@ func TestOpenAIReasoningContentBlocksErrorsAndAgentLoop(t *testing.T) {
 		context.Background(),
 		"看下负载",
 		"node-1",
+		nil,
 		[]ToolDefinition{{Name: "shell_exec", Description: "run", Parameters: map[string]any{"type": "object"}}},
 		func(_ context.Context, _ string, _ map[string]any) (string, string, string, int, error) {
 			return "load average: 0.15", "safe", "allow", 0, nil
@@ -1259,7 +1261,7 @@ func TestOpenAIReasoningContentBlocksErrorsAndAgentLoop(t *testing.T) {
 
 	// 6. OpenAI Agent HTTP 400 surfaces upstream detail
 	mode = "agent-400"
-	if _, err := RunAgentLoop(context.Background(), "test", "", nil, nil, nil); err == nil || !strings.Contains(err.Error(), "Tools are not supported by this model") {
+	if _, err := RunAgentLoop(context.Background(), "test", "", nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "Tools are not supported by this model") {
 		t.Fatalf("expected agent HTTP 400 detail, got: %v", err)
 	}
 
@@ -1288,6 +1290,7 @@ func TestOpenAIReasoningContentBlocksErrorsAndAgentLoop(t *testing.T) {
 		context.Background(),
 		"检查 22 端口",
 		"prod-1",
+		nil,
 		[]ToolDefinition{{Name: "shell_exec", Description: "run", Parameters: map[string]any{"type": "object"}}},
 		func(_ context.Context, toolName string, args map[string]any) (string, string, string, int, error) {
 			if toolName != "shell_exec" || args["command"] != "ss -tlnp" {
@@ -1299,5 +1302,156 @@ func TestOpenAIReasoningContentBlocksErrorsAndAgentLoop(t *testing.T) {
 	)
 	if err != nil || !strings.Contains(cliSummary, "端口 22 正常监听") {
 		t.Fatalf("CLI RunAgentLoop failed: summary=%q err=%v", cliSummary, err)
+	}
+}
+
+func TestLocalAICLIZeroHistoryFlagsEnvAndLegacyFallback(t *testing.T) {
+	isolated(t)
+
+	// 1. Verify codex zero-history config override detection & deduplication.
+	if !hasCodexConfigOverride([]string{"-c", `history.persistence="none"`}, "history.persistence") {
+		t.Fatal("expected -c history.persistence=... to match")
+	}
+	if !hasCodexConfigOverride([]string{`--config=notify=["bell"]`}, "notify") {
+		t.Fatal("expected --config=notify=... to match")
+	}
+	if hasCodexConfigOverride([]string{"-c", `model="o3"`}, "notify") {
+		t.Fatal("did not expect unrelated -c key to match notify")
+	}
+	_, codexArgs, _ := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex"}, "hi")
+	if !slices.Contains(codexArgs, "--ephemeral") || !slices.Contains(codexArgs, `history.persistence="none"`) || !slices.Contains(codexArgs, "notify=[]") {
+		t.Fatalf("codex missing zero-history args: %v", codexArgs)
+	}
+
+	// 2. Verify claude injects --no-session-persistence, sets CLAUDE_CODE_SKIP_PROMPT_HISTORY=1,
+	// and automatically retries once without --no-session-persistence on legacy CLI error.
+	shimDir := t.TempDir()
+	claudeShim := filepath.Join(shimDir, "claude.cmd")
+	claudeBody := strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"if not \"%CLAUDE_CODE_SKIP_PROMPT_HISTORY%\"==\"1\" (",
+		"  echo missing skip env 1>&2",
+		"  exit /b 2",
+		")",
+		"echo %* | findstr /C:\"no-session-persistence\" >nul",
+		"if %errorlevel%==0 (",
+		"  echo error: unknown option '--no-session-persistence' 1>&2",
+		"  exit /b 1",
+		")",
+		"echo LEGACY_CLAUDE_OK",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+	if err := os.WriteFile(claudeShim, []byte(claudeBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := runLocalAICLI(context.Background(), AISettings{Mode: "cli", CLICommand: claudeShim}, "", "ping", nil)
+	if err != nil || got != "LEGACY_CLAUDE_OK" {
+		t.Fatalf("expected legacy claude fallback with skip-history env to succeed, got=%q err=%v", got, err)
+	}
+}
+
+func TestRunLocalShellCommandArgsAndExecution(t *testing.T) {
+	// Verify per-shell argument builders.
+	_, pwshArgs, isCmd := buildLocalShellExecArgs("pwsh.exe", "pwsh", []string{"-NoLogo"}, "Get-Date")
+	if isCmd || len(pwshArgs) != 5 || pwshArgs[0] != "-NoLogo" || pwshArgs[3] != "-Command" || !strings.Contains(pwshArgs[4], "UTF8") || !strings.Contains(pwshArgs[4], "Get-Date") {
+		t.Fatalf("unexpected pwsh exec args: %v isCmd=%v", pwshArgs, isCmd)
+	}
+	_, cmdArgs, isCmd := buildLocalShellExecArgs("cmd.exe", "cmd", nil, "echo hi")
+	if !isCmd || !slices.Equal(cmdArgs, []string{"/d", "/s", "/c", "echo hi"}) {
+		t.Fatalf("unexpected cmd exec args: %v isCmd=%v", cmdArgs, isCmd)
+	}
+	_, bashArgs, isCmd := buildLocalShellExecArgs("bash.exe", "git-bash", []string{"--login", "-i"}, "uname -a")
+	if isCmd || !slices.Equal(bashArgs, []string{"-lc", "uname -a"}) {
+		t.Fatalf("unexpected bash exec args: %v", bashArgs)
+	}
+	_, wslArgs, isCmd := buildLocalShellExecArgs("wsl.exe", "wsl:Ubuntu", []string{"-d", "Ubuntu", "--cd", "~"}, "ls -la")
+	if isCmd || !slices.Equal(wslArgs, []string{"-d", "Ubuntu", "--", "sh", "-lc", "ls -la"}) {
+		t.Fatalf("unexpected wsl exec args: %v", wslArgs)
+	}
+
+	// Execute real hidden cmd.exe command including quoted args & exit code propagation.
+	stdout, stderr, code, _, err := RunLocalShellCommand(context.Background(), "cmd.exe", "cmd", nil, t.TempDir(), `echo "HELLO_LOCAL_SHELL" && echo ERR_LINE 1>&2`)
+	if err != nil || code != 0 || !strings.Contains(stdout, "HELLO_LOCAL_SHELL") || !strings.Contains(stderr, "ERR_LINE") {
+		t.Fatalf("RunLocalShellCommand failed: stdout=%q stderr=%q code=%d err=%v", stdout, stderr, code, err)
+	}
+	_, _, code, _, err = RunLocalShellCommand(context.Background(), "cmd.exe", "cmd", nil, "", "exit /b 7")
+	if err != nil || code != 7 {
+		t.Fatalf("expected non-zero exit code 7 without transport error, got code=%d err=%v", code, err)
+	}
+}
+
+func TestRunAgentLoopMultiTurnHistoryProtocols(t *testing.T) {
+	isolated(t)
+
+	// 1. Anthropic alternation sanitization (leading assistant + consecutive user turns).
+	var gotAnthropicRoles []string
+	var gotFirstContent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode failed: %v", err)
+			http.Error(w, "bad", http.StatusBadRequest)
+			return
+		}
+		for _, m := range req.Messages {
+			gotAnthropicRoles = append(gotAnthropicRoles, m.Role)
+		}
+		if len(req.Messages) > 0 {
+			gotFirstContent = req.Messages[0].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg_hist","type":"message","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"好的，继续排查。"}]}`)
+	}))
+	defer srv.Close()
+	redirectAIClientToServer(t, srv)
+
+	if err := SaveAI(AISettings{Endpoint: "https://api.anthropic.com/v1", Model: "claude-sonnet-5-5", APIKey: "sk-ant-hist"}); err != nil {
+		t.Fatal(err)
+	}
+	history := []AgentTurn{
+		{Role: "assistant", Content: "孤立的开头助手消息应被跳过"},
+		{Role: "user", Content: "第一轮提问"},
+		{Role: "user", Content: "连续追问"},
+		{Role: "assistant", Content: "第一轮答复"},
+	}
+	res, err := RunAgentLoop(context.Background(), "第二轮任务", "node-1", history, nil, nil, nil)
+	if err != nil || !strings.Contains(res, "继续排查") {
+		t.Fatalf("Anthropic multi-turn failed: res=%q err=%v", res, err)
+	}
+	if !slices.Equal(gotAnthropicRoles, []string{"user", "assistant", "user"}) {
+		t.Fatalf("expected strictly alternating roles [user assistant user], got %v", gotAnthropicRoles)
+	}
+	if !strings.Contains(gotFirstContent, "第一轮提问") || !strings.Contains(gotFirstContent, "连续追问") {
+		t.Fatalf("expected merged consecutive user turns, got %q", gotFirstContent)
+	}
+
+	// 2. CLI mode includes trimmed history context in stdin prompt.
+	shimDir := t.TempDir()
+	stdinDump := filepath.Join(shimDir, "stdin.txt")
+	cliHistShim := filepath.Join(shimDir, "cli-hist.cmd")
+	cliHistBody := "@echo off\r\nfindstr \"^\" >\"" + stdinDump + "\"\r\necho {\"final\":\"CLI 多轮完成\"}\r\n"
+	if err := os.WriteFile(cliHistShim, []byte(cliHistBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAI(AISettings{Mode: "cli", CLICommand: cliHistShim}); err != nil {
+		t.Fatal(err)
+	}
+	cliRes, err := RunAgentLoop(context.Background(), "继续查看日志", "prod-2", []AgentTurn{
+		{Role: "user", Content: "查下 nginx 状态"},
+		{Role: "assistant", Content: "nginx 正在运行"},
+	}, nil, nil, nil)
+	if err != nil || !strings.Contains(cliRes, "CLI 多轮完成") {
+		t.Fatalf("CLI multi-turn failed: res=%q err=%v", cliRes, err)
+	}
+	dumped, err := os.ReadFile(stdinDump)
+	if err != nil || !strings.Contains(string(dumped), "近期对话上下文") || !strings.Contains(string(dumped), "查下 nginx 状态") {
+		t.Fatalf("expected CLI prompt to contain recent history context, got=%q err=%v", string(dumped), err)
 	}
 }

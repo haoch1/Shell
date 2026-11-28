@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -37,9 +39,12 @@ const (
 	maxPTYRows     = 200
 	defaultPTYRows = 30
 
-	readBufSize      = 32 * 1024
-	readerDrainLimit = 2 * time.Second
+	readBufSize          = 32 * 1024
+	localRingBufferLimit = 32 * 1024
+	readerDrainLimit     = 2 * time.Second
 )
+
+var localAnsiEscapeRe = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
 
 // Options configures a native Windows ConPTY session.
 type Options struct {
@@ -60,6 +65,7 @@ type Session struct {
 	hpcMu   sync.Mutex // guards hPC (ResizePseudoConsole / ClosePseudoConsole)
 	writeMu sync.Mutex // guards inWrite
 	outMu   sync.Mutex // guards outRead (CloseHandle vs CancelIoEx)
+	ringMu  sync.Mutex // guards ringBuf, ringPos, ringFull
 
 	hPC     windows.Handle
 	job     windows.Handle
@@ -68,6 +74,10 @@ type Session struct {
 	outRead windows.Handle
 	pid     uint32
 	closed  bool
+
+	ringBuf  []byte
+	ringPos  int
+	ringFull bool
 
 	closeOnce  sync.Once
 	exitOnce   sync.Once
@@ -477,6 +487,75 @@ func (s *Session) Done() <-chan struct{} {
 	return s.done
 }
 
+func (s *Session) appendRing(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	s.ringMu.Lock()
+	defer s.ringMu.Unlock()
+	if s.ringBuf == nil {
+		s.ringBuf = make([]byte, localRingBufferLimit)
+	}
+	if len(b) >= localRingBufferLimit {
+		copy(s.ringBuf, b[len(b)-localRingBufferLimit:])
+		s.ringPos = 0
+		s.ringFull = true
+		return
+	}
+	n := copy(s.ringBuf[s.ringPos:], b)
+	if n < len(b) {
+		copy(s.ringBuf, b[n:])
+		s.ringPos = len(b) - n
+		s.ringFull = true
+		return
+	}
+	s.ringPos += n
+	if s.ringPos == localRingBufferLimit {
+		s.ringPos = 0
+		s.ringFull = true
+	}
+}
+
+func (s *Session) snapshotRingLocked() []byte {
+	if s.ringFull {
+		raw := make([]byte, localRingBufferLimit)
+		n := copy(raw, s.ringBuf[s.ringPos:])
+		copy(raw[n:], s.ringBuf[:s.ringPos])
+		return raw
+	}
+	if s.ringPos > 0 {
+		raw := make([]byte, s.ringPos)
+		copy(raw, s.ringBuf[:s.ringPos])
+		return raw
+	}
+	return nil
+}
+
+// RecentOutput returns the last `lines` lines of cleaned terminal output from the local PTY ring buffer.
+func (s *Session) RecentOutput(lines int) string {
+	if s == nil {
+		return ""
+	}
+	if lines <= 0 || lines > 500 {
+		lines = 120
+	}
+	s.ringMu.Lock()
+	raw := s.snapshotRingLocked()
+	s.ringMu.Unlock()
+
+	for len(raw) > 0 && !utf8.RuneStart(raw[0]) {
+		raw = raw[1:]
+	}
+	clean := localAnsiEscapeRe.ReplaceAllString(string(raw), "")
+	clean = strings.ReplaceAll(clean, "\r\n", "\n")
+	clean = strings.ReplaceAll(clean, "\r", "")
+	parts := strings.Split(clean, "\n")
+	if len(parts) > lines {
+		parts = parts[len(parts)-lines:]
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
 func (s *Session) readLoop() {
 	s.outMu.Lock()
 	outRead := s.outRead
@@ -501,10 +580,13 @@ func (s *Session) readLoop() {
 	for {
 		var n uint32
 		err := windows.ReadFile(outRead, buf, &n, nil)
-		if n > 0 && s.onOutput != nil {
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			s.onOutput(chunk)
+		if n > 0 {
+			s.appendRing(buf[:n])
+			if s.onOutput != nil {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				s.onOutput(chunk)
+			}
 		}
 		if err != nil || n == 0 {
 			return

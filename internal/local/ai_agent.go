@@ -18,6 +18,12 @@ type ToolDefinition struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
+// AgentTurn represents a prior user or assistant turn in a multi-turn AI drawer session.
+type AgentTurn struct {
+	Role    string `json:"role"` // "user" or "assistant"
+	Content string `json:"content"`
+}
+
 // AgentStepEvent reports live ReAct loop progress back to the Shell AI Drawer UI.
 type AgentStepEvent struct {
 	Step          int    `json:"step"`
@@ -51,12 +57,54 @@ type chatToolCall struct {
 	} `json:"function"`
 }
 
+func trimAgentHistory(history []AgentTurn, maxTurns, maxBytes int) []AgentTurn {
+	if len(history) == 0 || maxTurns <= 0 {
+		return nil
+	}
+	valid := make([]AgentTurn, 0, len(history))
+	for _, h := range history {
+		role := strings.ToLower(strings.TrimSpace(h.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(h.Content)
+		if content == "" {
+			continue
+		}
+		if maxBytes > 0 && len(content) > maxBytes {
+			content = truncateUTF8(content, maxBytes) + "…"
+		}
+		valid = append(valid, AgentTurn{Role: role, Content: content})
+	}
+	if len(valid) > maxTurns {
+		valid = valid[len(valid)-maxTurns:]
+	}
+	return valid
+}
+
+func buildAgentSystemPrompt(hostLabel string) string {
+	sysPrompt := "你是运行在 Shell 终端客户端内的直连式运维与排障助手。" +
+		"用户期望你直接动手完成排查或任务，不要让用户自己去复制粘贴命令执行。" +
+		"只读排查请尽量合并为 1 条简洁命令一次查清，减少无谓轮次，快速给出结论。" +
+		"如果用户问的是纯知识问答或与主机无关的问题，无需调用工具，直接简洁回答。" +
+		"所有工具输出都已自动脱敏（[REDACTED:...]），切勿尝试绕过安全策略；修改或高危操作会自动弹出确认，变更前请明确最小影响范围。" +
+		"当目标是本机 Windows 终端时，请严格使用对应本机 Shell 语法（PowerShell/CMD/Git Bash/WSL）执行。" +
+		"最终总结简洁直击重点（中文，必要时仅给简短关键数据或代码块，不要长篇大论）。"
+	if hostLabel != "" {
+		sysPrompt += "\n当前活动目标：" + hostLabel
+	} else {
+		sysPrompt += "\n当前未连接活动会话。如果是纯问答请直接回答；若用户指定了已保存主机，可调用 shell_list_hosts 查询或直接传 host 给 shell_exec 自动连接执行。"
+	}
+	return sysPrompt
+}
+
 // RunAgentLoop executes an AI Agent loop using the user's configured API (OpenAI-compatible or native Anthropic Messages) or local CLI.
 // Every tool call passes through Shell's unified PolicyEngine + Redaction Engine + Approval Dialog + Audit Log.
 func RunAgentLoop(
 	ctx context.Context,
 	goal string,
 	hostLabel string,
+	history []AgentTurn,
 	tools []ToolDefinition,
 	execTool ToolExecutor,
 	onStep func(AgentStepEvent),
@@ -70,23 +118,17 @@ func RunAgentLoop(
 		return "", err
 	}
 	if s.IsCLI() {
-		return runCLIAgentLoop(ctx, s, goal, hostLabel, tools, execTool, onStep)
+		return runCLIAgentLoop(ctx, s, goal, hostLabel, history, tools, execTool, onStep)
 	}
 	endpoint, err := completionURL(s)
 	if err != nil {
 		return "", err
 	}
 
-	sysPrompt := "你是运行在 Shell 终端客户端内的资深 Linux/Windows 运维 Agent。" +
-		"你可以通过提供的工具检查当前主机、执行命令、读取/编辑文件与查看状态。" +
-		"所有工具输出都已自动进行敏感信息脱敏（[REDACTED:...]），切勿尝试绕过安全策略。" +
-		"优先使用只读命令排查问题，修改操作前要明确最小影响范围；完成任务后用简洁清晰的中文总结结果。"
-	if hostLabel != "" {
-		sysPrompt += " 当前活动会话主机：" + hostLabel
-	}
+	sysPrompt := buildAgentSystemPrompt(hostLabel)
 
 	if isAnthropicProtocol(endpoint) {
-		return runAnthropicAgentLoop(ctx, s, endpoint, sysPrompt, goal, tools, execTool, onStep)
+		return runAnthropicAgentLoop(ctx, s, endpoint, sysPrompt, goal, history, tools, execTool, onStep)
 	}
 
 	openAITools := make([]map[string]any, 0, len(tools))
@@ -101,10 +143,13 @@ func RunAgentLoop(
 		})
 	}
 
-	msgs := []chatToolMsg{
-		{Role: "system", Content: sysPrompt},
-		{Role: "user", Content: goal},
+	prior := trimAgentHistory(history, 6, 2400)
+	msgs := make([]chatToolMsg, 0, 2+len(prior))
+	msgs = append(msgs, chatToolMsg{Role: "system", Content: sysPrompt})
+	for _, h := range prior {
+		msgs = append(msgs, chatToolMsg{Role: h.Role, Content: h.Content})
 	}
+	msgs = append(msgs, chatToolMsg{Role: "user", Content: goal})
 
 	const maxSteps = 8
 	for step := 1; step <= maxSteps; step++ {
@@ -259,6 +304,7 @@ func runAnthropicAgentLoop(
 	endpoint string,
 	sysPrompt string,
 	goal string,
+	history []AgentTurn,
 	tools []ToolDefinition,
 	execTool ToolExecutor,
 	onStep func(AgentStepEvent),
@@ -285,8 +331,29 @@ func runAnthropicAgentLoop(
 		})
 	}
 
-	msgs := []anthropicAgentMsg{
-		{Role: "user", Content: goal},
+	// Build strictly alternating user/assistant messages starting with user.
+	prior := trimAgentHistory(history, 6, 2400)
+	msgs := make([]anthropicAgentMsg, 0, len(prior)+1)
+	for _, h := range prior {
+		if len(msgs) == 0 && h.Role != "user" {
+			continue
+		}
+		if len(msgs) > 0 && msgs[len(msgs)-1].Role == h.Role {
+			if prev, ok := msgs[len(msgs)-1].Content.(string); ok {
+				msgs[len(msgs)-1].Content = prev + "\n\n" + h.Content
+				continue
+			}
+		}
+		msgs = append(msgs, anthropicAgentMsg{Role: h.Role, Content: h.Content})
+	}
+	if len(msgs) > 0 && msgs[len(msgs)-1].Role == "user" {
+		if prev, ok := msgs[len(msgs)-1].Content.(string); ok {
+			msgs[len(msgs)-1].Content = prev + "\n\n" + goal
+		} else {
+			msgs = append(msgs, anthropicAgentMsg{Role: "user", Content: goal})
+		}
+	} else {
+		msgs = append(msgs, anthropicAgentMsg{Role: "user", Content: goal})
 	}
 
 	const maxSteps = 8
@@ -462,6 +529,7 @@ func runCLIAgentLoop(
 	s AISettings,
 	goal string,
 	hostLabel string,
+	history []AgentTurn,
 	tools []ToolDefinition,
 	execTool ToolExecutor,
 	onStep func(AgentStepEvent),
@@ -471,17 +539,24 @@ func runCLIAgentLoop(
 		params, _ := json.Marshal(t.Parameters)
 		fmt.Fprintf(&toolSummary, "- %s: %s | params=%s\n", t.Name, t.Description, string(params))
 	}
-	sysPrompt := "你是运行在 Shell 终端客户端内的资深 Linux/Windows 运维 Agent。" +
-		"所有工具输出已自动脱敏（[REDACTED:...]），切勿绕过安全策略。" +
-		"每轮必须且仅输出一个合法 JSON 对象，格式二选一：\n" +
+	sysPrompt := buildAgentSystemPrompt(hostLabel) +
+		"\n每轮必须且仅输出一个合法 JSON 对象，格式二选一：\n" +
 		"1) 调用工具：{\"thought\":\"简短思路\",\"tool\":\"工具名\",\"arguments\":{...}}\n" +
 		"2) 完成总结：{\"final\":\"简洁清晰的中文总结\"}\n" +
 		"可用工具：\n" + toolSummary.String()
-	if hostLabel != "" {
-		sysPrompt += "\n当前活动会话主机：" + hostLabel
-	}
 
 	var transcript strings.Builder
+	if prior := trimAgentHistory(history, 4, 800); len(prior) > 0 {
+		transcript.WriteString("近期对话上下文：\n")
+		for _, h := range prior {
+			label := "用户"
+			if h.Role == "assistant" {
+				label = "助手"
+			}
+			fmt.Fprintf(&transcript, "%s：%s\n", label, h.Content)
+		}
+		transcript.WriteString("\n")
+	}
 	fmt.Fprintf(&transcript, "用户任务：%s\n", goal)
 
 	const maxSteps = 8

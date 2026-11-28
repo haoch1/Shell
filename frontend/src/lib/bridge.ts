@@ -1,6 +1,7 @@
 import type {
   AgentConfig,
   AgentStatusView,
+  AgentTurn,
   AIConfigInput,
   AIConfigView,
   AIResult,
@@ -132,7 +133,7 @@ interface GoAppBindings {
   Suggest(request: string): Promise<string>;
   SuggestCommand(request: string, osHint: string): Promise<AIResult>;
   ExplainTerminal(selectedText: string, question: string): Promise<string>;
-  RunAIAgent(sessionId: string, goal: string): Promise<string>;
+  RunAIAgent(sessionId: string, goal: string, history?: AgentTurn[]): Promise<string>;
 
   GetAgentStatus(): Promise<AgentStatusView>;
   SaveAgentConfig(cfg: AgentConfig): Promise<AgentStatusView>;

@@ -1611,8 +1611,65 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		if cmd == "" {
 			return finish(agentbridge.ToolCallOutcome{Text: "策略已拦截：命令为空", IsError: true, Risk: "safe", Decision: "policy-deny"})
 		}
+		reqSID := strings.TrimSpace(strArg(args, "sessionId"))
+		reqHost := strings.TrimSpace(strArg(args, "host"))
+		if reqHost == "" {
+			if localEntry, ok := a.lookupLocalSession(reqSID); ok {
+				audit.SessionID = reqSID
+				audit.Host = localEntry.profile.Name
+				eval := security.EvaluateCommand(cmd, cfg.Policy, localEntry.profile.AgentAccess)
+				if eval.Decision == security.DecisionDeny {
+					return finish(agentbridge.ToolCallOutcome{Text: "策略已拦截：" + eval.Reason, IsError: true, Risk: eval.Risk, Decision: "policy-deny"})
+				}
+				decLabel := "auto-allow"
+				if eval.Decision == security.DecisionAsk {
+					sig := ""
+					if len(eval.Segments) > 0 {
+						sig = reqSID + "|exec|" + eval.Segments[0].Program
+					}
+					approvalStart := time.Now()
+					d, approved := a.requestApproval(ctx, source, clientName, localEntry.profile.Name, reqSID, toolName, cmd, eval, sig)
+					audit.Phases.ApprovalMs = elapsedMs(approvalStart)
+					decLabel = d
+					if !approved {
+						return finish(agentbridge.ToolCallOutcome{Text: "用户已拒绝执行命令：" + cmd, IsError: true, Risk: eval.Risk, Decision: decLabel})
+					}
+				}
+				timeoutSec := intArg(args, "timeoutSec", 30)
+				if timeoutSec < 3 || timeoutSec > 120 {
+					timeoutSec = 30
+				}
+				execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+				defer cancel()
+				remoteStart := time.Now()
+				stdout, stderr, exitCode, durMs, execErr := local.RunLocalShellCommand(
+					execCtx,
+					localEntry.localShell.Command,
+					localEntry.localShell.ID,
+					localEntry.localShell.Args,
+					localEntry.localCwd,
+					cmd,
+				)
+				audit.Phases.RemoteMs = elapsedMs(remoteStart)
+				rOut := security.Redact(stdout, cfg.Redaction)
+				rErr := security.Redact(stderr, cfg.Redaction)
+				totalRedacted := rOut.Count + rErr.Count
+				if execErr != nil && exitCode < 0 {
+					return finish(agentbridge.ToolCallOutcome{Text: execErr.Error(), IsError: true, Risk: eval.Risk, Decision: decLabel, RedactedCount: totalRedacted})
+				}
+				payload := map[string]any{
+					"sessionId":     reqSID,
+					"exitCode":      exitCode,
+					"durationMs":    durMs,
+					"stdout":        rOut.Text,
+					"stderr":        rErr.Text,
+					"redactedCount": totalRedacted,
+				}
+				return finish(agentbridge.ToolCallOutcome{Text: mustJSONText(payload), Risk: eval.Risk, Decision: decLabel, RedactedCount: totalRedacted})
+			}
+		}
 		sessionStart := time.Now()
-		sid, entry, isGUI, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
+		sid, entry, isGUI, err := a.resolveOrConnectSession(ctx, reqSID, reqHost, cfg, false)
 		audit.Phases.SessionMs = elapsedMs(sessionStart)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
@@ -1667,7 +1724,7 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 				}
 				mirrorBuf.WriteString("\x1b[31m")
 				mirrorBuf.WriteString(formatMirrorLines(errPreview))
-				mirrorBuf.WriteString("\x1b[0m\r\n")
+				mirrorBuf.WriteString("\r\n\x1b[0m")
 			}
 			mirrorBuf.WriteString(fmt.Sprintf("\x1b[90m[exit %d · %dms]\x1b[0m\r\n", res.ExitCode, res.DurationMs))
 			a.mirrorToTerminal(sid, mirrorBuf.String())
@@ -1692,7 +1749,21 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 	case "shell_read_terminal":
 		lines := intArg(args, "lines", 80)
 		audit.Summary = fmt.Sprintf("read last %d terminal lines", lines)
-		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, false)
+		reqSID := strings.TrimSpace(strArg(args, "sessionId"))
+		reqHost := strings.TrimSpace(strArg(args, "host"))
+		if reqHost == "" {
+			if localEntry, ok := a.lookupLocalSession(reqSID); ok {
+				audit.SessionID = reqSID
+				audit.Host = localEntry.profile.Name
+				if localEntry.profile.AgentAccess == "deny" {
+					return finish(agentbridge.ToolCallOutcome{Text: "该主机已禁止 Agent 访问", IsError: true, Risk: "danger", Decision: "policy-deny"})
+				}
+				raw := localEntry.localPTY.RecentOutput(lines)
+				red := security.Redact(raw, cfg.Redaction)
+				return finish(agentbridge.ToolCallOutcome{Text: red.Text, RedactedCount: red.Count})
+			}
+		}
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, reqSID, reqHost, cfg, false)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -1709,7 +1780,35 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 		cmd := strArg(args, "command")
 		enter := boolArg(args, "enter", true)
 		audit.Summary = "pty: " + strings.TrimSpace(cmd)
-		sid, entry, _, err := a.resolveOrConnectSession(ctx, strArg(args, "sessionId"), strArg(args, "host"), cfg, true)
+		reqSID := strings.TrimSpace(strArg(args, "sessionId"))
+		reqHost := strings.TrimSpace(strArg(args, "host"))
+		if reqHost == "" {
+			if localEntry, ok := a.lookupLocalSession(reqSID); ok {
+				audit.SessionID = reqSID
+				audit.Host = localEntry.profile.Name
+				eval := security.EvaluateCommand(cmd, cfg.Policy, localEntry.profile.AgentAccess)
+				if eval.Decision == security.DecisionDeny {
+					return finish(agentbridge.ToolCallOutcome{Text: "策略已拦截：" + eval.Reason, IsError: true, Risk: eval.Risk, Decision: "policy-deny"})
+				}
+				decLabel := "auto-allow"
+				if eval.Decision == security.DecisionAsk {
+					d, approved := a.requestApproval(ctx, source, clientName, localEntry.profile.Name, reqSID, toolName, cmd, eval, reqSID+"|pty|"+toolName)
+					decLabel = d
+					if !approved {
+						return finish(agentbridge.ToolCallOutcome{Text: "用户已拒绝发送到终端", IsError: true, Risk: eval.Risk, Decision: decLabel})
+					}
+				}
+				payload := cmd
+				if enter {
+					payload = strings.TrimRight(payload, "\r\n") + "\r"
+				}
+				if err := localEntry.localPTY.Write([]byte(payload)); err != nil {
+					return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true, Risk: eval.Risk, Decision: decLabel})
+				}
+				return finish(agentbridge.ToolCallOutcome{Text: "已将命令发送到本机交互终端。", Risk: eval.Risk, Decision: decLabel})
+			}
+		}
+		sid, entry, _, err := a.resolveOrConnectSession(ctx, reqSID, reqHost, cfg, true)
 		if err != nil {
 			return finish(agentbridge.ToolCallOutcome{Text: err.Error(), IsError: true})
 		}
@@ -1895,24 +1994,76 @@ func (a *App) CallTool(ctx context.Context, source, clientName, toolName string,
 	}
 }
 
+func (a *App) lookupLocalSession(sessionID string) (*liveSession, bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, false
+	}
+	a.mu.Lock()
+	e := a.live[sessionID]
+	a.mu.Unlock()
+	if e != nil && e.isLocal && e.localPTY != nil {
+		return e, true
+	}
+	return nil, false
+}
+
 // --- Built-in AI Agent Mode (reuses the user's configured OpenAI-compatible API or local CLI!) ---
 
-func (a *App) RunAIAgent(sessionID, goal string) (string, error) {
+func (a *App) RunAIAgent(sessionID, goal string, history []local.AgentTurn) (string, error) {
 	ctx, done := a.beginAI()
 	defer done()
 
+	cfg := a.getCachedAgentConfig()
+	if red := security.Redact(goal, cfg.Redaction); red.Count > 0 {
+		goal = red.Text
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("发送至 AI 前已自动脱敏 %d 处敏感信息", red.Count))
+		}
+	}
+	if len(history) > 0 {
+		sanitized := make([]local.AgentTurn, len(history))
+		for i, h := range history {
+			h.Content = security.Redact(h.Content, cfg.Redaction).Text
+			sanitized[i] = h
+		}
+		history = sanitized
+	}
+
 	hostLabel := ""
-	if sid, entry, err := a.resolveLiveSession(sessionID); err == nil {
+	isLocal := false
+	var localShellName string
+	if localEntry, ok := a.lookupLocalSession(sessionID); ok {
+		isLocal = true
+		localShellName = localEntry.profile.Name
+		hostLabel = fmt.Sprintf("本机终端 · %s (Windows, sessionId=%s)", localShellName, sessionID)
+	} else if sid, entry, err := a.resolveLiveSession(sessionID); err == nil {
 		sessionID = sid
 		hostLabel = fmt.Sprintf("%s (%s@%s:%d, sessionId=%s)", entry.profile.Name, entry.profile.User, entry.profile.Host, entry.profile.Port, sid)
+	} else {
+		sessionID = ""
 	}
 
 	mcpTools := a.ListTools()
 	defs := make([]local.ToolDefinition, 0, len(mcpTools))
+	localAllowedTools := map[string]bool{
+		"shell_exec":          true,
+		"shell_read_terminal": true,
+		"shell_send_terminal": true,
+		"shell_list_hosts":    true,
+		"shell_connect":       true,
+	}
 	for _, t := range mcpTools {
+		if isLocal && !localAllowedTools[t.Name] {
+			continue
+		}
+		desc := t.Description
+		if isLocal && t.Name == "shell_exec" {
+			desc = fmt.Sprintf("Execute a command in the current local Windows shell (%s) silently without opening a console window, or pass host to run on a saved SSH host. Output is automatically redacted.", localShellName)
+		}
 		defs = append(defs, local.ToolDefinition{
 			Name:        t.Name,
-			Description: t.Description,
+			Description: desc,
 			Parameters:  t.InputSchema,
 		})
 	}
@@ -1921,10 +2072,13 @@ func (a *App) RunAIAgent(sessionID, goal string) (string, error) {
 		ctx,
 		goal,
 		hostLabel,
+		history,
 		defs,
 		func(callCtx context.Context, toolName string, args map[string]any) (string, string, string, int, error) {
 			if sessionID != "" && args != nil {
-				if _, ok := args["sessionId"]; !ok && toolName != "shell_list_hosts" && toolName != "shell_list_sessions" && toolName != "shell_connect" {
+				_, hasSID := args["sessionId"]
+				hostArg := strings.TrimSpace(strArg(args, "host"))
+				if !hasSID && hostArg == "" && toolName != "shell_list_hosts" && toolName != "shell_list_sessions" && toolName != "shell_connect" {
 					args["sessionId"] = sessionID
 				}
 			}
@@ -1935,7 +2089,9 @@ func (a *App) RunAIAgent(sessionID, goal string) (string, error) {
 			return out.Text, out.Risk, out.Decision, out.RedactedCount, nil
 		},
 		func(ev local.AgentStepEvent) {
-			runtime.EventsEmit(a.ctx, "ai:agent_step", ev)
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "ai:agent_step", ev)
+			}
 		},
 	)
 }

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Radio } from 'lucide-react';
+import { Radio, X } from 'lucide-react';
 import type {
   AgentApprovalRequest,
   AgentStatusView,
@@ -361,12 +361,25 @@ export const App: React.FC = () => {
     });
   }, []);
 
+  const scheduleAfterPaint = useCallback((fn: () => void) => {
+    let ran = false;
+    const run = () => {
+      if (ran) return;
+      ran = true;
+      window.clearTimeout(timer);
+      window.cancelAnimationFrame(frame);
+      fn();
+    };
+    const frame = window.requestAnimationFrame(run);
+    const timer = window.setTimeout(run, 48);
+  }, []);
+
   // Start an SSH connection for a newly allocated session ID
   const startSSHConnection = useCallback(
     (sessionId: string, profile: Profile, secret: string, remember: boolean, requestedProfile = '') => {
       const attempt = new AbortController();
       connectingRef.current.set(sessionId, { controller: attempt, requestedProfile });
-      requestAnimationFrame(async () => {
+      scheduleAfterPaint(async () => {
         const api = getApi();
         const ctrl = terminalBus.get(sessionId);
         ctrl?.fit();
@@ -553,7 +566,7 @@ export const App: React.FC = () => {
     (sessionId: string, shell: LocalShellProfile, cwd = '') => {
       const attempt = new AbortController();
       connectingRef.current.set(sessionId, { controller: attempt, requestedProfile: '' });
-      requestAnimationFrame(async () => {
+      scheduleAfterPaint(async () => {
         const ctrl = terminalBus.get(sessionId);
         ctrl?.fit();
         const cols = ctrl?.term.cols || 100;
@@ -1631,6 +1644,19 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [activeSession, activeTabId, openLocalTerminal]);
 
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setConfirmDelete(null);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [confirmDelete]);
+
   const existingGroups = useMemo(
     () => [...new Set(profiles.map((p) => p.group?.trim()).filter((g): g is string => Boolean(g)))],
     [profiles],
@@ -1943,7 +1969,14 @@ export const App: React.FC = () => {
               <AIDrawer
                 configVersion={aiConfigVersion}
                 activeSessionId={activeSession?.state === 'connected' ? activeSession.id : undefined}
+                activeSessionName={
+                  activeSession?.state === 'connected'
+                    ? activeSession.profile.name || activeSession.profile.host
+                    : undefined
+                }
+                isLocalSession={activeSession?.state === 'connected' && activeSession.kind === 'local'}
                 hasActiveSession={activeSession?.state === 'connected'}
+                permissionMode={agentStatus?.policy?.mode}
                 osHint={activeOsHint}
                 initialExplainText={explainText}
                 onClearInitialExplain={() => setExplainText('')}
@@ -1951,17 +1984,6 @@ export const App: React.FC = () => {
                 onOpenAISettings={() => setSettingsModal({ open: true, tab: 'ai' })}
                 onOpenAgentSecurity={() => setSettingsModal({ open: true, tab: 'agent' })}
                 onInsertCommand={sendCommandToActive}
-                onSaveAsSnippet={async (cmd, desc) => {
-                  await getApi().SaveSnippet({
-                    id: '',
-                    name: desc.slice(0, 32) || 'AI 生成命令',
-                    category: 'AI',
-                    command: cmd,
-                    description: desc,
-                  });
-                  setSnippets(await getApi().Snippets());
-                  toast('已保存到快捷片段');
-                }}
                 onToast={toast}
               />
             )}
@@ -2086,10 +2108,13 @@ export const App: React.FC = () => {
       )}
 
       {confirmDelete && (
-        <div className="modal-backdrop" onClick={() => setConfirmDelete(null)}>
-          <div className="modal-sheet" style={{ maxWidth: 400 }} onClick={(e) => e.stopPropagation()}>
+        <div id="confirmDeleteDialog" className="modal-backdrop" onClick={() => setConfirmDelete(null)}>
+          <div className="modal-sheet" role="dialog" aria-modal="true" style={{ maxWidth: 400 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>删除主机</h2>
+              <button type="button" className="icon-btn" aria-label="关闭" onClick={() => setConfirmDelete(null)}>
+                <X size={15} />
+              </button>
             </div>
             <div className="modal-body">
               <p style={{ margin: 0 }}>

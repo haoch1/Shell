@@ -3,10 +3,7 @@ package local
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -22,11 +19,9 @@ type Snippet struct {
 	Pinned      bool   `json:"pinned,omitempty"`
 }
 
-// Keep the original 2 MiB user catalog readable when the additional presets are appended.
-const snippetsLimit = (2 << 20) + (16 << 10)
-const snippetsCatalogVersion = 2
+const snippetsLimit = 2 << 20
 
-func originalSnippets() []Snippet {
+func defaultSnippets() []Snippet {
 	return []Snippet{
 		{ID: "preset-sys-overview", Name: "系统负载与内存", Category: "系统", Command: "uname -a && uptime && free -h", Description: "快速查看内核、运行时间与内存使用", Pinned: true},
 		{ID: "preset-disk-usage", Name: "磁盘占用 Top 15", Category: "磁盘", Command: "df -h && du -xh --max-depth=1 {{path}} 2>/dev/null | sort -hr | head -n 15", Description: "定位大目录占用（可指定路径，如 /var）", Pinned: true},
@@ -36,11 +31,6 @@ func originalSnippets() []Snippet {
 		{ID: "preset-docker-logs", Name: "跟踪容器日志", Category: "Docker", Command: "docker logs -f --tail 100 {{container}}", Description: "实时查看指定容器最后 100 行日志"},
 		{ID: "preset-systemd-logs", Name: "Systemd 服务日志", Category: "服务", Command: "journalctl -u {{service}} -n 100 -f --no-pager", Description: "实时跟踪 systemd 服务的 journal 日志"},
 		{ID: "preset-nginx-reload", Name: "校验并重载 Nginx", Category: "服务", Command: "sudo nginx -t && sudo systemctl reload nginx", Description: "先校验配置无误再平滑重载 Nginx"},
-	}
-}
-
-func additionalSnippets() []Snippet {
-	return []Snippet{
 		{ID: "preset-os-version", Name: "系统发行版与内核版本", Category: "系统", Command: "cat /etc/os-release && uname -r"},
 		{ID: "preset-cpu-info", Name: "CPU 架构与核心数", Category: "系统", Command: "lscpu"},
 		{ID: "preset-top-cpu", Name: "CPU 占用 Top 10 进程", Category: "系统", Command: "ps -eo pid,comm,pcpu --sort=-pcpu | head -n 11"},
@@ -85,51 +75,20 @@ func normalizeSnippet(s Snippet) (Snippet, error) {
 }
 
 func readSnippets(dir string) ([]Snippet, error) {
-	data, err := readLimited(filepath.Join(dir, "snippets.json"), snippetsLimit)
-	fresh := errors.Is(err, os.ErrNotExist)
-	if err != nil && !fresh {
-		return nil, err
-	}
-	var list []Snippet
-	if fresh {
-		list = originalSnippets()
-	} else if json.Unmarshal(data, &list) != nil || list == nil {
-		return nil, errors.New("命令片段配置文件格式无效")
-	}
-	marker := filepath.Join(dir, "snippets-catalog.version")
-	versionData, err := readLimited(marker, 32)
-	version := 0
-	if err == nil {
-		version, err = strconv.Atoi(strings.TrimSpace(string(versionData)))
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("读取命令片段预设版本失败：%w", err)
-	}
-	if !fresh && version >= snippetsCatalogVersion {
-		return list, nil
-	}
-	ids := make(map[string]bool, len(list))
-	commands := make(map[string]bool, len(list))
-	for _, s := range list {
-		ids[s.ID] = true
-		commands[strings.TrimSpace(s.Command)] = true
-	}
-	oldLen := len(list)
-	for _, s := range additionalSnippets() {
-		if !ids[s.ID] && !commands[s.Command] {
-			list = append(list, s)
-		}
-	}
-	if fresh || len(list) != oldLen {
+	data, err := readLimited(configPath(dir, "snippets.json"), snippetsLimit)
+	if errors.Is(err, os.ErrNotExist) {
+		list := defaultSnippets()
 		if err := writeSnippets(dir, list); err != nil {
 			return nil, err
 		}
+		return list, nil
 	}
-	// Mark only after persisting the array. An interrupted migration can safely retry by ID and command.
-	if version < snippetsCatalogVersion {
-		if err := writeAtomic(marker, []byte(strconv.Itoa(snippetsCatalogVersion))); err != nil {
-			return nil, err
-		}
+	if err != nil {
+		return nil, err
+	}
+	var list []Snippet
+	if json.Unmarshal(data, &list) != nil || list == nil {
+		return nil, errors.New("命令片段配置文件格式无效")
 	}
 	return list, nil
 }
@@ -148,7 +107,7 @@ func writeSnippets(dir string, list []Snippet) error {
 			return errors.New("命令片段配置超过容量限制")
 		}
 	}
-	return writeAtomic(filepath.Join(dir, "snippets.json"), data)
+	return writeAtomic(configPath(dir, "snippets.json"), data)
 }
 
 func Snippets() ([]Snippet, error) {

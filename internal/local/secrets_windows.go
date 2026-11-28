@@ -1,17 +1,15 @@
 package local
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+const credentialVaultLimit = 2 << 20
 
 func dpapi(input []byte, protect bool) ([]byte, error) {
 	if len(input) == 0 {
@@ -48,7 +46,11 @@ func writeProtected(path string, value any) error {
 }
 
 func readProtected(path string, value any) error {
-	sealed, err := readLimited(path, 128<<10)
+	return readProtectedLimited(path, 128<<10, value)
+}
+
+func readProtectedLimited(path string, limit int64, value any) error {
+	sealed, err := readLimited(path, limit)
 	if err != nil {
 		return err
 	}
@@ -89,17 +91,78 @@ func identityKey(p Profile) authIdentity {
 	}
 }
 
-func secretPath(dir, id string) string {
-	digest := sha256.Sum256([]byte(id))
-	return filepath.Join(dir, "credential-"+hex.EncodeToString(digest[:])+".dpapi")
+type credential struct {
+	For    authIdentity `json:"for"`
+	Secret string       `json:"secret"`
+}
+
+type credentialVault struct {
+	Items map[string]credential `json:"items"`
+}
+
+func credentialsVaultPath(dir string) string {
+	return securityPath(dir, "credentials.dpapi")
+}
+
+func readCredentialVault(dir string) (map[string]credential, error) {
+	var vault credentialVault
+	err := readProtectedLimited(credentialsVaultPath(dir), credentialVaultLimit, &vault)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]credential{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if vault.Items == nil {
+		return map[string]credential{}, nil
+	}
+	return vault.Items, nil
+}
+
+func writeCredentialVault(dir string, items map[string]credential) error {
+	p := credentialsVaultPath(dir)
+	if len(items) == 0 {
+		err := os.Remove(p)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return writeProtected(p, credentialVault{Items: items})
+}
+
+func removeSecrets(dir string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	items, err := readCredentialVault(dir)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	changed := false
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := items[id]; ok {
+			delete(items, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return writeCredentialVault(dir, items)
 }
 
 func removeSecret(dir, id string) error {
-	err := os.Remove(secretPath(dir, id))
-	if errors.Is(err, os.ErrNotExist) {
+	if id == "" {
 		return nil
 	}
-	return err
+	return removeSecrets(dir, []string{id})
 }
 
 func ForgetSecret(id string) error {
@@ -120,16 +183,20 @@ func ForgetProfileSecret(p Profile) error {
 	})
 }
 
-// HasSecret supplies the profile list's indicator without decrypting credentials.
+// HasSecret reports whether a profile currently has a saved credential in the consolidated vault.
 func HasSecret(id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
 	var saved bool
 	err := withStore(func(dir string) error {
-		_, err := os.Stat(secretPath(dir, id))
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
+		items, err := readCredentialVault(dir)
+		if err != nil {
+			return err
 		}
-		saved = err == nil
-		return err
+		item, ok := items[id]
+		saved = ok && item.Secret != ""
+		return nil
 	})
 	return saved, err
 }
@@ -141,33 +208,21 @@ func SecretIDs(ids []string) (map[string]bool, error) {
 		return result, nil
 	}
 	err := withStore(func(dir string) error {
-		entries, err := os.ReadDir(dir)
+		items, err := readCredentialVault(dir)
 		if err != nil {
 			return err
-		}
-		existing := make(map[string]bool, len(entries))
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasPrefix(e.Name(), "credential-") && strings.HasSuffix(e.Name(), ".dpapi") {
-				existing[e.Name()] = true
-			}
 		}
 		for _, id := range ids {
 			if id == "" {
 				continue
 			}
-			digest := sha256.Sum256([]byte(id))
-			if existing["credential-"+hex.EncodeToString(digest[:])+".dpapi"] {
+			if item, ok := items[id]; ok && item.Secret != "" {
 				result[id] = true
 			}
 		}
 		return nil
 	})
 	return result, err
-}
-
-type credential struct {
-	For    authIdentity `json:"for"`
-	Secret string       `json:"secret"`
 }
 
 func matchesStored(dir string, p Profile) (bool, error) {
@@ -195,7 +250,12 @@ func RememberSecret(p Profile, secret string) error {
 		if !match {
 			return errors.New("连接资料已变化，本次凭据未保存")
 		}
-		return writeProtected(secretPath(dir, p.ID), credential{For: identityKey(p), Secret: secret})
+		items, err := readCredentialVault(dir)
+		if err != nil {
+			return err
+		}
+		items[p.ID] = credential{For: identityKey(p), Secret: secret}
+		return writeCredentialVault(dir, items)
 	})
 }
 
@@ -206,15 +266,11 @@ func LoadSecret(p Profile) (string, error) {
 		if err != nil || !match {
 			return err
 		}
-		var item credential
-		err = readProtected(secretPath(dir, p.ID), &item)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
+		items, err := readCredentialVault(dir)
 		if err != nil {
 			return err
 		}
-		if item.For == identityKey(p) {
+		if item, ok := items[p.ID]; ok && item.For == identityKey(p) {
 			secret = item.Secret
 		}
 		return nil

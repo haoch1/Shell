@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -21,16 +22,52 @@ func TestProfileAndCredentialLifecycle(t *testing.T) {
 	if err != nil || p.Host != "::1" || p.Name != "::1" || p.Port != 22 || p.Auth != "password" || p.ID == "" {
 		t.Fatalf("unexpected defaults: %#v, %v", p, err)
 	}
+	p2, err := SaveProfile(Profile{Name: "Second", Host: "10.0.0.2", User: "ops", Auth: "password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	const secret = "password-for-unit-test"
+	const secret2 = "second-host-password"
 	if err := RememberSecret(p, secret); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{secretPath(dir, p.ID), filepath.Join(dir, "profiles.json")} {
+	if err := RememberSecret(p2, secret2); err != nil {
+		t.Fatal(err)
+	}
+
+	vaultFile := credentialsVaultPath(dir)
+	profilesFile := configPath(dir, "profiles.json")
+	for _, file := range []string{vaultFile, profilesFile} {
 		data, err := os.ReadFile(file)
-		if err != nil || bytes.Contains(data, []byte(secret)) {
-			t.Fatal("credential is unreadable or persisted as plaintext")
+		if err != nil || bytes.Contains(data, []byte(secret)) || bytes.Contains(data, []byte(secret2)) {
+			t.Fatalf("credential file %s is unreadable or persisted as plaintext: %v", file, err)
 		}
 	}
+
+	// Ensure NO legacy scattered credential-<hash>.dpapi files exist anywhere.
+	for _, checkDir := range []string{dir, filepath.Join(dir, "security")} {
+		entries, err := os.ReadDir(checkDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "credential-") {
+				t.Fatalf("unexpected scattered legacy credential file: %s", filepath.Join(checkDir, e.Name()))
+			}
+		}
+	}
+
+	// Verify HasSecret and SecretIDs operate cleanly on the single vault.
+	if has, err := HasSecret(p.ID); err != nil || !has {
+		t.Fatalf("HasSecret(p) = %v, %v", has, err)
+	}
+	idMap, err := SecretIDs([]string{p.ID, p2.ID, "missing-id"})
+	if err != nil || !idMap[p.ID] || !idMap[p2.ID] || idMap["missing-id"] {
+		t.Fatalf("unexpected SecretIDs map: %+v, %v", idMap, err)
+	}
+
+	// Display rename retains credential.
 	p.Name = "Renamed"
 	if _, err := SaveProfile(p); err != nil {
 		t.Fatal(err)
@@ -38,6 +75,8 @@ func TestProfileAndCredentialLifecycle(t *testing.T) {
 	if got, err := LoadSecret(p); err != nil || got != secret {
 		t.Fatalf("credential wasn't retained for display rename: %v", err)
 	}
+
+	// Identity change clears only p's secret while preserving p2's secret in the vault.
 	stale := p
 	p.Host = "other.example"
 	if _, err := SaveProfile(p); err != nil {
@@ -48,17 +87,33 @@ func TestProfileAndCredentialLifecycle(t *testing.T) {
 			t.Fatalf("stale credential available: %v", err)
 		}
 	}
+	if got2, err := LoadSecret(p2); err != nil || got2 != secret2 {
+		t.Fatalf("sibling credential in consolidated vault was disturbed: %q, %v", got2, err)
+	}
 	if err := RememberSecret(stale, secret); err == nil {
 		t.Fatal("saved a secret for a stale connection")
 	}
 	if err := RememberSecret(p, secret); err != nil {
 		t.Fatal(err)
 	}
+
+	// Deleting one profile removes only its secret; vault remains for p2.
 	if err := DeleteProfile(p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(secretPath(dir, p.ID)); !os.IsNotExist(err) {
-		t.Fatalf("credential still present: %v", err)
+	if has, err := HasSecret(p.ID); err != nil || has {
+		t.Fatalf("deleted profile secret still present: %v, %v", has, err)
+	}
+	if got2, err := LoadSecret(p2); err != nil || got2 != secret2 {
+		t.Fatalf("remaining profile secret lost after sibling delete: %q, %v", got2, err)
+	}
+
+	// Deleting the last profile with a secret removes security/credentials.dpapi cleanly.
+	if err := DeleteProfiles([]string{p2.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(vaultFile); !os.IsNotExist(err) {
+		t.Fatalf("empty credential vault was not removed: %v", err)
 	}
 	if list, err := Profiles(); err != nil || len(list) != 0 || list == nil {
 		t.Fatalf("unexpected empty profile list: %#v, %v", list, err)
@@ -83,7 +138,7 @@ func TestConcurrentSavesAndDamagedFile(t *testing.T) {
 	if list, err := Profiles(); err != nil || len(list) != count {
 		t.Fatalf("concurrent saves lost: %d, %v", len(list), err)
 	}
-	path := filepath.Join(dir, "profiles.json")
+	path := configPath(dir, "profiles.json")
 	bad := []byte("{broken")
 	if err := os.WriteFile(path, bad, 0600); err != nil {
 		t.Fatal(err)

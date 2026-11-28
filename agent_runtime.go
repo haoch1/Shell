@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -529,11 +528,7 @@ type settingsCacheState struct {
 }
 
 func shellStoreFilePath(name string) (string, error) {
-	root, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "Shell", name), nil
+	return local.ConfigFile(name)
 }
 
 func (a *App) invalidateProfileCache() {

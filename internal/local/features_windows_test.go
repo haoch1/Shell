@@ -124,11 +124,12 @@ func TestKeyGenerationAndKnownHosts(t *testing.T) {
 	}
 
 	// Known hosts list & remove
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	khPath := securityPath(dir, "known_hosts")
+	if err := os.MkdirAll(filepath.Dir(khPath), 0700); err != nil {
 		t.Fatal(err)
 	}
 	khLine := "example.com " + info.PublicKey + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "known_hosts"), []byte(khLine), 0600); err != nil {
+	if err := os.WriteFile(khPath, []byte(khLine), 0600); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := ListKnownHosts()
@@ -270,66 +271,60 @@ func TestCappedBufferAndUTF8BoundaryHelpers(t *testing.T) {
 	}
 }
 
-func TestAgentConfigPolicyVersionMigration(t *testing.T) {
+func TestAgentConfigLifecycle(t *testing.T) {
 	dir := isolated(t)
 
-	// 1. Fresh install defaults to PolicyVersion=2 and ModeTrusted.
+	// 1. Fresh install defaults to ModeTrusted and silent mode.
 	def, err := LoadAgentConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if def.PolicyVersion != 2 || def.Policy.Mode != security.ModeTrusted {
-		t.Fatalf("unexpected default agent config: version=%d mode=%q", def.PolicyVersion, def.Policy.Mode)
+	if def.Policy.Mode != security.ModeTrusted || def.ExecMode != "silent" || def.Port != 17822 {
+		t.Fatalf("unexpected default agent config: %+v", def)
 	}
 
-	// 2. Legacy v1.0/v1.1 agent.json (no policyVersion, mode=smart) auto-migrates once to ModeTrusted + PolicyVersion=2.
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	// 2. Reading config/agent.json preserves every policy mode verbatim (no legacy PolicyVersion migration).
+	agentFile := configPath(dir, "agent.json")
+	if err := os.MkdirAll(filepath.Dir(agentFile), 0700); err != nil {
 		t.Fatal(err)
 	}
-	legacySmart := `{"enabled":true,"port":17822,"execMode":"visible","policy":{"mode":"smart"}}`
-	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(legacySmart), 0600); err != nil {
+	rawSmart := `{"enabled":true,"port":17822,"execMode":"visible","policy":{"mode":"smart"}}`
+	if err := os.WriteFile(agentFile, []byte(rawSmart), 0600); err != nil {
 		t.Fatal(err)
 	}
-	migrated, err := LoadAgentConfig()
+	loadedSmart, err := LoadAgentConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if migrated.Policy.Mode != security.ModeTrusted || migrated.PolicyVersion != 2 || !migrated.Enabled || migrated.ExecMode != "visible" {
-		t.Fatalf("expected legacy smart config to migrate to trusted v2, got %+v", migrated)
+	if loadedSmart.Policy.Mode != security.ModeSmart || !loadedSmart.Enabled || loadedSmart.ExecMode != "visible" {
+		t.Fatalf("expected agent.json smart mode to load verbatim, got %+v", loadedSmart)
 	}
 
-	// 3. Explicit user save of smart/readonly/ask_all (even with PolicyVersion=0 from frontend) stamps v2 and persists forever.
-	for _, explicitMode := range []security.PermissionMode{security.ModeSmart, security.ModeReadOnly, security.ModeAskAll} {
-		toSave := migrated
-		toSave.PolicyVersion = 0
+	// 3. Explicit save/reload preserves every mode cleanly and writes no policyVersion field.
+	for _, explicitMode := range []security.PermissionMode{security.ModeTrusted, security.ModeSmart, security.ModeReadOnly, security.ModeAskAll} {
+		toSave := loadedSmart
 		toSave.Policy.Mode = explicitMode
 		saved, err := SaveAgentConfig(toSave)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if saved.PolicyVersion != 2 || saved.Policy.Mode != explicitMode {
+		if saved.Policy.Mode != explicitMode {
 			t.Fatalf("SaveAgentConfig failed to preserve explicit mode %q: %+v", explicitMode, saved)
 		}
 		reloaded, err := LoadAgentConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if reloaded.PolicyVersion != 2 || reloaded.Policy.Mode != explicitMode {
+		if reloaded.Policy.Mode != explicitMode {
 			t.Fatalf("LoadAgentConfig overwrote explicit mode %q: %+v", explicitMode, reloaded)
 		}
 	}
-
-	// 4. Legacy agent.json with explicit readonly/ask_all (no policyVersion) must NOT be forced to trusted.
-	legacyReadOnly := `{"enabled":false,"port":17822,"policy":{"mode":"readonly"}}`
-	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(legacyReadOnly), 0600); err != nil {
-		t.Fatal(err)
-	}
-	ro, err := LoadAgentConfig()
+	persisted, err := os.ReadFile(agentFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ro.Policy.Mode != security.ModeReadOnly || ro.PolicyVersion != 2 {
-		t.Fatalf("legacy readonly config should remain readonly at v2, got %+v", ro)
+	if strings.Contains(string(persisted), "policyVersion") {
+		t.Fatalf("agent.json should not contain legacy policyVersion field: %s", string(persisted))
 	}
 }
 
@@ -348,19 +343,20 @@ func TestSettingsGroupOrderAndSyntaxHighlight(t *testing.T) {
 		t.Fatalf("expected empty default GroupOrder, got %v", s.GroupOrder)
 	}
 
-	// 2. Legacy settings.json without syntaxHighlight still defaults to true.
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	// 2. Partial config/settings.json without syntaxHighlight defaults to true.
+	settingsFile := configPath(dir, "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsFile), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"theme":"dark","fontSize":15}`), 0600); err != nil {
+	if err := os.WriteFile(settingsFile, []byte(`{"theme":"dark","fontSize":15}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := LoadSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Theme != "dark" || loaded.SyntaxHighlight == nil || !*loaded.SyntaxHighlight {
-		t.Fatalf("legacy settings should default SyntaxHighlight=true, got %+v", loaded)
+	if loaded.Theme != "dark" || loaded.SyntaxHighlight == nil || !*loaded.SyntaxHighlight || loaded.ProxyMode != "direct" {
+		t.Fatalf("partial settings should normalize defaults cleanly, got %+v", loaded)
 	}
 
 	// 3. UpdateSettings mutating *SyntaxHighlight in-place (just like json.Unmarshal in UpdatePreferences) MUST persist false!

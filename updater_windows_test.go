@@ -491,6 +491,17 @@ func TestUpdaterHelpersAndCLIValidation(t *testing.T) {
 	if code := runApplyUpdateCLI([]string{"--apply-update"}); code == 0 {
 		t.Fatal("expected runApplyUpdateCLI without --target to return non-zero")
 	}
+
+	root := t.TempDir()
+	t.Setenv("LOCALAPPDATA", root)
+	wantStage := filepath.Join(root, "Shell", "runtime", "updates")
+	if got := updateStagingDirPath(); got != wantStage {
+		t.Fatalf("updateStagingDirPath() = %q, want %q", got, wantStage)
+	}
+	ensured, err := ensureUpdateStagingDir()
+	if err != nil || ensured != wantStage {
+		t.Fatalf("ensureUpdateStagingDir() = (%q, %v), want %q", ensured, err, wantStage)
+	}
 }
 
 func TestOutboundHTTPProxyFormatsIPv6Host(t *testing.T) {

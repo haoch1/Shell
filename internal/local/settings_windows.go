@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 )
@@ -41,6 +40,7 @@ type AppSettings struct {
 	WindowWidth           int      `json:"windowWidth,omitempty"`
 	WindowHeight          int      `json:"windowHeight,omitempty"`
 	WindowMaximised       bool     `json:"windowMaximised,omitempty"`
+	DefaultLocalShell     string   `json:"defaultLocalShell,omitempty"`
 }
 
 func DefaultSettings() AppSettings {
@@ -121,7 +121,7 @@ func normalizeSettings(s AppSettings) AppSettings {
 		s.DefaultKeepAlive = d.DefaultKeepAlive
 	}
 	switch strings.ToLower(strings.TrimSpace(s.ProxyMode)) {
-	case "", "none", "direct":
+	case "", "direct":
 		s.ProxyMode = "direct"
 	case "system", "socks5", "http":
 		s.ProxyMode = strings.ToLower(strings.TrimSpace(s.ProxyMode))
@@ -176,6 +176,7 @@ func normalizeSettings(s AppSettings) AppSettings {
 	if s.WindowHeight < 560 || s.WindowHeight > 2160 {
 		s.WindowHeight = d.WindowHeight
 	}
+	s.DefaultLocalShell = strings.TrimSpace(s.DefaultLocalShell)
 	return s
 }
 
@@ -188,7 +189,7 @@ func LoadSettings() (AppSettings, error) {
 }
 
 func readSettings(dir string, result *AppSettings) error {
-	data, err := readLimited(filepath.Join(dir, "settings.json"), 256<<10)
+	data, err := readLimited(configPath(dir, "settings.json"), 256<<10)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -207,7 +208,7 @@ func writeSettings(dir string, s AppSettings) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(dir, "settings.json"), data)
+	return writeAtomic(configPath(dir, "settings.json"), data)
 }
 
 func SaveSettings(s AppSettings) (AppSettings, error) {

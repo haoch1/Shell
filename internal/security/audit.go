@@ -52,7 +52,7 @@ func auditFilePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(root, "Shell")
+	dir := filepath.Join(root, "Shell", "logs")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
@@ -65,7 +65,7 @@ func newAuditID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// AppendAudit appends one redacted audit entry to %LOCALAPPDATA%\Shell\audit.jsonl.
+// AppendAudit appends one redacted audit entry to %LOCALAPPDATA%\Shell\logs\audit.jsonl.
 func AppendAudit(e AuditEntry) error {
 	if e.ID == "" {
 		e.ID = newAuditID()

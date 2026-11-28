@@ -8,32 +8,27 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/haoch1/Shell/internal/security"
 	"golang.org/x/sys/windows"
 )
 
-const currentPolicyVersion = 2
-
 // AgentConfig controls external Agent MCP/HTTP bridge, execution mode, command permissions, and text redaction.
 type AgentConfig struct {
-	Enabled       bool                     `json:"enabled"`
-	Port          int                      `json:"port"`
-	ExecMode      string                   `json:"execMode,omitempty"` // "silent" (default, background headless/tray) or "visible" (open/focus GUI terminal)
-	PolicyVersion int                      `json:"policyVersion,omitempty"`
-	Policy        security.PolicyConfig    `json:"policy"`
-	Redaction     security.RedactionConfig `json:"redaction"`
+	Enabled   bool                     `json:"enabled"`
+	Port      int                      `json:"port"`
+	ExecMode  string                   `json:"execMode,omitempty"` // "silent" (default, background headless/tray) or "visible" (open/focus GUI terminal)
+	Policy    security.PolicyConfig    `json:"policy"`
+	Redaction security.RedactionConfig `json:"redaction"`
 }
 
 func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
-		Enabled:       false,
-		Port:          17822,
-		ExecMode:      "silent",
-		PolicyVersion: currentPolicyVersion,
-		Policy:        security.DefaultPolicyConfig(),
-		Redaction:     security.DefaultRedactionConfig(),
+		Enabled:   false,
+		Port:      17822,
+		ExecMode:  "silent",
+		Policy:    security.DefaultPolicyConfig(),
+		Redaction: security.DefaultRedactionConfig(),
 	}
 }
 
@@ -61,48 +56,30 @@ func normalizeAgentConfig(c AgentConfig) AgentConfig {
 func LoadAgentConfig() (AgentConfig, error) {
 	cfg := DefaultAgentConfig()
 	err := withStore(func(dir string) error {
-		data, err := readLimited(filepath.Join(dir, "agent.json"), 512<<10)
+		data, err := readLimited(configPath(dir, "agent.json"), 512<<10)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		// Reset PolicyVersion before decoding so legacy v1.0/v1.1 configs omitting it decode as 0.
-		cfg.PolicyVersion = 0
 		if !json.Valid(data) || json.NewDecoder(bytes.NewReader(data)).Decode(&cfg) != nil {
 			return errors.New("Agent 配置文件格式无效")
 		}
-		migrated := false
-		if cfg.PolicyVersion < currentPolicyVersion {
-			if cfg.Policy.Mode == security.ModeSmart {
-				cfg.Policy.Mode = security.ModeTrusted
-			}
-			cfg.PolicyVersion = currentPolicyVersion
-			migrated = true
-		}
 		cfg = normalizeAgentConfig(cfg)
-		if migrated {
-			if out, mErr := json.MarshalIndent(cfg, "", "  "); mErr == nil {
-				_ = writeAtomic(filepath.Join(dir, "agent.json"), out)
-			}
-		}
 		return nil
 	})
 	return cfg, err
 }
 
 func SaveAgentConfig(cfg AgentConfig) (AgentConfig, error) {
-	if cfg.PolicyVersion < currentPolicyVersion {
-		cfg.PolicyVersion = currentPolicyVersion
-	}
 	cfg = normalizeAgentConfig(cfg)
 	err := withStore(func(dir string) error {
 		data, err := json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
 			return err
 		}
-		return writeAtomic(filepath.Join(dir, "agent.json"), data)
+		return writeAtomic(configPath(dir, "agent.json"), data)
 	})
 	return cfg, err
 }
@@ -115,7 +92,7 @@ type agentTokenBlob struct {
 func EnsureAgentToken() (string, error) {
 	var token string
 	err := withStore(func(dir string) error {
-		p := filepath.Join(dir, "agent-token.dpapi")
+		p := securityPath(dir, "agent-token.dpapi")
 		var blob agentTokenBlob
 		err := readProtected(p, &blob)
 		if err == nil && len(blob.Token) >= 32 {
@@ -141,12 +118,12 @@ func RotateAgentToken() (string, error) {
 			return err
 		}
 		token = "sh_" + hex.EncodeToString(b[:])
-		return writeProtected(filepath.Join(dir, "agent-token.dpapi"), agentTokenBlob{Token: token})
+		return writeProtected(securityPath(dir, "agent-token.dpapi"), agentTokenBlob{Token: token})
 	})
 	return token, err
 }
 
-// BridgeRuntimeInfo is written to %LOCALAPPDATA%\Shell\bridge-runtime.json while the GUI MCP bridge is running
+// BridgeRuntimeInfo is written to %LOCALAPPDATA%\Shell\runtime\bridge.json while the GUI MCP bridge is running
 // so `Shell.exe --mcp` stdio proxy can auto-discover the live local port cleanly.
 type BridgeRuntimeInfo struct {
 	Port   int    `json:"port"`
@@ -160,13 +137,13 @@ func WriteBridgeRuntime(port int, pipeID string) error {
 		if err != nil {
 			return err
 		}
-		return writeAtomic(filepath.Join(dir, "bridge-runtime.json"), data)
+		return writeAtomic(runtimePath(dir, "bridge.json"), data)
 	})
 }
 
 func ClearBridgeRuntime() {
 	_ = withStore(func(dir string) error {
-		err := os.Remove(filepath.Join(dir, "bridge-runtime.json"))
+		err := os.Remove(runtimePath(dir, "bridge.json"))
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
@@ -177,12 +154,11 @@ func ClearBridgeRuntime() {
 // ReadBridgeCredentials discovers the running GUI without taking the settings writer lock.
 // Both files are published by atomic replacement; the HTTP bridge authenticates the pair.
 func ReadBridgeCredentials() (BridgeRuntimeInfo, string, error) {
-	root, err := os.UserCacheDir()
+	dir, err := DataDir()
 	if err != nil {
 		return BridgeRuntimeInfo{}, "", err
 	}
-	dir := filepath.Join(root, "Shell")
-	data, err := readBridgeFile(filepath.Join(dir, "bridge-runtime.json"), 4096)
+	data, err := readBridgeFile(runtimePath(dir, "bridge.json"), 4096)
 	if err != nil {
 		return BridgeRuntimeInfo{}, "", fmt.Errorf("未检测到运行中的 Shell MCP 桥接服务：%w", err)
 	}
@@ -190,7 +166,7 @@ func ReadBridgeCredentials() (BridgeRuntimeInfo, string, error) {
 	if json.Unmarshal(data, &info) != nil || info.Port < 1024 || info.Port > 65535 {
 		return BridgeRuntimeInfo{}, "", errors.New("Shell MCP 桥接端口无效")
 	}
-	sealed, err := readBridgeFile(filepath.Join(dir, "agent-token.dpapi"), 128<<10)
+	sealed, err := readBridgeFile(securityPath(dir, "agent-token.dpapi"), 128<<10)
 	if err != nil {
 		return BridgeRuntimeInfo{}, "", fmt.Errorf("无法读取 Shell MCP 桥接令牌：%w", err)
 	}

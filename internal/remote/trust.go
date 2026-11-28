@@ -58,11 +58,13 @@ func hostVerifier(
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "Shell", "known_hosts")
+	shellDir := filepath.Join(dir, "Shell")
+	path := filepath.Join(shellDir, "security", "known_hosts")
+	lockPath := filepath.Join(shellDir, "runtime", "known_hosts.lock")
 	return func(host string, peer net.Addr, key ssh.PublicKey) error {
 		ctx, cancel := context.WithTimeout(life, 60*time.Second)
 		defer cancel()
-		trusted, err := verifyPin(ctx, path, host, peer, key, false, false)
+		trusted, err := verifyPin(ctx, path, lockPath, host, peer, key, false, false)
 		if err != nil {
 			var mismatch *hostKeyMismatchError
 			if errors.As(err, &mismatch) && verifyChanged != nil {
@@ -78,7 +80,7 @@ func hostVerifier(
 						return errors.New("已拒绝变更后的主机指纹")
 					}
 				}
-				_, repErr := verifyPin(ctx, path, host, peer, key, true, true)
+				_, repErr := verifyPin(ctx, path, lockPath, host, peer, key, true, true)
 				return repErr
 			}
 			return err
@@ -101,7 +103,7 @@ func hostVerifier(
 			}
 		}
 		// A concurrent connection may have accepted a different key while the dialog was open.
-		_, err = verifyPin(ctx, path, host, peer, key, true, false)
+		_, err = verifyPin(ctx, path, lockPath, host, peer, key, true, false)
 		return err
 	}, nil
 }
@@ -182,7 +184,7 @@ func stripHostFromKnownHosts(raw []byte, targetHost string, removeLines map[int]
 	return out.Bytes()
 }
 
-func verifyPin(ctx context.Context, path, host string, peer net.Addr, key ssh.PublicKey, accept, replaceMismatch bool) (bool, error) {
+func verifyPin(ctx context.Context, path, lockPath, host string, peer net.Addr, key ssh.PublicKey, accept, replaceMismatch bool) (bool, error) {
 	if !accept {
 		if trusted, decided, err := verifyPinFast(path, host, peer, key); decided {
 			return trusted, err
@@ -191,7 +193,10 @@ func verifyPin(ctx context.Context, path, host string, peer net.Addr, key ssh.Pu
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return false, err
 	}
-	unlock, err := lockPins(ctx, path+".lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
+		return false, err
+	}
+	unlock, err := lockPins(ctx, lockPath)
 	if err != nil {
 		return false, err
 	}

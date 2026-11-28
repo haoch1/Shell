@@ -10,7 +10,7 @@ import (
 )
 
 func TestFreshSnippetCatalog(t *testing.T) {
-	isolated(t)
+	dir := isolated(t)
 	list, err := Snippets()
 	if err != nil || len(list) != 28 {
 		t.Fatalf("new install: %d snippets, %v", len(list), err)
@@ -28,63 +28,83 @@ func TestFreshSnippetCatalog(t *testing.T) {
 	if err != nil || !slices.Equal(list, again) {
 		t.Fatalf("second read changed catalog: %v", err)
 	}
-}
-
-func TestSnippetUpgradeHonorsEditsAndDeletions(t *testing.T) {
-	isolated(t)
-	old := originalSnippets()[1:] // A user deleted the first bundled command.
-	old[0].Name = "renamed disk command"
-	custom := Snippet{ID: "custom", Name: "my distro", Category: "custom", Command: "  " + additionalSnippets()[0].Command + "  "}
-	old = append(old, custom)
-	if err := withStore(func(dir string) error { return writeSnippets(dir, old) }); err != nil {
-		t.Fatal(err)
+	// Stored cleanly under config/snippets.json with zero legacy catalog marker file.
+	data, err := os.ReadFile(filepath.Join(dir, "config", "snippets.json"))
+	if err != nil {
+		t.Fatalf("missing config/snippets.json: %v", err)
 	}
-	list, err := Snippets()
-	if err != nil || len(list) != len(old)+19 || !slices.Equal(list[:len(old)], old) {
-		t.Fatalf("upgrade lost user choices: %+v, %v", list, err)
+	var rows []Snippet
+	if err := json.Unmarshal(data, &rows); err != nil || len(rows) != 28 {
+		t.Fatalf("unexpected persisted snippets: %d rows, %v", len(rows), err)
 	}
-	for _, s := range list {
-		if s.ID == originalSnippets()[0].ID || s.ID == additionalSnippets()[0].ID {
-			t.Fatalf("unexpected preset %q", s.ID)
+	for _, legacy := range []string{
+		filepath.Join(dir, "snippets.json"),
+		filepath.Join(dir, "snippets-catalog.version"),
+		filepath.Join(dir, "config", "snippets-catalog.version"),
+	} {
+		if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+			t.Fatalf("unexpected legacy snippet file %s", legacy)
 		}
 	}
-	renamed := list[len(old)]
-	renamed.Name = "my CPU details"
-	renamed.Command = "lscpu --extended"
-	if _, err := SaveSnippet(renamed); err != nil {
+}
+
+func TestSnippetEditsAndDeletionsPersistCleanly(t *testing.T) {
+	isolated(t)
+	list, err := Snippets()
+	if err != nil || len(list) != 28 {
+		t.Fatalf("initial snippets: %d, %v", len(list), err)
+	}
+
+	edited := list[0]
+	edited.Name = "自定义系统概览"
+	edited.Command = "uptime && free -m"
+	if _, err := SaveSnippet(edited); err != nil {
 		t.Fatal(err)
 	}
-	deleted := list[len(old)+1]
+
+	deleted := list[1]
 	if err := DeleteSnippet(deleted.ID); err != nil {
 		t.Fatal(err)
 	}
+
+	added, err := SaveSnippet(Snippet{Name: "自定义检查", Category: "网络", Command: "curl -I https://example.com"})
+	if err != nil || added.ID == "" {
+		t.Fatalf("SaveSnippet new item failed: %+v, %v", added, err)
+	}
+
 	for range 2 {
-		list, err = Snippets()
-		if err != nil || len(list) != len(old)+18 || !slices.Contains(list, renamed) || slices.Contains(list, deleted) {
-			t.Fatalf("edited or deleted presets changed on reopen: %+v, %v", list, err)
+		reloaded, err := Snippets()
+		if err != nil || len(reloaded) != 28 {
+			t.Fatalf("reloaded snippets: %d, %v", len(reloaded), err)
+		}
+		if !slices.Contains(reloaded, edited) {
+			t.Fatalf("edited preset lost on reload")
+		}
+		if slices.Contains(reloaded, deleted) {
+			t.Fatalf("deleted preset unexpectedly re-added on reload")
+		}
+		if !slices.Contains(reloaded, added) {
+			t.Fatalf("custom snippet lost on reload")
 		}
 	}
 }
 
-func TestUpgradeNearOriginalSnippetLimit(t *testing.T) {
+func TestSnippetsCompactWriteNearLimit(t *testing.T) {
 	dir := isolated(t)
-	const oldLimit = 2 << 20
-	custom := Snippet{ID: "custom", Name: "long description", Category: "custom", Command: "ls", Description: strings.Repeat("x", oldLimit-256)}
+	custom := Snippet{ID: "custom", Name: "long description", Category: "custom", Command: "ls", Description: strings.Repeat("x", snippetsLimit-256)}
 	if err := withStore(func(dir string) error { return writeSnippets(dir, []Snippet{custom}) }); err != nil {
 		t.Fatal(err)
 	}
-	for range 2 {
-		list, err := Snippets()
-		if err != nil || len(list) != 21 || list[0] != custom {
-			t.Fatalf("near-limit legacy catalog: %d snippets, %v", len(list), err)
-		}
+	list, err := Snippets()
+	if err != nil || len(list) != 1 || list[0] != custom {
+		t.Fatalf("near-limit catalog mismatch: %d snippets, %v", len(list), err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "snippets.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "config", "snippets.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var rows []Snippet
-	if err := json.Unmarshal(data, &rows); err != nil || len(rows) != 21 {
-		t.Fatalf("legacy JSON array compatibility: %d rows, %v", len(rows), err)
+	if err := json.Unmarshal(data, &rows); err != nil || len(rows) != 1 {
+		t.Fatalf("unexpected snippets.json content: %d rows, %v", len(rows), err)
 	}
 }

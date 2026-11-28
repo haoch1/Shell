@@ -1,6 +1,8 @@
 package security
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -242,7 +244,8 @@ func TestTrustedModeDefaultAutoAllowAndCatastrophicProtection(t *testing.T) {
 }
 
 func TestAuditLogRedactionAndLifecycle(t *testing.T) {
-	t.Setenv("LOCALAPPDATA", t.TempDir())
+	root := t.TempDir()
+	t.Setenv("LOCALAPPDATA", root)
 	if err := AppendAudit(AuditEntry{
 		Source:     "mcp",
 		ClientName: "UnitTest",
@@ -254,6 +257,12 @@ func TestAuditLogRedactionAndLifecycle(t *testing.T) {
 		OK:         true,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Shell", "logs", "audit.jsonl")); err != nil {
+		t.Fatalf("expected audit log under logs/audit.jsonl: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Shell", "audit.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected loose audit.jsonl in Shell/ root: %v", err)
 	}
 	logs, err := ListAudit(10)
 	if err != nil || len(logs) != 1 {

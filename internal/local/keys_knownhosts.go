@@ -18,7 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// KnownHostEntry describes one pinned host key record in %LOCALAPPDATA%\Shell\known_hosts.
+// KnownHostEntry describes one pinned host key record in %LOCALAPPDATA%\Shell\security\known_hosts.
 type KnownHostEntry struct {
 	Line        int      `json:"line"`
 	Hosts       []string `json:"hosts"`
@@ -29,7 +29,7 @@ type KnownHostEntry struct {
 func ListKnownHosts() ([]KnownHostEntry, error) {
 	var out []KnownHostEntry
 	err := withStore(func(dir string) error {
-		data, err := readLimited(filepath.Join(dir, "known_hosts"), 8<<20)
+		data, err := readLimited(securityPath(dir, "known_hosts"), 8<<20)
 		if errors.Is(err, os.ErrNotExist) {
 			out = []KnownHostEntry{}
 			return nil
@@ -86,7 +86,7 @@ func RemoveKnownHosts(targetLines []int) error {
 		return nil
 	}
 	return withStore(func(dir string) error {
-		p := filepath.Join(dir, "known_hosts")
+		p := securityPath(dir, "known_hosts")
 		data, err := readLimited(p, 8<<20)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -116,7 +116,7 @@ func RemoveKnownHosts(targetLines []int) error {
 // ClearKnownHosts removes all pinned host key entries atomically.
 func ClearKnownHosts() error {
 	return withStore(func(dir string) error {
-		p := filepath.Join(dir, "known_hosts")
+		p := securityPath(dir, "known_hosts")
 		if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
 			return nil
 		}

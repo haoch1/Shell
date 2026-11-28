@@ -20,10 +20,16 @@ func TestBridgeDiscoveryIsReadOnly(t *testing.T) {
 	if err := WriteBridgeRuntime(17822, ""); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(runtimePath(dir, "bridge.json")); err != nil {
+		t.Fatalf("expected runtime/bridge.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bridge-runtime.json")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected legacy bridge-runtime.json in root: %v", err)
+	}
 	if _, _, err := ReadBridgeCredentials(); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing token: %v", err)
 	}
-	path := filepath.Join(dir, "agent-token.dpapi")
+	path := securityPath(dir, "agent-token.dpapi")
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("discovery generated a token: %v", err)
 	}
@@ -36,6 +42,10 @@ func TestBridgeDiscoveryIsReadOnly(t *testing.T) {
 	}
 	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, damaged) {
 		t.Fatalf("discovery replaced a damaged token: %v", err)
+	}
+	ClearBridgeRuntime()
+	if _, err := os.Stat(runtimePath(dir, "bridge.json")); !os.IsNotExist(err) {
+		t.Fatalf("ClearBridgeRuntime did not remove runtime/bridge.json: %v", err)
 	}
 }
 

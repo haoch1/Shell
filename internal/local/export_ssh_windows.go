@@ -3,7 +3,6 @@ package local
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -26,15 +25,13 @@ func ExportHostFile(dest string, ids []string, format string) (int, []string, er
 			return err
 		}
 		if includeSecrets {
-			secrets = make(map[string]string, len(profiles))
-			for _, p := range profiles {
-				var item credential
-				err := readProtected(secretPath(dir, p.ID), &item)
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-				if err == nil && item.For == identityKey(p) && item.Secret != "" {
-					secrets[p.ID] = item.Secret
+			vault, err := readCredentialVault(dir)
+			if err == nil {
+				secrets = make(map[string]string, len(profiles))
+				for _, p := range profiles {
+					if item, ok := vault[p.ID]; ok && item.For == identityKey(p) && item.Secret != "" {
+						secrets[p.ID] = item.Secret
+					}
 				}
 			}
 		}

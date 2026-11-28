@@ -528,8 +528,8 @@ func sanitizeVersionForFilename(v string) string {
 }
 
 func updateStagingDirPath() string {
-	if root, err := os.UserCacheDir(); err == nil && root != "" {
-		return filepath.Join(root, "Shell", "updates")
+	if dir, err := local.UpdatesDir(); err == nil && dir != "" {
+		return dir
 	}
 	if tmp := os.TempDir(); tmp != "" {
 		return filepath.Join(tmp, "Shell", "updates")
@@ -538,8 +538,7 @@ func updateStagingDirPath() string {
 }
 
 func ensureUpdateStagingDir() (string, error) {
-	if root, err := os.UserCacheDir(); err == nil && root != "" {
-		dir := filepath.Join(root, "Shell", "updates")
+	if dir, err := local.UpdatesDir(); err == nil && dir != "" {
 		if mkErr := os.MkdirAll(dir, 0700); mkErr == nil && isDirWritable(dir) {
 			return dir, nil
 		}
@@ -1086,7 +1085,7 @@ func cleanupUpdateStagingDir(stageDir, currentExe string, minAge time.Duration) 
 }
 
 // cleanupPreviousExecutable removes any leftover .old*/.new.* files next to the running binary
-// as well as stale staged update binaries in %LOCALAPPDATA%\Shell\updates.
+// as well as stale staged update binaries in %LOCALAPPDATA%\Shell\runtime\updates.
 // It retries for up to 60s so files briefly held by exiting background processes (e.g. --mcp)
 // are cleaned up automatically without user intervention.
 func cleanupPreviousExecutable() {
@@ -1170,7 +1169,7 @@ func (a *App) DownloadAndApplyUpdate() error {
 		return errors.New("当前已是最新版本，无需更新")
 	}
 
-	// 1. Always stage & verify in user-writable %LOCALAPPDATA%\Shell\updates\ first.
+	// 1. Always stage & verify in user-writable %LOCALAPPDATA%\Shell\runtime\updates\ first.
 	stageDir, err := ensureUpdateStagingDir()
 	if err != nil {
 		emit(UpdateProgress{Phase: "error", Message: err.Error()})

@@ -3,7 +3,6 @@ package local
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,15 +21,21 @@ func withStore(op func(string) error) error {
 	settingsLock.Lock()
 	defer settingsLock.Unlock()
 
-	root, err := os.UserCacheDir() // %LOCALAPPDATA% on Windows.
+	dir, err := DataDir()
 	if err != nil {
-		return fmt.Errorf("无法定位本地设置目录：%w", err)
-	}
-	dir := filepath.Join(root, "Shell")
-	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "settings.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	for _, sub := range []string{
+		dir,
+		filepath.Join(dir, "config"),
+		filepath.Join(dir, "security"),
+		filepath.Join(dir, "runtime"),
+	} {
+		if err := os.MkdirAll(sub, 0700); err != nil {
+			return err
+		}
+	}
+	f, err := os.OpenFile(runtimePath(dir, "store.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err
 	}
@@ -65,6 +70,9 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 }
 
 func writeAtomic(path string, data []byte) error {
+	if err := ensureParentDir(path); err != nil {
+		return err
+	}
 	temp, err := os.CreateTemp(filepath.Dir(path), ".shell-*.tmp")
 	if err != nil {
 		return err

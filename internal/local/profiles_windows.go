@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -267,7 +266,7 @@ func normalize(p Profile) (Profile, error) {
 }
 
 func readProfiles(dir string) ([]Profile, error) {
-	data, err := readLimited(filepath.Join(dir, "profiles.json"), profileLimit)
+	data, err := readLimited(configPath(dir, "profiles.json"), profileLimit)
 	if errors.Is(err, os.ErrNotExist) {
 		return []Profile{}, nil
 	}
@@ -300,7 +299,7 @@ func writeProfiles(dir string, profiles []Profile) error {
 	if len(data) > profileLimit {
 		return errors.New("连接配置超过 4 MiB 容量")
 	}
-	return writeAtomic(filepath.Join(dir, "profiles.json"), data)
+	return writeAtomic(configPath(dir, "profiles.json"), data)
 }
 
 func Profiles() ([]Profile, error) {
@@ -479,15 +478,21 @@ func DeleteProfiles(ids []string) error {
 			return err
 		}
 		next := make([]Profile, 0, len(list))
+		removed := make([]string, 0, len(drop))
 		for _, item := range list {
 			if drop[item.ID] {
-				_ = removeSecret(dir, item.ID)
+				removed = append(removed, item.ID)
 				continue
 			}
 			if drop[item.JumpHostID] {
 				item.JumpHostID = ""
 			}
 			next = append(next, item)
+		}
+		if len(removed) > 0 {
+			if err := removeSecrets(dir, removed); err != nil {
+				return err
+			}
 		}
 		return writeProfiles(dir, next)
 	})

@@ -37,6 +37,7 @@ interface ToolStep {
 
 interface ChatMessage {
   id: string;
+  sessionId: string;
   role: 'user' | 'assistant';
   content: string;
   selectionLines?: number;
@@ -126,7 +127,7 @@ function formatPermissionLabel(mode?: PermissionMode): string {
   if (mode === 'readonly') return '只读模式';
   if (mode === 'smart') return '智能确认';
   if (mode === 'ask_all') return '逐次确认';
-  return '自动放行';
+  return mode === 'trusted' ? '自动放行' : '未获取执行策略';
 }
 
 function renderLightMarkdown(
@@ -198,6 +199,14 @@ function renderLightMarkdown(
   return <div className="ai-md">{nodes}</div>;
 }
 
+const AssistantContent = React.memo(function AssistantContent({
+  text, hasActiveSession, onInsertCommand, onToast,
+}: Pick<AIDrawerProps, 'hasActiveSession' | 'onInsertCommand' | 'onToast'> & { text: string }) {
+  return renderLightMarkdown(text, hasActiveSession,
+    (code) => { void copyToClipboard(code); onToast('已复制代码'); },
+    (code) => onInsertCommand(code, true));
+});
+
 export const AIDrawer: React.FC<AIDrawerProps> = ({
   configVersion = 0,
   activeSessionId,
@@ -216,22 +225,32 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
   const [config, setConfig] = useState<AIConfigView | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [prompt, setPrompt] = useState('');
-  const [attachedSelection, setAttachedSelection] = useState('');
-  const [running, setRunning] = useState(false);
+  const sessionId = activeSessionId || '';
+  const [drafts, setDrafts] = useState<Record<string, { prompt: string; selection: string }>>({});
+  const prompt = drafts[sessionId]?.prompt || '';
+  const attachedSelection = drafts[sessionId]?.selection || '';
+  const updateDraft = useCallback((target: string, patch: { prompt?: string; selection?: string }) => {
+    setDrafts((prev) => ({ ...prev, [target]: { ...(prev[target] ?? { prompt: '', selection: '' }), ...patch } }));
+  }, []);
+  const visibleMessages = React.useMemo(() => messages.filter((m) => m.sessionId === sessionId), [messages, sessionId]);
+  const [runningSession, setRunningSession] = useState<string | null>(null);
+  const running = runningSession !== null;
+  const runningHere = runningSession === sessionId;
 
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const activeAssistantIdRef = useRef<string | null>(null);
-  const lastHandledExplainRef = useRef('');
+  const nextTurn = useRef(0);
+  const explainTarget = useRef<{ text: string; sessionId: string; handled: boolean } | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     let alive = true;
+    setConfigLoaded(false);
     void getApi().AIConfig()
       .then((c) => { if (alive) { setConfig(c); setConfigLoaded(true); } })
-      .catch(() => { if (alive) setConfigLoaded(true); });
+      .catch(() => { if (alive) { setConfig(null); setConfigLoaded(true); } });
     return () => { alive = false; };
   }, [configVersion]);
 
@@ -283,7 +302,7 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
   useEffect(() => {
     const el = threadRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, running]);
+  }, [visibleMessages]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -292,16 +311,17 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
     ta.style.height = `${Math.min(112, Math.max(36, ta.scrollHeight))}px`;
   }, [prompt]);
 
-  const aiReady = Boolean(config?.ready || config?.model || (config?.mode === 'cli' && config?.cliCommand));
+  const aiReady = Boolean(config?.ready);
   const aiDisplayLabel = config?.mode === 'cli'
     ? `CLI · ${config.cliCommand || '未设置'}${config.cliModel ? ` (${config.cliModel})` : ''}`
     : config?.model || '未配置模型';
 
   const executeAgentTurn = useCallback(async (assistantId: string, goal: string, history: AgentTurn[]) => {
+    if (activeAssistantIdRef.current) return;
     activeAssistantIdRef.current = assistantId;
-    setRunning(true);
+    setRunningSession(sessionId);
     try {
-      const finalText = await getApi().RunAIAgent(activeSessionId || '', goal, history);
+      const finalText = await getApi().RunAIAgent(sessionId, goal, history);
       setMessages((prev) => prev.map((m) => m.id === assistantId ? {
         ...m,
         running: false,
@@ -318,18 +338,20 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
         steps: m.steps?.map((s) => (s.status === 'running' ? { ...s, status: 'error', expanded: true } : s)),
       } : m));
     } finally {
-      if (activeAssistantIdRef.current === assistantId) activeAssistantIdRef.current = null;
-      setRunning(false);
+      if (activeAssistantIdRef.current === assistantId) {
+        activeAssistantIdRef.current = null;
+        setRunningSession(null);
+      }
     }
-  }, [activeSessionId]);
+  }, [sessionId]);
 
   const sendMessage = useCallback(async (rawText: string, rawSelection?: string) => {
-    if (running) return;
+    if (!configLoaded || activeAssistantIdRef.current) return;
     const selection = truncateSelection(rawSelection ?? attachedSelection);
     const userText = rawText.trim();
     if (!userText && !selection) return;
-    if (config && !aiReady) {
-      if (selection) setAttachedSelection(selection);
+    if (!aiReady) {
+      if (selection) updateDraft(sessionId, { selection });
       onOpenAISettings();
       return;
     }
@@ -337,34 +359,37 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
     const displayText = userText || '分析并排查这段终端输出的问题';
     const goal = selection ? `${displayText}\n\n终端选区内容：\n\`\`\`\n${selection}\n\`\`\`` : displayText;
     const history: AgentTurn[] = messagesRef.current
-      .filter((m) => !m.running && !m.error && m.content.trim() !== '')
+      .filter((m) => m.sessionId === sessionId && !m.running && !m.error && m.content.trim() !== '')
       .slice(-6)
       .map((m) => ({ role: m.role, content: m.content }));
 
-    const now = Date.now();
-    const assistantId = `a-${now + 1}`;
+    const turn = ++nextTurn.current;
+    const assistantId = `a-${turn}`;
     setMessages((prev) => [
       ...prev,
-      { id: `u-${now}`, role: 'user', content: displayText, selectionLines: selection ? countLines(selection) : undefined },
-      { id: assistantId, role: 'assistant', content: '', steps: [], running: true, retryGoal: goal, retryHistory: history },
+      { id: `u-${turn}`, sessionId, role: 'user', content: displayText, selectionLines: selection ? countLines(selection) : undefined },
+      { id: assistantId, sessionId, role: 'assistant', content: '', steps: [], running: true, retryGoal: goal, retryHistory: history },
     ]);
-    setPrompt('');
-    setAttachedSelection('');
+    updateDraft(sessionId, { prompt: '', selection: '' });
     await executeAgentTurn(assistantId, goal, history);
-  }, [aiReady, attachedSelection, config, executeAgentTurn, onOpenAISettings, running]);
+  }, [aiReady, attachedSelection, configLoaded, executeAgentTurn, onOpenAISettings, sessionId, updateDraft]);
 
   useEffect(() => {
     if (!initialExplainText) {
-      lastHandledExplainRef.current = '';
+      explainTarget.current = null;
       return;
     }
-    if (!configLoaded || lastHandledExplainRef.current === initialExplainText) return;
-    lastHandledExplainRef.current = initialExplainText;
+    if (explainTarget.current?.text !== initialExplainText) {
+      explainTarget.current = { text: initialExplainText, sessionId, handled: false };
+    }
+    const selection = explainTarget.current;
+    if (!configLoaded || selection.handled) return;
+    selection.handled = true;
     const truncated = truncateSelection(initialExplainText);
     onClearInitialExplain();
-    if (aiReady && !running) void sendMessage('分析并排查这段终端输出的问题', truncated);
-    else setAttachedSelection(truncated);
-  }, [aiReady, configLoaded, initialExplainText, onClearInitialExplain, running, sendMessage]);
+    if (selection.sessionId === sessionId && aiReady && !running) void sendMessage('分析并排查这段终端输出的问题', truncated);
+    else updateDraft(selection.sessionId, { selection: truncated });
+  }, [aiReady, configLoaded, initialExplainText, onClearInitialExplain, running, sendMessage, sessionId, updateDraft]);
 
   const toggleStep = (msgId: string, stepId: string) => {
     setMessages((prev) => prev.map((m) => m.id === msgId
@@ -391,8 +416,11 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
             type="button"
             className="icon-btn"
             title="新建对话"
-            disabled={messages.length === 0 || running}
-            onClick={() => { setMessages([]); setAttachedSelection(''); }}
+            disabled={visibleMessages.length === 0 || runningHere}
+            onClick={() => {
+              setMessages((prev) => prev.filter((m) => m.sessionId !== sessionId));
+              updateDraft(sessionId, { prompt: '', selection: '' });
+            }}
           >
             <RotateCcw size={14} />
           </button>
@@ -413,7 +441,7 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
         <span className="ai-target-text">{targetText}</span>
       </div>
 
-      {config && !aiReady && (
+      {configLoaded && !aiReady && (
         <div className="ai-setup-banner">
           <div className="soft-card" style={{ padding: '9px 11px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>先配置 API 或本地 CLI 即可使用</span>
@@ -423,19 +451,19 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
       )}
 
       <div ref={threadRef} className="ai-thread">
-        {messages.length === 0 ? (
+        {visibleMessages.length === 0 ? (
           <div className="ai-empty-state">
             <p className="ai-empty-hint">发送需求即自动在当前终端排查与执行，危险操作会先征得确认。</p>
             <div className="ai-quick-chips">
               {quickChips.map((chip) => (
-                <button key={chip} type="button" className="ai-quick-chip" disabled={running} onClick={() => void sendMessage(chip)}>
+                <button key={chip} type="button" className="ai-quick-chip" disabled={!configLoaded || running} onClick={() => void sendMessage(chip)}>
                   {chip}
                 </button>
               ))}
             </div>
           </div>
         ) : (
-          messages.map((msg) => msg.role === 'user' ? (
+          visibleMessages.map((msg) => msg.role === 'user' ? (
             <div key={msg.id} className="ai-msg-user">
               {msg.selectionLines ? (
                 <span className="ai-msg-sel-tag"><Terminal size={11} />终端选区 · {msg.selectionLines} 行</span>
@@ -464,11 +492,9 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
                 </div>
               )}
 
-              {msg.content && renderLightMarkdown(
-                msg.content,
-                hasActiveSession,
-                (code) => { void copyToClipboard(code); onToast('已复制代码'); },
-                (code) => onInsertCommand(code, true),
+              {msg.content && (
+                <AssistantContent text={msg.content} hasActiveSession={hasActiveSession}
+                  onInsertCommand={onInsertCommand} onToast={onToast} />
               )}
 
               {msg.running && (
@@ -481,9 +507,10 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
                   <button
                     type="button"
                     className="btn btn-sm btn-ghost"
-                    disabled={running}
+                    disabled={running || !configLoaded}
                     onClick={() => {
-                      if (running || !msg.retryGoal) return;
+                      if (activeAssistantIdRef.current || !msg.retryGoal) return;
+                      if (!aiReady) { onOpenAISettings(); return; }
                       setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, running: true, error: undefined, content: '', steps: [] } : m));
                       void executeAgentTurn(msg.id, msg.retryGoal, msg.retryHistory || []);
                     }}
@@ -502,7 +529,7 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
           <div className="ai-attach-chip">
             <Terminal size={11.5} />
             <span>已附终端选区 · {attachedLines} 行</span>
-            <button type="button" className="ai-attach-clear" aria-label="移除终端选区" onClick={() => setAttachedSelection('')}>
+            <button type="button" className="ai-attach-clear" aria-label="移除终端选区" onClick={() => updateDraft(sessionId, { selection: '' })}>
               <X size={11} />
             </button>
           </div>
@@ -514,7 +541,7 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
           rows={1}
           placeholder="输入需求按 Enter 直接执行（Shift+Enter 换行）"
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(e) => updateDraft(sessionId, { prompt: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
               e.preventDefault();
@@ -534,13 +561,13 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
           <button
             id="aiSubmitBtn"
             type="button"
-            className={`btn btn-sm ai-send-btn ${running ? 'btn-danger-solid' : 'btn-primary'}`}
-            disabled={!running && !canSend}
-            title={running ? '停止执行' : '发送并执行 (Enter)'}
-            aria-label={running ? '停止执行' : '发送并执行'}
-            onClick={() => (running ? void getApi().CancelAI().catch(() => {}) : void sendMessage(prompt))}
+            className={`btn btn-sm ai-send-btn ${runningHere ? 'btn-danger-solid' : 'btn-primary'}`}
+            disabled={!runningHere && (!configLoaded || running || !canSend)}
+            title={runningHere ? '停止执行' : running ? '其他会话正在执行' : '发送并执行 (Enter)'}
+            aria-label={runningHere ? '停止执行' : '发送并执行'}
+            onClick={() => (runningHere ? void getApi().CancelAI().catch(() => {}) : void sendMessage(prompt))}
           >
-            {running ? (<><Square size={10.5} fill="currentColor" />停止</>) : <ArrowUp size={14} strokeWidth={2.2} />}
+            {runningHere ? (<><Square size={10.5} fill="currentColor" />停止</>) : <ArrowUp size={14} strokeWidth={2.2} />}
           </button>
         </div>
       </div>

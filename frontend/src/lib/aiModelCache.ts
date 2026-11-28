@@ -42,7 +42,7 @@ function sanitizeModels(value: unknown): string[] {
 
 function sanitizeBucket(value: unknown, mode: AIModelCacheMode): Record<string, string[]> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const out: Record<string, string[]> = {};
+  const out: Record<string, string[]> = Object.create(null);
   for (const [rawKey, rawModels] of Object.entries(value as Record<string, unknown>)) {
     const key = normalizeModelCacheKey(mode, rawKey);
     const models = sanitizeModels(rawModels);
@@ -50,12 +50,12 @@ function sanitizeBucket(value: unknown, mode: AIModelCacheMode): Record<string, 
       out[key] = models;
     }
   }
-  return out;
+  return { ...out };
 }
 
 function sanitizeSelectedBucket(value: unknown, mode: AIModelCacheMode): Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   for (const [rawKey, rawModel] of Object.entries(value as Record<string, unknown>)) {
     const key = normalizeModelCacheKey(mode, rawKey);
     if (!key || typeof rawModel !== 'string') continue;
@@ -64,7 +64,7 @@ function sanitizeSelectedBucket(value: unknown, mode: AIModelCacheMode): Record<
       out[key] = model;
     }
   }
-  return out;
+  return { ...out };
 }
 
 function resolveStorage(storage?: StorageLike): StorageLike | null {
@@ -135,6 +135,8 @@ export function writeCachedAIModels(
   const key = normalizeModelCacheKey(mode, rawKey);
   const clean = sanitizeModels(models);
   if (!key || clean.length === 0) return cache;
+  const current = getCachedAIModels(cache, mode, key);
+  if (current?.length === clean.length && current.every((model, i) => model === clean[i])) return cache;
   const next: AIModelsCache = {
     ...cache,
     api: mode === 'api' ? { ...cache.api, [key]: clean } : cache.api,
@@ -152,7 +154,7 @@ export function getCachedSelectedAIModel(
   const key = normalizeModelCacheKey(mode, rawKey);
   if (!key) return '';
   const bucket = mode === 'api' ? cache.selectedApi : cache.selectedCli;
-  return bucket[key] ?? '';
+  return Object.hasOwn(bucket, key) ? bucket[key] : '';
 }
 
 export function writeCachedSelectedAIModel(
@@ -176,7 +178,7 @@ export function writeCachedSelectedAIModel(
     saveAIModelsCache(next, storage);
     return next;
   }
-  if (!(key in prevBucket)) return cache;
+  if (!Object.hasOwn(prevBucket, key)) return cache;
   const nextBucket = { ...prevBucket };
   delete nextBucket[key];
   const next: AIModelsCache = {

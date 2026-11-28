@@ -27,6 +27,20 @@ function createMemoryStorage(initial = {}) {
   };
 }
 
+test('custom CLI names work even when they match object property names', () => {
+  const storage = createMemoryStorage();
+  let cache = createEmptyAIModelsCache();
+  for (const cmd of ['constructor', '__proto__']) {
+    assert.equal(getCachedSelectedAIModel(cache, 'cli', cmd), '');
+    cache = writeCachedAIModels(cache, 'cli', cmd, ['custom'], storage);
+    cache = writeCachedSelectedAIModel(cache, 'cli', cmd, 'custom', storage);
+    const reloaded = loadAIModelsCache(storage);
+    assert.equal(getCachedSelectedAIModel(reloaded, 'cli', cmd), 'custom');
+    assert.deepEqual(getCachedAIModels(reloaded, 'cli', cmd), ['custom']);
+    assert.equal(writeCachedAIModels(cache, 'cli', cmd, ['custom'], storage), cache);
+  }
+});
+
 test('aiModelCache persists API endpoints and CLI commands independently across reloads', () => {
   const storage = createMemoryStorage();
 

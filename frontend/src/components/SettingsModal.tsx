@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive,
   Bot,
@@ -198,6 +198,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // AI settings state
   const [aiCfg, setAiCfg] = useState<AIConfigView | null>(null);
+  const [aiLoadError, setAiLoadError] = useState('');
+  const [aiLoadAttempt, setAiLoadAttempt] = useState(0);
   const [aiMode, setAiMode] = useState<AIProviderMode>('api');
   const [aiEndpoint, setAiEndpoint] = useState('');
   const [aiModel, setAiModel] = useState('');
@@ -207,18 +209,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [cliCommand, setCliCommand] = useState('agy');
   const [cliModel, setCliModel] = useState('');
   const [cliArgs, setCliArgs] = useState('');
-  const [detectedCLIs, setDetectedCLIs] = useState<DetectedAICLI[]>([]);
+  const [detectedCLIs, setDetectedCLIs] = useState<DetectedAICLI[] | null>(null);
   const [aiMsg, setAiMsg] = useState('');
   const [aiErr, setAiErr] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
   const [modelCache, setModelCache] = useState<AIModelsCache>(() => loadAIModelsCache());
   const [fetchingModels, setFetchingModels] = useState(false);
+  const modelRequest = useRef(0);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelFilterActive, setModelFilterActive] = useState(false);
   const [modelHighlightIdx, setModelHighlightIdx] = useState(-1);
   const modelComboRef = useRef<HTMLDivElement>(null);
   const modelInputRef = useRef<HTMLInputElement>(null);
-  const [fetchingCliModels, setFetchingCliModels] = useState(false);
   const [cliModelMenuOpen, setCliModelMenuOpen] = useState(false);
   const [cliModelFilterActive, setCliModelFilterActive] = useState(false);
   const [cliModelHighlightIdx, setCliModelHighlightIdx] = useState(-1);
@@ -254,10 +256,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     void api.DetectSystemProxy?.().then(setSysProxy).catch(() => {});
     void api.KnownHosts().then(setKnownHosts).catch(() => {});
     void api.LocalKeys().then(setKeys).catch(() => {});
-    void api.DetectAICLIs?.().then((list) => setDetectedCLIs(list || [])).catch(() => {});
-    void api
+  }, []);
+
+  const needsAIConfig = tab === 'ai' && !aiCfg;
+  useEffect(() => {
+    if (!needsAIConfig) return;
+    let current = true;
+    setAiLoadError('');
+    void getApi()
       .AIConfig()
       .then((c) => {
+        if (!current) return;
         setAiCfg(c);
         setAiMode(c.mode === 'cli' ? 'cli' : 'api');
         if (!c.endpoint && !c.model) {
@@ -283,8 +292,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           return next;
         });
       })
-      .catch(() => {});
-  }, []);
+      .catch((err) => { if (current) setAiLoadError(errorMessage(err)); });
+    return () => { current = false; };
+  }, [needsAIConfig, aiLoadAttempt]);
+
+  const needsCLIs = tab === 'ai' && aiCfg !== null && aiMode === 'cli' && detectedCLIs === null;
+  useEffect(() => {
+    if (!needsCLIs) return;
+    let current = true;
+    void getApi().DetectAICLIs?.().then(list => { if (current) setDetectedCLIs(list || []); })
+      .catch(() => { if (current) setDetectedCLIs([]); });
+    return () => { current = false; };
+  }, [needsCLIs]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -460,41 +479,57 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
   };
 
+  const normalizedCliCommand = normalizeCliCommand(cliCommand);
+  // Only the still-visible provider and credential draft may update the picker.
+  useLayoutEffect(() => {
+    setFetchingModels(false);
+    return () => { modelRequest.current++; };
+  }, [tab, aiMode, normalizedAiEndpoint, normalizedCliCommand, aiKey, clearAiKey]);
+
   const handleFetchModels = async () => {
-    const targetEndpoint = normalizedAiEndpoint;
-    if (!targetEndpoint) {
-      setAiErr('请先填写 API 地址');
+    const isCli = aiMode === 'cli';
+    const target = isCli ? normalizedCliCommand : normalizedAiEndpoint;
+    if (!target) {
+      setAiErr(isCli ? '请先选择或填写 CLI 命令' : '请先填写 API 地址');
       return;
     }
-    const fetchFn = getApi().FetchAIModels;
-    if (!fetchFn) {
+    const fetch = getApi().FetchAIModels;
+    if (!fetch) {
       setAiErr('当前版本暂不支持自动刷新模型列表');
       return;
     }
+    const request = ++modelRequest.current;
+    const modelInput = isCli ? cliModelInputRef : modelInputRef;
+    const originalValue = modelInput.current?.value;
     setFetchingModels(true);
     setAiErr('');
     setAiMsg('');
     try {
-      const list = await fetchFn(buildAIInput());
-      const clean = Array.isArray(list)
-        ? list.filter((m): m is string => typeof m === 'string' && m.trim() !== '')
-        : [];
-      if (clean.length === 0) {
-        setAiErr('未从接口获取到可用模型，请手动输入');
+      const list = await fetch(buildAIInput());
+      if (request !== modelRequest.current) return;
+      const clean = Array.isArray(list) ? list.filter(m => typeof m === 'string' && m.trim()) : [];
+      if (!clean.length) {
+        setAiErr(isCli ? '未获取到可用模型，请手动输入或留空使用 CLI 默认模型' : '未从接口获取到可用模型，请手动输入');
         return;
       }
-      setModelCache((prev) => writeCachedAIModels(prev, 'api', targetEndpoint, clean));
-      setModelFilterActive(false);
-      setModelMenuOpen(true);
-      setModelHighlightIdx(-1);
-      if (!aiModel.trim()) {
-        setAiModel(clean[0]);
+      setModelCache(prev => writeCachedAIModels(prev, aiMode, target, clean));
+      if (modelInput.current?.value === originalValue) {
+        if (isCli) {
+          setCliModelFilterActive(false);
+          setCliModelMenuOpen(true);
+          setCliModelHighlightIdx(-1);
+        } else {
+          setModelFilterActive(false);
+          setModelMenuOpen(true);
+          setModelHighlightIdx(-1);
+          if (!aiModel.trim()) setAiModel(clean[0]);
+        }
       }
       onToast(`已获取 ${clean.length} 个模型`);
     } catch (ex) {
-      setAiErr(errorMessage(ex));
+      if (request === modelRequest.current) setAiErr(errorMessage(ex));
     } finally {
-      setFetchingModels(false);
+      if (request === modelRequest.current) setFetchingModels(false);
     }
   };
 
@@ -508,8 +543,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setModelHighlightIdx(-1);
     setAiErr('');
   };
-
-  const normalizedCliCommand = normalizeCliCommand(cliCommand);
 
   const matchedCliPreset = useMemo(
     () => AI_CLI_PRESETS.find((p) => p.command && p.command === normalizedCliCommand) || null,
@@ -545,55 +578,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     return opts;
   }, [showCliDefaultOption, filteredCliModels]);
 
-  const handleFetchCliModels = async () => {
-    const targetCliCommand = normalizedCliCommand;
-    if (!targetCliCommand) {
-      setAiErr('请先选择或填写 CLI 命令');
-      return;
-    }
-    const fetchFn = getApi().FetchAIModels;
-    if (!fetchFn) {
-      setAiErr('当前版本暂不支持自动刷新模型列表');
-      return;
-    }
-    setFetchingCliModels(true);
-    setAiErr('');
-    setAiMsg('');
-    const startedAt = Date.now();
-    let clean: string[] = [];
-    let fetchErr = '';
-    try {
-      const list = await fetchFn(buildAIInput());
-      clean = Array.isArray(list)
-        ? list.filter((m): m is string => typeof m === 'string' && m.trim() !== '')
-        : [];
-    } catch (ex) {
-      fetchErr = errorMessage(ex);
-    }
-
-    const waitMs = Math.max(0, 420 - (Date.now() - startedAt));
-    if (waitMs > 0) {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, waitMs));
-    }
-
-    try {
-      if (fetchErr) {
-        setAiErr(fetchErr);
-        return;
-      }
-      if (clean.length === 0) {
-        setAiErr('未获取到可用模型，请手动输入或留空使用 CLI 默认模型');
-        return;
-      }
-      setModelCache((prev) => writeCachedAIModels(prev, 'cli', targetCliCommand, clean));
-      setCliModelFilterActive(false);
-      setCliModelMenuOpen(true);
-      setCliModelHighlightIdx(-1);
-      onToast(`已获取 ${clean.length} 个可用模型`);
-    } finally {
-      setFetchingCliModels(false);
-    }
-  };
 
   const selectCliModelOption = (modelId: string) => {
     setCliModel(modelId);
@@ -1356,8 +1340,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </>
             )}
 
-            {tab === 'ai' && (
-              <form id="settingsForm" onSubmit={saveAI} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {tab === 'ai' && !aiCfg && (
+              <div role="status">
+                {aiLoadError ? <><p className="error-text">{aiLoadError}</p>
+                  <button className="btn" onClick={() => setAiLoadAttempt(n => n + 1)}>重新读取配置</button></> : '正在读取 AI 配置…'}
+              </div>
+            )}
+            {tab === 'ai' && aiCfg && (
+              <form id="settingsForm" onSubmit={saveAI}>
+                <fieldset disabled={aiBusy} style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0, border: 0, margin: 0, padding: 0 }}>
                 <div className="segmented" style={{ width: '100%' }}>
                   <button
                     type="button"
@@ -1444,7 +1435,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             className="input mono"
                             required
                             value={aiEndpoint}
-                            onChange={(e) => setAiEndpoint(e.target.value)}
+                            onChange={(e) => {
+                              const endpoint = e.target.value;
+                              const next = normalizeEndpoint(endpoint);
+                              if (next !== normalizedAiEndpoint) {
+                                setAiKey('');
+                                setShowAiKey(false);
+                                setClearAiKey(false);
+                                setAiModel(getCachedSelectedAIModel(modelCache, 'api', next) ||
+                                  AI_PRESETS.find(p => normalizeEndpoint(p.endpoint) === next)?.model || '');
+                                setModelMenuOpen(false);
+                                setAiErr('');
+                                setAiMsg('');
+                              }
+                              setAiEndpoint(endpoint);
+                            }}
                             placeholder="https://api.openai.com/v1（兼容任意 OpenAI 格式接口）"
                           />
                         </div>
@@ -1705,7 +1710,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="pref-section-title">本机 AI CLI 工具</div>
                       <div className="provider-grid">
                         {AI_CLI_PRESETS.map((p) => {
-                          const det = detectedCLIs.find((d) => d.id === p.id);
+                          const det = detectedCLIs?.find((d) => d.id === p.id);
                           const isCustom = p.id === 'custom';
                           const active = isCustom
                             ? !['claude', 'codex', 'agy'].includes(cliCommand.trim().toLowerCase())
@@ -1774,7 +1779,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             className="input mono"
                             required
                             value={cliCommand}
-                            onChange={(e) => setCliCommand(e.target.value)}
+                            onChange={(e) => {
+                              const command = e.target.value;
+                              const next = normalizeCliCommand(command);
+                              if (next !== normalizedCliCommand) {
+                                setCliModel(getCachedSelectedAIModel(modelCache, 'cli', next));
+                                setCliModelMenuOpen(false);
+                                setAiErr('');
+                                setAiMsg('');
+                              }
+                              setCliCommand(command);
+                            }}
                             placeholder="claude / codex / agy"
                           />
                         </div>
@@ -1977,12 +1992,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               id="fetchCliModelsBtn"
                               type="button"
                               className="btn btn-icon-md"
-                              disabled={fetchingCliModels || aiBusy}
+                              disabled={fetchingModels || aiBusy}
                               title="刷新当前 CLI 可用模型列表"
                               aria-label="刷新 CLI 模型列表"
-                              onClick={() => void handleFetchCliModels()}
+                              onClick={() => void handleFetchModels()}
                             >
-                              <RefreshCw size={13.5} className={fetchingCliModels ? 'spin' : ''} />
+                              <RefreshCw size={13.5} className={fetchingModels ? 'spin' : ''} />
                             </button>
                           </div>
                         </div>
@@ -2022,6 +2037,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   </>
                 )}
+                </fieldset>
               </form>
             )}
 

@@ -2628,6 +2628,8 @@ async function verifyFrontendUI() {
     await click('#snippetsBtn');
     await until(() => evaluate("!document.querySelector('.right-drawer')"), 'closed snippets drawer');
 
+    const { verifyAIState } = await import('./ai-state.mjs');
+    await verifyAIState({ call, evaluate, until, click });
     const { verifySplitWorkspace } = await import('./split-workspace.mjs');
     await verifySplitWorkspace({ call, evaluate, until, click });
     const exportRect = await verifyHostExport({ call, evaluate, until, click, shot });

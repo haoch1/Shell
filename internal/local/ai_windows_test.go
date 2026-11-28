@@ -155,15 +155,24 @@ func TestAIStreamSizeLimit(t *testing.T) {
 func TestLocalAICLIExecutionAndPersistence(t *testing.T) {
 	isolated(t)
 
-	// Verify preset arg builders for claude, codex, gemini, and custom {prompt}.
-	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "claude", CLIModel: "sonnet"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "-p --output-format text --model sonnet" {
+	// Verify preset arg builders for claude, codex, agy, gemini, extra flag dedup, and custom {prompt}.
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "claude", CLIModel: "sonnet"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--output-format text --model sonnet -p" {
 		t.Fatalf("unexpected claude args=%v stdin=%q", args, stdin)
 	}
-	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "exec --skip-git-repo-check -m o3 -" {
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "claude", CLIModel: "sonnet", CLIArgs: "--output-format json --max-turns 2"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--model sonnet --output-format json --max-turns 2 -p" {
+		t.Fatalf("unexpected claude custom args=%v stdin=%q", args, stdin)
+	}
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "exec --skip-git-repo-check --ephemeral --color never -s read-only -m o3 -" {
 		t.Fatalf("unexpected codex args=%v stdin=%q", args, stdin)
 	}
-	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "agy", CLIModel: "gemini-2.5-pro"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "-p --output-format text --disable-slash-commands --model gemini-2.5-pro" {
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "o3", CLIArgs: "-s workspace-write --color always"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "exec --skip-git-repo-check --ephemeral -m o3 -s workspace-write --color always -" {
+		t.Fatalf("unexpected codex custom args=%v stdin=%q", args, stdin)
+	}
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "agy", CLIModel: "gemini-2.5-pro"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--output-format text --disable-slash-commands --model gemini-2.5-pro" {
 		t.Fatalf("unexpected agy args=%v stdin=%q", args, stdin)
+	}
+	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "agy", CLIModel: "gemini-2.5-pro", CLIArgs: "--output-format=json --effort high"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "--disable-slash-commands --model gemini-2.5-pro --output-format=json --effort high" {
+		t.Fatalf("unexpected agy custom args=%v stdin=%q", args, stdin)
 	}
 	if _, args, stdin := buildCLICommandArgs(AISettings{Mode: "cli", CLICommand: "gemini", CLIModel: "gemini-2.5-pro"}, "hello"); stdin != "hello" || strings.Join(args, " ") != "-m gemini-2.5-pro" {
 		t.Fatalf("unexpected gemini args=%v stdin=%q", args, stdin)
@@ -173,7 +182,8 @@ func TestLocalAICLIExecutionAndPersistence(t *testing.T) {
 	}
 
 	// Execute a real hidden-window .cmd shim (matching npm-installed claude.cmd / codex.cmd / gemini.cmd on Windows).
-	shimPath := filepath.Join(t.TempDir(), "mock-ai.cmd")
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "mock-ai.cmd")
 	shimBody := "@echo off\r\necho {\"command\":\"ss -tulpn\",\"explanation\":\"查看监听端口\",\"risk\":\"safe\"}\r\n"
 	if err := os.WriteFile(shimPath, []byte(shimBody), 0600); err != nil {
 		t.Fatal(err)
@@ -201,6 +211,76 @@ func TestLocalAICLIExecutionAndPersistence(t *testing.T) {
 	}
 	if err := TestAI(context.Background(), cliCfg); err != nil {
 		t.Fatalf("TestAI via CLI failed: %v", err)
+	}
+
+	// Verify codex -o <tmpFile> clean-output fallback strips stdout banner noise and removes the temp file.
+	codexShim := filepath.Join(shimDir, "codex.cmd")
+	outPathRecord := filepath.Join(shimDir, "recorded-out-path.txt")
+	codexShimBody := strings.Join([]string{
+		"@echo off",
+		"setlocal enabledelayedexpansion",
+		"set OUTFILE=",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		"if \"%~1\"==\"-o\" (",
+		"  set \"OUTFILE=%~2\"",
+		"  shift",
+		")",
+		"shift",
+		"goto loop",
+		":done",
+		"echo [Codex Banner] Reading prompt from stdin...",
+		"if not \"!OUTFILE!\"==\"\" (",
+		"  >\"!OUTFILE!\" echo {\"command\":\"df -h\",\"explanation\":\"查看磁盘占用\",\"risk\":\"safe\"}",
+		"  >\"" + outPathRecord + "\" echo !OUTFILE!",
+		")",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+	if err := os.WriteFile(codexShim, []byte(codexShimBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAI(AISettings{Mode: "cli", CLICommand: codexShim}); err != nil {
+		t.Fatal(err)
+	}
+	codexRes, err := SuggestStructured(context.Background(), "磁盘空间", "Ubuntu", nil)
+	if err != nil {
+		t.Fatalf("codex -o fallback failed: %v", err)
+	}
+	if codexRes.Command != "df -h" || codexRes.Risk != "safe" {
+		t.Fatalf("unexpected codex -o AIResult: %+v", codexRes)
+	}
+	if recBytes, rErr := os.ReadFile(outPathRecord); rErr != nil {
+		t.Fatalf("expected codex shim to receive -o tmp file path: %v", rErr)
+	} else {
+		tmpPath := strings.TrimSpace(string(recBytes))
+		if tmpPath == "" {
+			t.Fatal("codex shim recorded empty -o path")
+		}
+		if _, statErr := os.Stat(tmpPath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("expected codex temp file %q to be deleted after run, statErr=%v", tmpPath, statErr)
+		}
+	}
+
+	// Verify Windows Job Object cleanly cancels a .cmd -> child process tree without hanging.
+	hangShim := filepath.Join(shimDir, "hang-tree.cmd")
+	hangBody := "@echo off\r\necho started\r\nping -n 30 127.0.0.1 >nul\r\n"
+	if err := os.WriteFile(hangShim, []byte(hangBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	_, err = runLocalAICLI(cancelCtx, AISettings{Mode: "cli", CLICommand: hangShim}, "", "ping", nil)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled from job-canceled CLI tree, got %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("CLI tree cancellation took too long (%v); child process may have leaked", elapsed)
 	}
 }
 
@@ -783,5 +863,441 @@ func TestFetchAIModelsCLIShimAndErrors(t *testing.T) {
 	}
 	if _, err := FetchAIModels(context.Background(), AIConfigInput{Mode: "cli", CLICommand: "nonexistent-cli-xyz"}); err == nil || !strings.Contains(err.Error(), "未在本机 PATH 中找到命令") {
 		t.Fatalf("expected missing custom CLI error, got: %v", err)
+	}
+}
+
+func TestCompletionURLNormalization(t *testing.T) {
+	cases := []struct {
+		endpoint string
+		want     string
+	}{
+		// OpenAI
+		{"https://api.openai.com", "https://api.openai.com/v1/chat/completions"},
+		{"https://api.openai.com/", "https://api.openai.com/v1/chat/completions"},
+		{"https://api.openai.com/v1", "https://api.openai.com/v1/chat/completions"},
+		{"https://api.openai.com/v1/", "https://api.openai.com/v1/chat/completions"},
+		{"https://api.openai.com/v1/chat/completions", "https://api.openai.com/v1/chat/completions"},
+		// DeepSeek
+		{"https://api.deepseek.com", "https://api.deepseek.com/v1/chat/completions"},
+		{"https://api.deepseek.com/", "https://api.deepseek.com/v1/chat/completions"},
+		{"https://api.deepseek.com/v1", "https://api.deepseek.com/v1/chat/completions"},
+		{"https://api.deepseek.com/chat/completions", "https://api.deepseek.com/chat/completions"},
+		// Anthropic
+		{"https://api.anthropic.com", "https://api.anthropic.com/v1/messages"},
+		{"https://api.anthropic.com/", "https://api.anthropic.com/v1/messages"},
+		{"https://api.anthropic.com/v1", "https://api.anthropic.com/v1/messages"},
+		{"https://api.anthropic.com/v1/", "https://api.anthropic.com/v1/messages"},
+		{"https://api.anthropic.com/v1/messages", "https://api.anthropic.com/v1/messages"},
+		{"https://api.anthropic.com/v1/chat/completions", "https://api.anthropic.com/v1/messages"},
+		// Gemini OpenAI-compatible
+		{"https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		{"https://generativelanguage.googleapis.com/v1beta", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		{"https://generativelanguage.googleapis.com/v1beta/", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		{"https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		{"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		// Ollama & custom relays
+		{"http://localhost:11434/v1", "http://localhost:11434/v1/chat/completions"},
+		{"http://127.0.0.1:11434/v1/chat/completions", "http://127.0.0.1:11434/v1/chat/completions"},
+		{"https://relay.example.com/v1", "https://relay.example.com/v1/chat/completions"},
+		{"https://relay.example.com/v1/chat/completions", "https://relay.example.com/v1/chat/completions"},
+		{"https://relay.example.com/v1/messages", "https://relay.example.com/v1/messages"},
+	}
+	for _, tc := range cases {
+		got, err := completionURL(AISettings{Endpoint: tc.endpoint, Model: "test-model"})
+		if err != nil {
+			t.Fatalf("completionURL(%q) unexpected error: %v", tc.endpoint, err)
+		}
+		if got != tc.want {
+			t.Fatalf("completionURL(%q) = %q, want %q", tc.endpoint, got, tc.want)
+		}
+	}
+}
+
+func TestAnthropicNativeAPIFlowsAndErrors(t *testing.T) {
+	isolated(t)
+	const secret = "sk-ant-test-secret-998877"
+
+	var lastSystem string
+	var mode string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected Anthropic request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("x-api-key") != secret || r.Header.Get("anthropic-version") != "2023-06-01" || r.Header.Get("Authorization") != "" {
+			t.Errorf("unexpected Anthropic headers: x-api-key=%q ver=%q auth=%q",
+				r.Header.Get("x-api-key"), r.Header.Get("anthropic-version"), r.Header.Get("Authorization"))
+		}
+		var reqBody struct {
+			Model     string    `json:"model"`
+			System    string    `json:"system"`
+			Messages  []message `json:"messages"`
+			MaxTokens int       `json:"max_tokens"`
+			Stream    bool      `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Errorf("invalid Anthropic JSON body: %v", err)
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if reqBody.MaxTokens != 4096 || len(reqBody.Messages) == 0 {
+			t.Errorf("expected max_tokens=4096 and non-empty messages, got %+v", reqBody)
+		}
+		for _, m := range reqBody.Messages {
+			if m.Role == "system" {
+				t.Errorf("system role must be lifted to top-level system field, found in messages: %+v", reqBody.Messages)
+			}
+		}
+		lastSystem = reqBody.System
+
+		switch mode {
+		case "test":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn"}`)
+		case "suggest":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"id":"msg_2","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"journalctl -u "},{"type":"text","text":"nginx -n 50"}],"stop_reason":"end_turn"}`)
+		case "structured-sse":
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_3\"}}\n\n")
+			io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"secret thought\"}}\n\n")
+			io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"{\\\"command\\\":\\\"Get-Process | Sort-Object CPU -Descending | Select-Object -First 5\\\",\"}}\n\n")
+			io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\\"explanation\\\":\\\"查看 CPU 占用前五的进程\\\",\\\"risk\\\":\\\"safe\\\"}\"}}\n\n")
+			io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		case "explain-sse-error":
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Anthropic servers overloaded\"}}\n\n")
+		case "http-400":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"model: claude-missing not found for `+secret+`"}}`)
+		}
+	}))
+	defer srv.Close()
+	redirectAIClientToServer(t, srv)
+
+	cfg := AISettings{
+		Endpoint: "https://api.anthropic.com/v1",
+		Model:    "claude-sonnet-4-5",
+		APIKey:   secret,
+	}
+	if err := SaveAI(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. TestAI against https://api.anthropic.com/v1
+	mode = "test"
+	if err := TestAI(context.Background(), cfg); err != nil {
+		t.Fatalf("Anthropic TestAI failed: %v", err)
+	}
+
+	// 2. Suggest non-streaming JSON (multi-block text + thinking ignored)
+	mode = "suggest"
+	cmd, err := Suggest(context.Background(), "查看 nginx 最近日志")
+	if err != nil || cmd != "journalctl -u nginx -n 50" {
+		t.Fatalf("Anthropic Suggest mismatch: cmd=%q err=%v", cmd, err)
+	}
+	if lastSystem == "" {
+		t.Fatal("expected Anthropic top-level system prompt to be sent")
+	}
+
+	// 3. SuggestStructured SSE streaming + Windows osHint adaptation
+	mode = "structured-sse"
+	var streamed strings.Builder
+	res, err := SuggestStructured(context.Background(), "查看 CPU 最高进程", "Windows 11 PowerShell", func(d string) {
+		streamed.WriteString(d)
+	})
+	if err != nil {
+		t.Fatalf("Anthropic SuggestStructured failed: %v", err)
+	}
+	if res.Command != "Get-Process | Sort-Object CPU -Descending | Select-Object -First 5" || res.Risk != "safe" {
+		t.Fatalf("unexpected Anthropic structured result: %+v", res)
+	}
+	if strings.Contains(streamed.String(), "secret thought") || streamed.Len() == 0 {
+		t.Fatalf("unexpected Anthropic SSE deltas: %q", streamed.String())
+	}
+	if !strings.Contains(lastSystem, "Windows PowerShell") || strings.Contains(lastSystem, "POSIX") {
+		t.Fatalf("expected Windows system prompt adaptation, got: %q", lastSystem)
+	}
+
+	// 4. ExplainStream SSE mid-stream error event
+	mode = "explain-sse-error"
+	if _, err := ExplainStream(context.Background(), "exit status 1", "why?", nil); err == nil || !strings.Contains(err.Error(), "Anthropic servers overloaded") {
+		t.Fatalf("expected Anthropic SSE error propagation, got: %v", err)
+	}
+
+	// 5. HTTP 400 error extraction + API key redaction
+	mode = "http-400"
+	_, err = Suggest(context.Background(), "ping")
+	if err == nil || !strings.Contains(err.Error(), "model: claude-missing not found") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("expected sanitized Anthropic HTTP 400 detail without secret, got: %v", err)
+	}
+}
+
+func TestAnthropicAgentLoopNativeToolUse(t *testing.T) {
+	isolated(t)
+	const secret = "sk-ant-agent-key-12345"
+	var turn int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		turn++
+		if r.URL.Path != "/v1/messages" || r.Header.Get("x-api-key") != secret || r.Header.Get("anthropic-version") != "2023-06-01" || r.Header.Get("Authorization") != "" {
+			t.Errorf("turn %d: unexpected Anthropic agent headers/path: path=%q key=%q ver=%q auth=%q",
+				turn, r.URL.Path, r.Header.Get("x-api-key"), r.Header.Get("anthropic-version"), r.Header.Get("Authorization"))
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode turn %d: %v", turn, err)
+		}
+		toolsList, ok := req["tools"].([]any)
+		if !ok || len(toolsList) != 1 {
+			t.Fatalf("turn %d: expected 1 Anthropic tool, got %#v", turn, req["tools"])
+		}
+		tool0 := toolsList[0].(map[string]any)
+		if _, hasInputSchema := tool0["input_schema"]; !hasInputSchema {
+			t.Fatalf("turn %d: Anthropic tool missing input_schema: %#v", turn, tool0)
+		}
+		if _, hasFunc := tool0["function"]; hasFunc {
+			t.Fatalf("turn %d: Anthropic tool must not use OpenAI function wrapper: %#v", turn, tool0)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch turn {
+		case 1:
+			io.WriteString(w, `{
+				"id":"msg_a1","type":"message","role":"assistant","stop_reason":"tool_use",
+				"content":[
+					{"type":"text","text":"先检查磁盘空间和拒绝测试"},
+					{"type":"tool_use","id":"toolu_ok","name":"shell_exec","input":{"command":"df -h"}},
+					{"type":"tool_use","id":"toolu_err","name":"shell_exec","input":{"command":"rm -rf /"}}
+				]
+			}`)
+		case 2:
+			msgs := req["messages"].([]any)
+			if len(msgs) != 3 {
+				t.Fatalf("turn 2: expected 3 messages (user, assistant, user tool_results), got %d", len(msgs))
+			}
+			userTurn := msgs[2].(map[string]any)
+			if userTurn["role"] != "user" {
+				t.Fatalf("turn 2: expected role=user for tool_result message, got %v", userTurn["role"])
+			}
+			blocks := userTurn["content"].([]any)
+			if len(blocks) != 2 {
+				t.Fatalf("turn 2: expected 2 tool_result blocks, got %d", len(blocks))
+			}
+			b0 := blocks[0].(map[string]any)
+			b1 := blocks[1].(map[string]any)
+			if b0["type"] != "tool_result" || b0["tool_use_id"] != "toolu_ok" || !strings.Contains(b0["content"].(string), "/dev/sda1") {
+				t.Fatalf("turn 2: unexpected first tool_result: %#v", b0)
+			}
+			if b1["type"] != "tool_result" || b1["tool_use_id"] != "toolu_err" || b1["is_error"] != true {
+				t.Fatalf("turn 2: unexpected error tool_result: %#v", b1)
+			}
+			io.WriteString(w, `{
+				"id":"msg_a2","type":"message","role":"assistant","stop_reason":"end_turn",
+				"content":[{"type":"text","text":"根分区使用率 42%，危险命令已被安全策略拦截。"}]
+			}`)
+		default:
+			t.Fatalf("unexpected extra turn %d", turn)
+		}
+	}))
+	defer srv.Close()
+	redirectAIClientToServer(t, srv)
+
+	if err := SaveAI(AISettings{
+		Endpoint: "https://api.anthropic.com",
+		Model:    "claude-sonnet-4-5",
+		APIKey:   secret,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var events []AgentStepEvent
+	summary, err := RunAgentLoop(
+		context.Background(),
+		"检查磁盘状态",
+		"prod-web (root@10.0.0.1:22)",
+		[]ToolDefinition{{
+			Name:        "shell_exec",
+			Description: "Execute shell command",
+			Parameters:  map[string]any{"properties": map[string]any{"command": map[string]any{"type": "string"}}},
+		}},
+		func(_ context.Context, toolName string, args map[string]any) (string, string, string, int, error) {
+			if args["command"] == "rm -rf /" {
+				return "", "danger", "deny", 0, errors.New("policy denied")
+			}
+			return "/dev/sda1 42% /", "safe", "allow", 0, nil
+		},
+		func(ev AgentStepEvent) {
+			events = append(events, ev)
+		},
+	)
+	if err != nil {
+		t.Fatalf("Anthropic RunAgentLoop failed: %v", err)
+	}
+	if !strings.Contains(summary, "42%") {
+		t.Fatalf("unexpected Anthropic agent summary: %q", summary)
+	}
+	if turn != 2 {
+		t.Fatalf("expected 2 Anthropic turns, got %d", turn)
+	}
+	var kinds []string
+	for _, ev := range events {
+		kinds = append(kinds, ev.Kind)
+	}
+	wantKinds := []string{"thought", "tool_call", "tool_result", "tool_call", "tool_result", "final"}
+	if !slices.Equal(kinds, wantKinds) {
+		t.Fatalf("unexpected Anthropic agent step sequence: got=%v want=%v", kinds, wantKinds)
+	}
+}
+
+func TestOpenAIReasoningContentBlocksErrorsAndAgentLoop(t *testing.T) {
+	isolated(t)
+	const secret = "sk-openai-live-987654321"
+	var mode string
+	var agentTurn int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch mode {
+		case "think-sse":
+			w.Header().Set("Content-Type", "text/event-stream")
+			// Reasoning block + prose with ${HOME} & unclosed { + JSON containing inner {print $1} braces.
+			chunks := []string{
+				"<think>先想想 {draft} 和 {\"command\":\"wrong\"}</think>\n",
+				"提示：路径在 ${HOME}，未闭合 { 忽略：\n```json\n",
+				"{\"command\":\"awk '{print $1}' /etc/hosts\",\"explanation\":\"打印 hosts 首列\",\"risk\":\"safe\"}\n```",
+			}
+			for _, c := range chunks {
+				b, _ := json.Marshal(map[string]any{
+					"choices": []any{map[string]any{"delta": map[string]any{"content": c}}},
+				})
+				io.WriteString(w, "data: "+string(b)+"\n\n")
+			}
+			io.WriteString(w, "data: [DONE]\n\n")
+		case "content-array":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"uname "},{"type":"text","text":"-a"}]},"finish_reason":"stop"}]}`)
+		case "http-400":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"The model 'gpt-nope' does not exist for key `+secret+`"}}`)
+		case "http-429-long":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"error":{"message":"`+strings.Repeat("配额不足错误说明", 50)+`"}}`)
+		case "agent":
+			agentTurn++
+			w.Header().Set("Content-Type", "application/json")
+			if agentTurn == 1 {
+				io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"<think>thinking...</think>检查负载","tool_calls":[{"id":"call_1","type":"function","function":{"name":"shell_exec","arguments":"{\"command\":\"uptime\"}"}}]}}]}`)
+			} else {
+				io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"<think>ok</think>系统负载 0.15，状态正常。"}]}}]}`)
+			}
+		case "agent-400":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"Tools are not supported by this model"}}`)
+		}
+	}))
+	defer srv.Close()
+
+	if err := SaveAI(AISettings{Endpoint: srv.URL + "/v1", Model: "deepseek-r1", APIKey: secret}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Streaming reasoning <think> + prose braces + balanced JSON extraction
+	mode = "think-sse"
+	res, err := SuggestStructured(context.Background(), "打印 hosts 首列", "Ubuntu 24.04", nil)
+	if err != nil {
+		t.Fatalf("SuggestStructured think-sse failed: %v", err)
+	}
+	if res.Command != "awk '{print $1}' /etc/hosts" || res.Explanation != "打印 hosts 首列" || res.Risk != "safe" {
+		t.Fatalf("unexpected reasoning AIResult: %+v", res)
+	}
+
+	// 2. Content block array in OpenAI response
+	mode = "content-array"
+	cmd, err := Suggest(context.Background(), "查看内核版本")
+	if err != nil || cmd != "uname -a" {
+		t.Fatalf("content-array Suggest mismatch: cmd=%q err=%v", cmd, err)
+	}
+
+	// 3. HTTP 400 error body extraction & secret redaction
+	mode = "http-400"
+	_, err = Suggest(context.Background(), "test")
+	if err == nil || !strings.Contains(err.Error(), "The model 'gpt-nope' does not exist") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("expected sanitized HTTP 400 detail, got: %v", err)
+	}
+
+	// 4. Long error body truncation (<=220 runes detail)
+	mode = "http-429-long"
+	_, err = Suggest(context.Background(), "test")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 429") || !strings.Contains(err.Error(), "…") || len([]rune(err.Error())) > 280 {
+		t.Fatalf("expected truncated HTTP 429 error, got: %v", err)
+	}
+
+	// 5. OpenAI Agent loop with tool call + content array + <think> stripping
+	mode = "agent"
+	agentTurn = 0
+	var events []AgentStepEvent
+	summary, err := RunAgentLoop(
+		context.Background(),
+		"看下负载",
+		"node-1",
+		[]ToolDefinition{{Name: "shell_exec", Description: "run", Parameters: map[string]any{"type": "object"}}},
+		func(_ context.Context, _ string, _ map[string]any) (string, string, string, int, error) {
+			return "load average: 0.15", "safe", "allow", 0, nil
+		},
+		func(ev AgentStepEvent) { events = append(events, ev) },
+	)
+	if err != nil || summary != "系统负载 0.15，状态正常。" {
+		t.Fatalf("OpenAI RunAgentLoop mismatch: summary=%q err=%v", summary, err)
+	}
+	if len(events) < 4 || events[0].Kind != "thought" || events[0].Output != "检查负载" {
+		t.Fatalf("unexpected OpenAI agent events: %+v", events)
+	}
+
+	// 6. OpenAI Agent HTTP 400 surfaces upstream detail
+	mode = "agent-400"
+	if _, err := RunAgentLoop(context.Background(), "test", "", nil, nil, nil); err == nil || !strings.Contains(err.Error(), "Tools are not supported by this model") {
+		t.Fatalf("expected agent HTTP 400 detail, got: %v", err)
+	}
+
+	// 7. CLI Agent loop with <think> + prose braces + balanced JSON extraction
+	cliDir := t.TempDir()
+	counterFile := filepath.Join(cliDir, "turn.txt")
+	cliAgentShim := filepath.Join(cliDir, "cli-agent.cmd")
+	cliAgentBody := strings.Join([]string{
+		"@echo off",
+		"if exist \"" + counterFile + "\" (",
+		"  echo ^<think^>done {tmp}^</think^> {\"final\":\"CLI Agent 检查完成，端口 22 正常监听。\"}",
+		") else (",
+		"  echo 1>\"" + counterFile + "\"",
+		"  echo ^<think^>plan {x}^</think^> 提示 ${HOME} {\"thought\":\"先查端口\",\"tool\":\"shell_exec\",\"arguments\":{\"command\":\"ss -tlnp\"}}",
+		")",
+		"exit /b 0",
+		"",
+	}, "\r\n")
+	if err := os.WriteFile(cliAgentShim, []byte(cliAgentBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAI(AISettings{Mode: "cli", CLICommand: cliAgentShim}); err != nil {
+		t.Fatal(err)
+	}
+	cliSummary, err := RunAgentLoop(
+		context.Background(),
+		"检查 22 端口",
+		"prod-1",
+		[]ToolDefinition{{Name: "shell_exec", Description: "run", Parameters: map[string]any{"type": "object"}}},
+		func(_ context.Context, toolName string, args map[string]any) (string, string, string, int, error) {
+			if toolName != "shell_exec" || args["command"] != "ss -tlnp" {
+				t.Fatalf("unexpected CLI agent tool call: %s %v", toolName, args)
+			}
+			return "LISTEN 0 128 *:22", "safe", "allow", 0, nil
+		},
+		nil,
+	)
+	if err != nil || !strings.Contains(cliSummary, "端口 22 正常监听") {
+		t.Fatalf("CLI RunAgentLoop failed: summary=%q err=%v", cliSummary, err)
 	}
 }

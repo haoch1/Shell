@@ -78,9 +78,50 @@ func completionURL(s AISettings) (string, error) {
 	if len(s.APIKey) > 4096 || strings.IndexFunc(s.APIKey, func(c rune) bool { return c < 0x21 || c > 0x7e }) >= 0 {
 		return "", errors.New("API 密钥格式无效，请检查空格或换行")
 	}
+	host := strings.ToLower(u.Hostname())
 	endpoint := strings.TrimRight(u.String(), "/")
-	if !strings.HasSuffix(endpoint, "/chat/completions") {
-		endpoint += "/chat/completions"
+	lowerPath := strings.ToLower(strings.TrimRight(u.Path, "/"))
+
+	switch {
+	case isAnthropicEndpoint(endpoint):
+		if strings.HasSuffix(lowerPath, "/chat/completions") {
+			endpoint = endpoint[:len(endpoint)-len("/chat/completions")]
+			lowerPath = strings.TrimSuffix(lowerPath, "/chat/completions")
+		}
+		switch {
+		case strings.HasSuffix(lowerPath, "/messages"):
+			// Already points to Anthropic Messages endpoint.
+		case lowerPath == "":
+			endpoint += "/v1/messages"
+		default:
+			endpoint += "/messages"
+		}
+	case isGeminiEndpoint(endpoint):
+		switch {
+		case strings.HasSuffix(lowerPath, "/chat/completions"):
+			if !strings.Contains(lowerPath, "/openai") {
+				endpoint = u.Scheme + "://" + u.Host + "/v1beta/openai/chat/completions"
+			}
+		case strings.Contains(lowerPath, "/openai"):
+			endpoint += "/chat/completions"
+		case lowerPath == "" || lowerPath == "/v1beta" || lowerPath == "/v1":
+			endpoint = u.Scheme + "://" + u.Host + "/v1beta/openai/chat/completions"
+		default:
+			endpoint += "/openai/chat/completions"
+		}
+	case isOpenAIOrDeepSeekHost(host):
+		switch {
+		case strings.HasSuffix(lowerPath, "/chat/completions"):
+			// Already points to Chat Completions endpoint.
+		case lowerPath == "":
+			endpoint += "/v1/chat/completions"
+		default:
+			endpoint += "/chat/completions"
+		}
+	default:
+		if !strings.HasSuffix(lowerPath, "/chat/completions") && !strings.HasSuffix(lowerPath, "/messages") {
+			endpoint += "/chat/completions"
+		}
 	}
 	return endpoint, nil
 }
@@ -135,6 +176,18 @@ func isAnthropicEndpoint(endpoint string) bool {
 	return host == "anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
 }
 
+func isAnthropicProtocol(endpoint string) bool {
+	if isAnthropicEndpoint(endpoint) {
+		return true
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	lowerPath := strings.ToLower(strings.TrimRight(u.Path, "/"))
+	return strings.HasSuffix(lowerPath, "/messages")
+}
+
 func isGeminiEndpoint(endpoint string) bool {
 	u, err := url.Parse(endpoint)
 	if err != nil {
@@ -144,9 +197,217 @@ func isGeminiEndpoint(endpoint string) bool {
 	return host == "generativelanguage.googleapis.com" || strings.HasSuffix(host, ".generativelanguage.googleapis.com")
 }
 
+func isOpenAIOrDeepSeekHost(host string) bool {
+	return host == "api.openai.com" || host == "api.deepseek.com"
+}
+
 type message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+const anthropicAPIVersion = "2023-06-01"
+
+var (
+	apiSecretMaskRe = regexp.MustCompile(`(?i)\b(?:sk-[a-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{16,}|Bearer\s+[A-Za-z0-9._-]{8,})`)
+	thinkBlockRe    = regexp.MustCompile(`(?is)<think\b[^>]*>.*?</think>`)
+)
+
+func sanitizeAPIErrorDetail(raw, apiKey string) string {
+	s := ansiEscapeRe.ReplaceAllString(raw, "")
+	if key := strings.TrimSpace(apiKey); len(key) >= 6 {
+		s = strings.ReplaceAll(s, key, "[REDACTED]")
+	}
+	s = apiSecretMaskRe.ReplaceAllString(s, "[REDACTED]")
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			if !prevSpace && b.Len() > 0 {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	clean := strings.TrimSpace(b.String())
+	if clean == "" {
+		return ""
+	}
+	const maxRunes = 220
+	runes := []rune(clean)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes-1]) + "…"
+	}
+	return clean
+}
+
+func extractAPIErrorDetail(body []byte, apiKey string) string {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || !utf8.Valid(trimmed) {
+		return ""
+	}
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		if trimmed[0] == '[' {
+			var arr []json.RawMessage
+			if json.Unmarshal(trimmed, &arr) == nil && len(arr) > 0 {
+				trimmed = bytes.TrimSpace(arr[0])
+			}
+		}
+		var single struct {
+			Error   json.RawMessage `json:"error"`
+			Message string          `json:"message"`
+			Detail  string          `json:"detail"`
+		}
+		if len(trimmed) > 0 && trimmed[0] == '{' && json.Unmarshal(trimmed, &single) == nil {
+			if len(single.Error) > 0 {
+				var errObj struct {
+					Message string `json:"message"`
+					Type    string `json:"type"`
+				}
+				if json.Unmarshal(single.Error, &errObj) == nil && strings.TrimSpace(errObj.Message) != "" {
+					return sanitizeAPIErrorDetail(errObj.Message, apiKey)
+				}
+				var errStr string
+				if json.Unmarshal(single.Error, &errStr) == nil && strings.TrimSpace(errStr) != "" {
+					return sanitizeAPIErrorDetail(errStr, apiKey)
+				}
+			}
+			if msg := firstNonEmpty(single.Message, single.Detail); msg != "" {
+				return sanitizeAPIErrorDetail(msg, apiKey)
+			}
+		}
+	}
+	lower := strings.ToLower(string(trimmed))
+	if strings.HasPrefix(lower, "<!doctype") || strings.HasPrefix(lower, "<html") || strings.Contains(lower, "<body") {
+		return ""
+	}
+	return sanitizeAPIErrorDetail(string(trimmed), apiKey)
+}
+
+func formatAPIStatusError(status int, body []byte, apiKey string, agentMode bool) error {
+	hint := "请检查服务地址、模型名称及服务状态"
+	if agentMode {
+		hint = "请检查模型名称及是否支持工具调用 (Tool Calling)"
+	}
+	switch status {
+	case 401, 403:
+		hint = "请检查密钥及模型访问权限"
+	case 429:
+		hint = "请检查配额或稍后重试"
+	}
+	if status >= 300 && status < 400 {
+		hint = "请在设置中填写重定向后的最终服务地址"
+	}
+	if detail := extractAPIErrorDetail(body, apiKey); detail != "" {
+		return fmt.Errorf("AI 服务返回 HTTP %d（%s），%s", status, detail, hint)
+	}
+	return fmt.Errorf("AI 服务返回 HTTP %d，%s", status, hint)
+}
+
+func stripThinkBlocks(s string) string {
+	cleaned := thinkBlockRe.ReplaceAllString(s, "")
+	if idx := strings.Index(strings.ToLower(cleaned), "</think>"); idx >= 0 {
+		if after := strings.TrimSpace(cleaned[idx+len("</think>"):]); after != "" {
+			cleaned = after
+		}
+	}
+	return strings.TrimSpace(cleaned)
+}
+
+func extractContentText(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if json.Unmarshal(trimmed, &s) == nil {
+			return s
+		}
+		return ""
+	}
+	if trimmed[0] == '[' {
+		var blocks []struct {
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal(trimmed, &blocks) != nil {
+			return ""
+		}
+		var b strings.Builder
+		for _, blk := range blocks {
+			t := strings.ToLower(strings.TrimSpace(blk.Type))
+			if t != "" && t != "text" && t != "output_text" {
+				continue
+			}
+			txt := blk.Text
+			if txt == "" {
+				txt = blk.Content
+			}
+			b.WriteString(txt)
+		}
+		return b.String()
+	}
+	return ""
+}
+
+// extractBalancedJSONObjects scans text for balanced, syntactically valid JSON objects,
+// ignoring braces inside JSON strings and malformed prose braces such as ${HOME}.
+func extractBalancedJSONObjects(s string) []string {
+	var objs []string
+	n := len(s)
+	for i := 0; i < n; i++ {
+		if s[i] != '{' {
+			continue
+		}
+		depth := 0
+		inString := false
+		escaped := false
+		matchedEnd := -1
+		for j := i; j < n; j++ {
+			c := s[j]
+			if inString {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if c == '\\' {
+					escaped = true
+					continue
+				}
+				if c == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inString = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					matchedEnd = j
+				}
+			}
+			if matchedEnd >= 0 {
+				break
+			}
+		}
+		if matchedEnd > i {
+			candidate := s[i : matchedEnd+1]
+			if json.Valid([]byte(candidate)) {
+				objs = append(objs, candidate)
+				i = matchedEnd
+			}
+		}
+	}
+	return objs
 }
 
 func doChatRequest(ctx context.Context, s AISettings, messages []message, stream bool) (*http.Response, error) {
@@ -154,16 +415,42 @@ func doChatRequest(ctx context.Context, s AISettings, messages []message, stream
 	if err != nil {
 		return nil, err
 	}
-	payload := struct {
-		Model     string    `json:"model"`
-		Messages  []message `json:"messages"`
-		Stream    bool      `json:"stream,omitempty"`
-		MaxTokens int       `json:"max_tokens,omitempty"`
-	}{Model: s.Model, Messages: messages, Stream: stream}
-	if isAnthropicEndpoint(endpoint) {
-		payload.MaxTokens = 4096
+	useAnthropic := isAnthropicProtocol(endpoint)
+	var body []byte
+	if useAnthropic {
+		var sysParts []string
+		chatMsgs := make([]message, 0, len(messages))
+		for _, m := range messages {
+			if strings.EqualFold(strings.TrimSpace(m.Role), "system") {
+				if t := strings.TrimSpace(m.Content); t != "" {
+					sysParts = append(sysParts, t)
+				}
+				continue
+			}
+			chatMsgs = append(chatMsgs, m)
+		}
+		payload := struct {
+			Model     string    `json:"model"`
+			System    string    `json:"system,omitempty"`
+			Messages  []message `json:"messages"`
+			MaxTokens int       `json:"max_tokens"`
+			Stream    bool      `json:"stream,omitempty"`
+		}{
+			Model:     s.Model,
+			System:    strings.Join(sysParts, "\n\n"),
+			Messages:  chatMsgs,
+			MaxTokens: 4096,
+			Stream:    stream,
+		}
+		body, err = json.Marshal(payload)
+	} else {
+		payload := struct {
+			Model    string    `json:"model"`
+			Messages []message `json:"messages"`
+			Stream   bool      `json:"stream,omitempty"`
+		}{Model: s.Model, Messages: messages, Stream: stream}
+		body, err = json.Marshal(payload)
 	}
-	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -177,29 +464,22 @@ func doChatRequest(ctx context.Context, s AISettings, messages []message, stream
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
-	if s.APIKey != "" {
+	if useAnthropic {
+		req.Header.Set("anthropic-version", anthropicAPIVersion)
+		if s.APIKey != "" {
+			req.Header.Set("x-api-key", s.APIKey)
+		}
+	} else if s.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+s.APIKey)
-	}
-	if isAnthropicEndpoint(endpoint) {
-		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 	resp, err := aiClient.Do(req)
 	if err != nil {
 		return nil, networkError(ctx, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 		resp.Body.Close()
-		hint := "请检查服务地址、模型名称及服务状态"
-		switch resp.StatusCode {
-		case 401, 403:
-			hint = "请检查密钥及模型访问权限"
-		case 429:
-			hint = "请检查配额或稍后重试"
-		}
-		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-			hint = "请在设置中填写重定向后的最终服务地址"
-		}
-		return nil, fmt.Errorf("AI 服务返回 HTTP %d，%s", resp.StatusCode, hint)
+		return nil, formatAPIStatusError(resp.StatusCode, errBody, s.APIKey, false)
 	}
 	return resp, nil
 }
@@ -249,8 +529,8 @@ func Suggest(ctx context.Context, request string) (string, error) {
 }
 
 var (
-	dangerPattern  = regexp.MustCompile(`(?i)(rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r|mkfs|dd\s+if=|:\(\)\s*\{|chmod\s+-R\s+777|>\s*/dev/sd|shutdown|reboot|poweroff|init\s+0|iptables\s+-F|drop\s+database)`)
-	cautionPattern = regexp.MustCompile(`(?i)(\bsudo\b|\brm\b|\bkill\b|\bpkill\b|\bsystemctl\s+(stop|restart|disable)|\bdocker\s+(rm|rmi|stop|prune)|\bchmod\b|\bchown\b|\bmv\b|\bufw\b|\biptables\b)`)
+	dangerPattern  = regexp.MustCompile(`(?i)(rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r|mkfs|dd\s+if=|:\(\)\s*\{|chmod\s+-R\s+777|>\s*/dev/sd|shutdown|reboot|poweroff|init\s+0|iptables\s+-F|drop\s+database|remove-item\s+.*-recurse.*-force|remove-item\s+.*-force.*-recurse|\br(?:d|mdir)\s+/s\s+/q|\bformat\s+[a-z]:|\bdiskpart\b)`)
+	cautionPattern = regexp.MustCompile(`(?i)(\bsudo\b|\brm\b|\bkill\b|\bpkill\b|\bsystemctl\s+(stop|restart|disable)|\bdocker\s+(rm|rmi|stop|prune)|\bchmod\b|\bchown\b|\bmv\b|\bufw\b|\biptables\b|\bstop-service\b|\brestart-service\b|\bstop-process\b|\btaskkill\b|\bremove-item\b)`)
 )
 
 func classifyRisk(cmd string) string {
@@ -271,11 +551,20 @@ func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(str
 		body := &io.LimitedReader{R: resp.Body, N: limit + 1}
 		scanner := bufio.NewScanner(body)
 		scanner.Buffer(make([]byte, 0, 16<<10), 128<<10)
+		eventName := ""
 		for scanner.Scan() {
 			if err := ctx.Err(); err != nil {
 				return "", networkError(ctx, err)
 			}
 			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				eventName = ""
+				continue
+			}
+			if strings.HasPrefix(line, "event:") {
+				eventName = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "event:")))
+				continue
+			}
 			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
@@ -284,21 +573,58 @@ func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(str
 				continue
 			}
 			var chunk struct {
+				Type  string `json:"type"`
+				Error *struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+				} `json:"error"`
+				Delta *struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"delta"`
+				ContentBlock *struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content_block"`
 				Choices []struct {
 					Delta struct {
-						Content string `json:"content"`
+						Content json.RawMessage `json:"content"`
 					} `json:"delta"`
 					Message struct {
-						Content string `json:"content"`
+						Content json.RawMessage `json:"content"`
 					} `json:"message"`
 				} `json:"choices"`
 			}
-			if json.Unmarshal([]byte(payload), &chunk) != nil || len(chunk.Choices) == 0 {
+			if json.Unmarshal([]byte(payload), &chunk) != nil {
 				continue
 			}
-			delta := chunk.Choices[0].Delta.Content
-			if delta == "" {
-				delta = chunk.Choices[0].Message.Content
+			if eventName == "error" || strings.EqualFold(chunk.Type, "error") || (chunk.Error != nil && strings.TrimSpace(chunk.Error.Message) != "") {
+				msg := ""
+				if chunk.Error != nil {
+					msg = firstNonEmpty(chunk.Error.Message, chunk.Error.Type)
+				}
+				msg = sanitizeAPIErrorDetail(msg, "")
+				if msg == "" {
+					msg = "服务返回流式错误"
+				}
+				return "", fmt.Errorf("AI 流式响应失败：%s", msg)
+			}
+			var delta string
+			switch {
+			case len(chunk.Choices) > 0:
+				delta = extractContentText(chunk.Choices[0].Delta.Content)
+				if delta == "" {
+					delta = extractContentText(chunk.Choices[0].Message.Content)
+				}
+			case chunk.Type == "content_block_delta" && chunk.Delta != nil:
+				dt := strings.ToLower(strings.TrimSpace(chunk.Delta.Type))
+				if dt == "" || dt == "text_delta" {
+					delta = chunk.Delta.Text
+				}
+			case chunk.Type == "content_block_start" && chunk.ContentBlock != nil:
+				if strings.EqualFold(strings.TrimSpace(chunk.ContentBlock.Type), "text") {
+					delta = chunk.ContentBlock.Text
+				}
 			}
 			if delta != "" {
 				full.WriteString(delta)
@@ -323,19 +649,57 @@ func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(str
 		return "", errors.New("AI 回复超过 256 KiB，请缩短问题后重试")
 	}
 	var result struct {
+		Type    string          `json:"type"`
+		Error   json.RawMessage `json:"error"`
+		Content json.RawMessage `json:"content"`
 		Choices []struct {
-			Message message `json:"message"`
-			Finish  string  `json:"finish_reason"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+			Finish string `json:"finish_reason"`
 		} `json:"choices"`
 	}
-	if !utf8.Valid(data) || json.Unmarshal(data, &result) != nil || len(result.Choices) == 0 {
-		return "", errors.New("未收到有效的 AI 回复，请确认服务兼容 Chat Completions")
+	if !utf8.Valid(data) || json.Unmarshal(data, &result) != nil {
+		return "", errors.New("未收到有效的 AI 回复，请确认服务兼容 Chat Completions 或 Anthropic Messages")
 	}
-	content := result.Choices[0].Message.Content
+	if strings.EqualFold(result.Type, "error") || (len(result.Choices) == 0 && len(bytes.TrimSpace(result.Content)) == 0 && len(bytes.TrimSpace(result.Error)) > 0) {
+		if detail := extractAPIErrorDetail(data, ""); detail != "" {
+			return "", fmt.Errorf("AI 服务返回错误：%s", detail)
+		}
+		return "", errors.New("AI 服务返回错误响应，请检查服务状态")
+	}
+	var content string
+	switch {
+	case len(result.Choices) > 0:
+		content = extractContentText(result.Choices[0].Message.Content)
+	case strings.EqualFold(result.Type, "message") || len(bytes.TrimSpace(result.Content)) > 0:
+		content = extractContentText(result.Content)
+	default:
+		return "", errors.New("未收到有效的 AI 回复，请确认服务兼容 Chat Completions 或 Anthropic Messages")
+	}
 	if onDelta != nil && content != "" {
 		onDelta(content)
 	}
 	return content, nil
+}
+
+func isWindowsOSHint(osHint string) bool {
+	trimmed := strings.TrimSpace(osHint)
+	return len(trimmed) >= len("windows") && strings.EqualFold(trimmed[:len("windows")], "windows")
+}
+
+func buildSuggestStructuredSystemPrompt(osHint string) string {
+	trimmedHint := strings.TrimSpace(osHint)
+	var sys string
+	if isWindowsOSHint(trimmedHint) {
+		sys = "你是专业的 Windows 本地终端运维命令助手。根据用户需求输出 JSON 对象，格式严格为：{\"command\":\"单行可执行的 Windows PowerShell 或 CMD 命令\",\"explanation\":\"简洁中文说明（1-2句）\",\"risk\":\"safe或caution或danger\"}。不要输出多余文字或 Markdown 代码块。command 不得包含换行或控制字符。"
+	} else {
+		sys = "你是专业的 SSH 运维命令助手。根据用户需求输出 JSON 对象，格式严格为：{\"command\":\"单行可执行的POSIX命令\",\"explanation\":\"简洁中文说明（1-2句）\",\"risk\":\"safe或caution或danger\"}。不要输出多余文字或 Markdown 代码块。command 不得包含换行或控制字符。"
+	}
+	if trimmedHint != "" {
+		sys += " 目标系统参考：" + trimmedHint
+	}
+	return sys
 }
 
 // SuggestStructured returns a command, short Chinese explanation, and risk level, streaming progress via onDelta.
@@ -348,10 +712,7 @@ func SuggestStructured(ctx context.Context, request, osHint string, onDelta func
 	if err != nil {
 		return AIResult{}, err
 	}
-	sys := "你是专业的 SSH 运维命令助手。根据用户需求输出 JSON 对象，格式严格为：{\"command\":\"单行可执行的POSIX命令\",\"explanation\":\"简洁中文说明（1-2句）\",\"risk\":\"safe或caution或danger\"}。不要输出多余文字或 Markdown 代码块。command 不得包含换行或控制字符。"
-	if osHint != "" {
-		sys += " 目标系统参考：" + osHint
-	}
+	sys := buildSuggestStructuredSystemPrompt(osHint)
 	if s.IsCLI() {
 		raw, err := runLocalAICLI(ctx, s, sys, request, onDelta)
 		if err != nil {
@@ -375,31 +736,33 @@ func SuggestStructured(ctx context.Context, request, osHint string, onDelta func
 }
 
 func parseStructuredResult(raw string) (AIResult, error) {
-	trimmed := strings.TrimSpace(raw)
+	trimmed := stripThinkBlocks(raw)
 	const fence = "```"
 	if strings.HasPrefix(trimmed, fence) && strings.HasSuffix(trimmed, fence) {
 		if _, rest, ok := strings.Cut(trimmed, "\n"); ok {
 			trimmed = strings.TrimSpace(strings.TrimSuffix(rest, fence))
 		}
 	}
-	// Try extracting JSON object.
-	if start := strings.IndexByte(trimmed, '{'); start >= 0 {
-		if end := strings.LastIndexByte(trimmed, '}'); end > start {
-			var parsed AIResult
-			if json.Unmarshal([]byte(trimmed[start:end+1]), &parsed) == nil && strings.TrimSpace(parsed.Command) != "" {
-				parsed.Command = sanitizeSingleLineCommand(parsed.Command)
-				if parsed.Command == "" {
-					return AIResult{}, errors.New("AI 返回的命令包含非法控制字符")
-				}
-				parsed.Explanation = strings.TrimSpace(parsed.Explanation)
-				parsed.Risk = mergeRisk(parsed.Risk, classifyRisk(parsed.Command))
-				return parsed, nil
+	// Try extracting balanced valid JSON objects.
+	for _, candidate := range extractBalancedJSONObjects(trimmed) {
+		var parsed AIResult
+		if json.Unmarshal([]byte(candidate), &parsed) == nil && strings.TrimSpace(parsed.Command) != "" {
+			parsed.Command = sanitizeSingleLineCommand(parsed.Command)
+			if parsed.Command == "" {
+				return AIResult{}, errors.New("AI 返回的命令包含非法控制字符")
 			}
+			parsed.Explanation = strings.TrimSpace(parsed.Explanation)
+			parsed.Risk = mergeRisk(parsed.Risk, classifyRisk(parsed.Command))
+			return parsed, nil
 		}
 	}
-	// Fallback: treat first non-empty line as command.
+	// Fallback: treat first non-empty non-fence line as command.
 	for _, line := range strings.Split(trimmed, "\n") {
-		c := sanitizeSingleLineCommand(strings.Trim(line, "` "))
+		lt := strings.TrimSpace(line)
+		if lt == "" || strings.HasPrefix(lt, fence) {
+			continue
+		}
+		c := sanitizeSingleLineCommand(strings.Trim(lt, "` "))
 		if c != "" {
 			return AIResult{
 				Command:     c,
@@ -459,7 +822,7 @@ func ExplainStream(ctx context.Context, selectedText, question string, onDelta f
 			prompt = "请分析以下终端输出/错误，给出原因和解决命令：\n" + selectedText
 		}
 	}
-	const sys = "你是资深 Linux/SSH 运维工程师。用简洁清晰的中文解释终端输出或报错原因，并给出具体可执行的排查或修复命令。"
+	const sys = "你是资深 Linux/Windows 终端与 SSH 运维工程师。用简洁清晰的中文解释终端输出或报错原因，并结合目标环境给出具体可执行的排查或修复命令。"
 	if s.IsCLI() {
 		return runLocalAICLI(ctx, s, sys, prompt, onDelta)
 	}
@@ -474,18 +837,18 @@ func ExplainStream(ctx context.Context, selectedText, question string, onDelta f
 	return readStreamOrJSON(ctx, resp, onDelta)
 }
 
-// TestAI verifies connectivity to the configured Chat Completions endpoint or local AI CLI.
+// TestAI verifies connectivity to the configured API endpoint or local AI CLI.
 func TestAI(ctx context.Context, s AISettings) error {
 	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
 	s.Endpoint, s.Model, s.APIKey = strings.TrimSpace(s.Endpoint), strings.TrimSpace(s.Model), strings.TrimSpace(s.APIKey)
 	s.CLICommand, s.CLIArgs, s.CLIModel = strings.TrimSpace(s.CLICommand), strings.TrimSpace(s.CLIArgs), strings.TrimSpace(s.CLIModel)
 	if s.IsCLI() {
-		testCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		testCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
 		_, err := runLocalAICLI(testCtx, s, "Reply with OK only.", "Reply with OK", nil)
 		return err
 	}
-	testCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	testCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	resp, err := doChatRequest(testCtx, s, []message{
 		{"user", "Reply with OK"},
@@ -509,20 +872,40 @@ func networkError(ctx context.Context, err error) error {
 }
 
 func readCommand(data []byte) (string, error) {
+	if !utf8.Valid(data) {
+		return "", errors.New("未收到有效的 AI 回复，请确认服务兼容 Chat Completions 或 Anthropic Messages")
+	}
 	var result struct {
-		Choices []struct {
-			Message message `json:"message"`
-			Finish  string  `json:"finish_reason"`
+		Type       string          `json:"type"`
+		StopReason string          `json:"stop_reason"`
+		Content    json.RawMessage `json:"content"`
+		Choices    []struct {
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+			Finish string `json:"finish_reason"`
 		} `json:"choices"`
 	}
-	if !utf8.Valid(data) || json.Unmarshal(data, &result) != nil || len(result.Choices) == 0 {
-		return "", errors.New("未收到有效的 AI 回复，请确认服务兼容 Chat Completions")
+	if json.Unmarshal(data, &result) != nil {
+		return "", errors.New("未收到有效的 AI 回复，请确认服务兼容 Chat Completions 或 Anthropic Messages")
 	}
-	choice := result.Choices[0]
-	if choice.Finish == "length" || choice.Finish == "content_filter" {
-		return "", errors.New("AI 回复未完成，请简化问题后重试")
+	var rawContent string
+	switch {
+	case len(result.Choices) > 0:
+		choice := result.Choices[0]
+		if choice.Finish == "length" || choice.Finish == "content_filter" {
+			return "", errors.New("AI 回复未完成，请简化问题后重试")
+		}
+		rawContent = extractContentText(choice.Message.Content)
+	case strings.EqualFold(result.Type, "message") || len(bytes.TrimSpace(result.Content)) > 0:
+		if result.StopReason == "max_tokens" || result.StopReason == "refusal" {
+			return "", errors.New("AI 回复未完成，请简化问题后重试")
+		}
+		rawContent = extractContentText(result.Content)
+	default:
+		return "", errors.New("未收到有效的 AI 回复，请确认服务兼容 Chat Completions 或 Anthropic Messages")
 	}
-	command := strings.Trim(choice.Message.Content, " \r\n")
+	command := strings.Trim(stripThinkBlocks(rawContent), " \r\n")
 	const fence = "\x60\x60\x60"
 	if strings.HasPrefix(command, fence) && strings.HasSuffix(command, "\n"+fence) {
 		if _, lines, ok := strings.Cut(command, "\n"); ok {
@@ -571,8 +954,12 @@ func normalizeModelsBaseURL(raw string) (*url.URL, string, error) {
 		return nil, "", errors.New("远程 AI 服务需要 HTTPS，本机回环地址可以使用 HTTP")
 	}
 	base := strings.TrimRight(u.String(), "/")
-	if strings.HasSuffix(strings.ToLower(base), "/chat/completions") {
+	lowerBase := strings.ToLower(base)
+	switch {
+	case strings.HasSuffix(lowerBase, "/chat/completions"):
 		base = base[:len(base)-len("/chat/completions")]
+	case strings.HasSuffix(lowerBase, "/messages"):
+		base = base[:len(base)-len("/messages")]
 	}
 	return u, base, nil
 }
@@ -943,11 +1330,15 @@ func FetchAIModels(ctx context.Context, input AIConfigInput) ([]string, error) {
 			return models, nil
 		}
 
+		nativeURL := appendModelsPath(base) + "?pageSize=100"
+		if u.Path == "" || u.Path == "/" {
+			nativeURL = u.Scheme + "://" + u.Host + "/v1beta/models?pageSize=100"
+		}
 		nativeHeaders := map[string]string{}
 		if apiKey != "" {
 			nativeHeaders["x-goog-api-key"] = apiKey
 		}
-		status, data, err := doModelsGET(ctx, appendModelsPath(base)+"?pageSize=100", nativeHeaders)
+		status, data, err := doModelsGET(ctx, nativeURL, nativeHeaders)
 		if err != nil {
 			return nil, err
 		}
@@ -969,7 +1360,11 @@ func FetchAIModels(ctx context.Context, input AIConfigInput) ([]string, error) {
 	if apiKey != "" {
 		headers["Authorization"] = "Bearer " + apiKey
 	}
-	status, data, err := doModelsGET(ctx, appendModelsPath(base), headers)
+	modelsURL := appendModelsPath(base)
+	if isOpenAIOrDeepSeekHost(strings.ToLower(u.Hostname())) && (u.Path == "" || u.Path == "/") {
+		modelsURL = base + "/v1/models"
+	}
+	status, data, err := doModelsGET(ctx, modelsURL, headers)
 	if err != nil {
 		return nil, err
 	}

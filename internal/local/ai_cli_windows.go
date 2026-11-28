@@ -14,10 +14,14 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // DetectedAICLI describes a locally installed AI CLI tool discovered on PATH.
@@ -150,6 +154,17 @@ func splitCLIArgs(raw string) []string {
 	return args
 }
 
+func hasCLIFlag(args []string, names ...string) bool {
+	for _, a := range args {
+		for _, name := range names {
+			if a == name || strings.HasPrefix(a, name+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func buildCLICommandArgs(s AISettings, fullPrompt string) (bin string, args []string, stdinPrompt string) {
 	bin = strings.TrimSpace(s.CLICommand)
 	extra := splitCLIArgs(strings.TrimSpace(s.CLIArgs))
@@ -170,29 +185,51 @@ func buildCLICommandArgs(s AISettings, fullPrompt string) (bin string, args []st
 
 	switch base {
 	case "claude":
-		args = append(args, "-p", "--output-format", "text")
-		if model != "" {
+		if !hasCLIFlag(extra, "--output-format") {
+			args = append(args, "--output-format", "text")
+		}
+		if model != "" && !hasCLIFlag(extra, "--model") {
 			args = append(args, "--model", model)
 		}
 		args = append(args, extra...)
+		if !hasCLIFlag(extra, "-p", "--print") {
+			args = append(args, "-p")
+		}
 		return bin, args, fullPrompt
 	case "codex":
-		args = append(args, "exec", "--skip-git-repo-check")
-		if model != "" {
+		args = append(args, "exec")
+		if !hasCLIFlag(extra, "--skip-git-repo-check") {
+			args = append(args, "--skip-git-repo-check")
+		}
+		if !hasCLIFlag(extra, "--ephemeral") {
+			args = append(args, "--ephemeral")
+		}
+		if !hasCLIFlag(extra, "--color") {
+			args = append(args, "--color", "never")
+		}
+		if !hasCLIFlag(extra, "-s", "--sandbox", "--dangerously-bypass-approvals-and-sandbox", "--approve-for-me") {
+			args = append(args, "-s", "read-only")
+		}
+		if model != "" && !hasCLIFlag(extra, "-m", "--model") {
 			args = append(args, "-m", model)
 		}
 		args = append(args, extra...)
 		args = append(args, "-")
 		return bin, args, fullPrompt
 	case "agy":
-		args = append(args, "-p", "--output-format", "text", "--disable-slash-commands")
-		if model != "" {
+		if !hasCLIFlag(extra, "--output-format") {
+			args = append(args, "--output-format", "text")
+		}
+		if !hasCLIFlag(extra, "--disable-slash-commands") {
+			args = append(args, "--disable-slash-commands")
+		}
+		if model != "" && !hasCLIFlag(extra, "--model") {
 			args = append(args, "--model", model)
 		}
 		args = append(args, extra...)
 		return bin, args, fullPrompt
 	case "gemini":
-		if model != "" {
+		if model != "" && !hasCLIFlag(extra, "-m", "--model") {
 			args = append(args, "-m", model)
 		}
 		args = append(args, extra...)
@@ -200,6 +237,102 @@ func buildCLICommandArgs(s AISettings, fullPrompt string) (bin string, args []st
 	default:
 		return bin, extra, fullPrompt
 	}
+}
+
+type cliProcessJob struct {
+	mu     sync.Mutex
+	handle windows.Handle
+}
+
+func newCLIProcessJob() *cliProcessJob {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return &cliProcessJob{}
+	}
+	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	_, err = windows.SetInformationJobObject(
+		job,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)),
+		uint32(unsafe.Sizeof(info)),
+	)
+	if err != nil {
+		_ = windows.CloseHandle(job)
+		return &cliProcessJob{}
+	}
+	return &cliProcessJob{handle: job}
+}
+
+func (j *cliProcessJob) assign(pid int) {
+	if j == nil || pid <= 0 {
+		return
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.handle == 0 {
+		return
+	}
+	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		_ = windows.CloseHandle(j.handle)
+		j.handle = 0
+		return
+	}
+	assignErr := windows.AssignProcessToJobObject(j.handle, proc)
+	_ = windows.CloseHandle(proc)
+	if assignErr != nil {
+		// Gracefully degrade if a restricted parent job forbids nested job assignment
+		// or the child exited before assignment.
+		_ = windows.CloseHandle(j.handle)
+		j.handle = 0
+	}
+}
+
+func (j *cliProcessJob) terminate() bool {
+	if j == nil {
+		return false
+	}
+	j.mu.Lock()
+	h := j.handle
+	j.handle = 0
+	j.mu.Unlock()
+	if h == 0 {
+		return false
+	}
+	_ = windows.TerminateJobObject(h, 1)
+	_ = windows.CloseHandle(h)
+	return true
+}
+
+func (j *cliProcessJob) close() {
+	if j == nil {
+		return
+	}
+	j.mu.Lock()
+	h := j.handle
+	j.handle = 0
+	j.mu.Unlock()
+	if h != 0 {
+		_ = windows.CloseHandle(h)
+	}
+}
+
+func prepareCLICommand(ctx context.Context, resolved string, args ...string) (*exec.Cmd, *cliProcessJob) {
+	cmd := exec.CommandContext(ctx, resolved, args...)
+	cmd.WaitDelay = 2 * time.Second
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	job := newCLIProcessJob()
+	cmd.Cancel = func() error {
+		killedByJob := job.terminate()
+		if cmd.Process != nil {
+			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && !killedByJob {
+				return err
+			}
+		}
+		return nil
+	}
+	return cmd, job
 }
 
 // cappedBuffer stores up to limit bytes while draining further writes so subprocess pipes never deadlock.
@@ -263,8 +396,21 @@ func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt s
 	}
 	_, args, stdinText := buildCLICommandArgs(s, fullPrompt)
 
-	cmd := exec.CommandContext(ctx, resolved, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	var codexOutFile string
+	if cliBaseName(bin) == "codex" && stdinText != "" && len(args) >= 2 && args[0] == "exec" && args[len(args)-1] == "-" && !hasCLIFlag(args, "-o", "--output-last-message") {
+		if tmpFile, tmpErr := os.CreateTemp("", "shell-codex-out-*.txt"); tmpErr == nil {
+			codexOutFile = tmpFile.Name()
+			_ = tmpFile.Close()
+			defer os.Remove(codexOutFile)
+			withOut := make([]string, 0, len(args)+2)
+			withOut = append(withOut, args[:len(args)-1]...)
+			withOut = append(withOut, "-o", codexOutFile, "-")
+			args = withOut
+		}
+	}
+
+	cmd, job := prepareCLICommand(ctx, resolved, args...)
+	defer job.close()
 	if stdinText != "" {
 		cmd.Stdin = strings.NewReader(stdinText + "\n")
 	}
@@ -277,6 +423,10 @@ func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt s
 
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("无法启动本地 CLI「%s」：%v", bin, err)
+	}
+	job.assign(cmd.Process.Pid)
+	if ctx.Err() != nil {
+		job.terminate()
 	}
 
 	const maxBytes = 256 << 10
@@ -344,6 +494,20 @@ func runLocalAICLI(ctx context.Context, s AISettings, systemPrompt, userPrompt s
 	}
 
 	result := strings.TrimSpace(out.String())
+	if codexOutFile != "" {
+		if f, oErr := os.Open(codexOutFile); oErr == nil {
+			data, rErr := io.ReadAll(io.LimitReader(f, maxBytes))
+			_ = f.Close()
+			if rErr == nil {
+				if clean := strings.TrimSpace(ansiEscapeRe.ReplaceAllString(string(data), "")); clean != "" {
+					if result == "" && onDelta != nil {
+						onDelta(clean)
+					}
+					result = clean
+				}
+			}
+		}
+	}
 	if result == "" {
 		return "", fmt.Errorf("本地 CLI「%s」未返回输出，请检查登录状态或命令行参数", bin)
 	}
@@ -382,14 +546,21 @@ func fileExists(path string) bool {
 }
 
 func runCLISubcommand(ctx context.Context, resolved string, args ...string) (string, string, error) {
-	cmd := exec.CommandContext(ctx, resolved, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd, job := prepareCLICommand(ctx, resolved, args...)
+	defer job.close()
 	cmd.Stdin = bytes.NewReader(nil)
 	stdout := cappedBuffer{limit: 512 << 10}
 	stderr := cappedBuffer{limit: 64 << 10}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return "", "", err
+	}
+	job.assign(cmd.Process.Pid)
+	if ctx.Err() != nil {
+		job.terminate()
+	}
+	err := cmd.Wait()
 	return stdout.buf.String(), stderr.buf.String(), err
 }
 

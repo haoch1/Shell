@@ -51,7 +51,7 @@ type chatToolCall struct {
 	} `json:"function"`
 }
 
-// RunAgentLoop executes an OpenAI-compatible Function Calling Agent loop using the user's configured API.
+// RunAgentLoop executes an AI Agent loop using the user's configured API (OpenAI-compatible or native Anthropic Messages) or local CLI.
 // Every tool call passes through Shell's unified PolicyEngine + Redaction Engine + Approval Dialog + Audit Log.
 func RunAgentLoop(
 	ctx context.Context,
@@ -77,6 +77,18 @@ func RunAgentLoop(
 		return "", err
 	}
 
+	sysPrompt := "你是运行在 Shell 终端客户端内的资深 Linux/Windows 运维 Agent。" +
+		"你可以通过提供的工具检查当前主机、执行命令、读取/编辑文件与查看状态。" +
+		"所有工具输出都已自动进行敏感信息脱敏（[REDACTED:...]），切勿尝试绕过安全策略。" +
+		"优先使用只读命令排查问题，修改操作前要明确最小影响范围；完成任务后用简洁清晰的中文总结结果。"
+	if hostLabel != "" {
+		sysPrompt += " 当前活动会话主机：" + hostLabel
+	}
+
+	if isAnthropicProtocol(endpoint) {
+		return runAnthropicAgentLoop(ctx, s, endpoint, sysPrompt, goal, tools, execTool, onStep)
+	}
+
 	openAITools := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
 		openAITools = append(openAITools, map[string]any{
@@ -87,14 +99,6 @@ func RunAgentLoop(
 				"parameters":  t.Parameters,
 			},
 		})
-	}
-
-	sysPrompt := "你是运行在 Shell SSH 客户端内的资深 Linux/运维 Agent。" +
-		"你可以通过提供的工具检查当前远端主机、执行命令、读取/编辑文件与查看状态。" +
-		"所有工具输出都已自动进行敏感信息脱敏（[REDACTED:...]），切勿尝试绕过安全策略。" +
-		"优先使用只读命令排查问题，修改操作前要明确最小影响范围；完成任务后用简洁清晰的中文总结结果。"
-	if hostLabel != "" {
-		sysPrompt += " 当前活动会话主机：" + hostLabel
 	}
 
 	msgs := []chatToolMsg{
@@ -108,13 +112,12 @@ func RunAgentLoop(
 			return "", networkError(ctx, err)
 		}
 		payload := map[string]any{
-			"model":       s.Model,
-			"messages":    msgs,
-			"tools":       openAITools,
-			"tool_choice": "auto",
+			"model":    s.Model,
+			"messages": msgs,
 		}
-		if isAnthropicEndpoint(endpoint) {
-			payload["max_tokens"] = 4096
+		if len(openAITools) > 0 {
+			payload["tools"] = openAITools
+			payload["tool_choice"] = "auto"
 		}
 		body, err := json.Marshal(payload)
 		if err != nil {
@@ -129,9 +132,6 @@ func RunAgentLoop(
 		if s.APIKey != "" {
 			req.Header.Set("Authorization", "Bearer "+s.APIKey)
 		}
-		if isAnthropicEndpoint(endpoint) {
-			req.Header.Set("anthropic-version", "2023-06-01")
-		}
 		resp, err := aiClient.Do(req)
 		if err != nil {
 			return "", networkError(ctx, err)
@@ -142,15 +142,15 @@ func RunAgentLoop(
 			return "", networkError(ctx, readErr)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return "", fmt.Errorf("AI 服务返回 HTTP %d，请检查模型是否支持工具调用 (Tool Calling)", resp.StatusCode)
+			return "", formatAPIStatusError(resp.StatusCode, rawResp, s.APIKey, true)
 		}
 
 		var parsed struct {
 			Choices []struct {
 				Message struct {
-					Role      string         `json:"role"`
-					Content   string         `json:"content"`
-					ToolCalls []chatToolCall `json:"tool_calls"`
+					Role      string          `json:"role"`
+					Content   json.RawMessage `json:"content"`
+					ToolCalls []chatToolCall  `json:"tool_calls"`
 				} `json:"message"`
 			} `json:"choices"`
 		}
@@ -158,9 +158,14 @@ func RunAgentLoop(
 			return "", errors.New("未收到有效的模型响应")
 		}
 		assistantMsg := parsed.Choices[0].Message
+		contentText := extractContentText(assistantMsg.Content)
+		cleanText := stripThinkBlocks(contentText)
 
 		if len(assistantMsg.ToolCalls) == 0 {
-			finalText := strings.TrimSpace(assistantMsg.Content)
+			finalText := cleanText
+			if finalText == "" {
+				finalText = strings.TrimSpace(contentText)
+			}
 			if finalText == "" {
 				finalText = "Agent 已完成执行。"
 			}
@@ -170,12 +175,12 @@ func RunAgentLoop(
 			return finalText, nil
 		}
 
-		if strings.TrimSpace(assistantMsg.Content) != "" && onStep != nil {
-			onStep(AgentStepEvent{Step: step, Kind: "thought", Output: strings.TrimSpace(assistantMsg.Content)})
+		if cleanText != "" && onStep != nil {
+			onStep(AgentStepEvent{Step: step, Kind: "thought", Output: cleanText})
 		}
 		msgs = append(msgs, chatToolMsg{
 			Role:      "assistant",
-			Content:   assistantMsg.Content,
+			Content:   contentText,
 			ToolCalls: assistantMsg.ToolCalls,
 		})
 
@@ -243,6 +248,215 @@ func RunAgentLoop(
 	return "已达到单次最大执行步数（8 步），如需继续请补充指令。", nil
 }
 
+type anthropicAgentMsg struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+func runAnthropicAgentLoop(
+	ctx context.Context,
+	s AISettings,
+	endpoint string,
+	sysPrompt string,
+	goal string,
+	tools []ToolDefinition,
+	execTool ToolExecutor,
+	onStep func(AgentStepEvent),
+) (string, error) {
+	anthropicTools := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		schema := map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
+		if len(t.Parameters) > 0 {
+			schema = make(map[string]any, len(t.Parameters)+1)
+			for k, v := range t.Parameters {
+				schema[k] = v
+			}
+			if _, ok := schema["type"]; !ok {
+				schema["type"] = "object"
+			}
+		}
+		anthropicTools = append(anthropicTools, map[string]any{
+			"name":         t.Name,
+			"description":  t.Description,
+			"input_schema": schema,
+		})
+	}
+
+	msgs := []anthropicAgentMsg{
+		{Role: "user", Content: goal},
+	}
+
+	const maxSteps = 8
+	for step := 1; step <= maxSteps; step++ {
+		if err := ctx.Err(); err != nil {
+			return "", networkError(ctx, err)
+		}
+		payload := map[string]any{
+			"model":      s.Model,
+			"max_tokens": 4096,
+			"system":     sysPrompt,
+			"messages":   msgs,
+		}
+		if len(anthropicTools) > 0 {
+			payload["tools"] = anthropicTools
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("anthropic-version", anthropicAPIVersion)
+		if s.APIKey != "" {
+			req.Header.Set("x-api-key", s.APIKey)
+		}
+		resp, err := aiClient.Do(req)
+		if err != nil {
+			return "", networkError(ctx, err)
+		}
+		rawResp, readErr := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+		resp.Body.Close()
+		if readErr != nil {
+			return "", networkError(ctx, readErr)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", formatAPIStatusError(resp.StatusCode, rawResp, s.APIKey, true)
+		}
+
+		var parsed struct {
+			Type       string            `json:"type"`
+			StopReason string            `json:"stop_reason"`
+			Content    []json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(rawResp, &parsed) != nil || len(parsed.Content) == 0 {
+			return "", errors.New("未收到有效的模型响应")
+		}
+
+		type anthropicBlock struct {
+			Type  string         `json:"type"`
+			Text  string         `json:"text"`
+			ID    string         `json:"id"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
+		}
+		var textParts []string
+		var toolUses []anthropicBlock
+		for _, rawBlock := range parsed.Content {
+			var blk anthropicBlock
+			if json.Unmarshal(rawBlock, &blk) != nil {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(blk.Type)) {
+			case "text":
+				if blk.Text != "" {
+					textParts = append(textParts, blk.Text)
+				}
+			case "tool_use":
+				if strings.TrimSpace(blk.Name) != "" {
+					toolUses = append(toolUses, blk)
+				}
+			}
+		}
+
+		joinedText := strings.Join(textParts, "\n")
+		cleanText := stripThinkBlocks(joinedText)
+		if len(toolUses) == 0 {
+			finalText := cleanText
+			if finalText == "" {
+				finalText = strings.TrimSpace(joinedText)
+			}
+			if finalText == "" {
+				finalText = "Agent 已完成执行。"
+			}
+			if onStep != nil {
+				onStep(AgentStepEvent{Step: step, Kind: "final", Output: finalText})
+			}
+			return finalText, nil
+		}
+
+		if cleanText != "" && onStep != nil {
+			onStep(AgentStepEvent{Step: step, Kind: "thought", Output: cleanText})
+		}
+		msgs = append(msgs, anthropicAgentMsg{
+			Role:    "assistant",
+			Content: parsed.Content,
+		})
+
+		toolResults := make([]map[string]any, 0, len(toolUses))
+		for _, tu := range toolUses {
+			args := tu.Input
+			if args == nil {
+				args = map[string]any{}
+			}
+			argBytes, _ := json.Marshal(args)
+			if onStep != nil {
+				onStep(AgentStepEvent{
+					Step:      step,
+					Kind:      "tool_call",
+					Tool:      tu.Name,
+					Arguments: string(argBytes),
+				})
+			}
+			out, risk, decision, redacted, toolErr := execTool(ctx, tu.Name, args)
+			if toolErr != nil {
+				errMsg := "工具执行失败或被拒绝：" + toolErr.Error()
+				if onStep != nil {
+					onStep(AgentStepEvent{
+						Step:     step,
+						Kind:     "tool_result",
+						Tool:     tu.Name,
+						Risk:     risk,
+						Decision: decision,
+						Error:    toolErr.Error(),
+					})
+				}
+				toolResults = append(toolResults, map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": tu.ID,
+					"content":     errMsg,
+					"is_error":    true,
+				})
+				continue
+			}
+			if onStep != nil {
+				preview := out
+				if len(preview) > 1200 {
+					preview = truncateUTF8(preview, 1200) + "\n…(已截断预览)"
+				}
+				onStep(AgentStepEvent{
+					Step:          step,
+					Kind:          "tool_result",
+					Tool:          tu.Name,
+					Output:        preview,
+					Risk:          risk,
+					Decision:      decision,
+					RedactedCount: redacted,
+				})
+			}
+			if len(out) > 16000 {
+				out = truncateUTF8(out, 16000) + "\n...[output truncated]"
+			}
+			toolResults = append(toolResults, map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": tu.ID,
+				"content":     out,
+			})
+		}
+		msgs = append(msgs, anthropicAgentMsg{
+			Role:    "user",
+			Content: toolResults,
+		})
+	}
+	return "已达到单次最大执行步数（8 步），如需继续请补充指令。", nil
+}
+
 func runCLIAgentLoop(
 	ctx context.Context,
 	s AISettings,
@@ -257,7 +471,7 @@ func runCLIAgentLoop(
 		params, _ := json.Marshal(t.Parameters)
 		fmt.Fprintf(&toolSummary, "- %s: %s | params=%s\n", t.Name, t.Description, string(params))
 	}
-	sysPrompt := "你是运行在 Shell SSH 客户端内的资深 Linux/运维 Agent。" +
+	sysPrompt := "你是运行在 Shell 终端客户端内的资深 Linux/Windows 运维 Agent。" +
 		"所有工具输出已自动脱敏（[REDACTED:...]），切勿绕过安全策略。" +
 		"每轮必须且仅输出一个合法 JSON 对象，格式二选一：\n" +
 		"1) 调用工具：{\"thought\":\"简短思路\",\"tool\":\"工具名\",\"arguments\":{...}}\n" +
@@ -279,26 +493,31 @@ func runCLIAgentLoop(
 		if err != nil {
 			return "", err
 		}
-		var act struct {
+		type cliAgentAction struct {
 			Thought   string         `json:"thought"`
 			Tool      string         `json:"tool"`
 			Arguments map[string]any `json:"arguments"`
 			Final     string         `json:"final"`
 		}
-		trimmed := strings.TrimSpace(raw)
+		cleaned := stripThinkBlocks(raw)
+		if cleaned == "" {
+			cleaned = strings.TrimSpace(raw)
+		}
+		var act cliAgentAction
 		parsedOK := false
-		if start := strings.IndexByte(trimmed, '{'); start >= 0 {
-			if end := strings.LastIndexByte(trimmed, '}'); end > start {
-				if json.Unmarshal([]byte(trimmed[start:end+1]), &act) == nil && (act.Tool != "" || act.Final != "") {
-					parsedOK = true
-				}
+		for _, candidate := range extractBalancedJSONObjects(cleaned) {
+			var probe cliAgentAction
+			if json.Unmarshal([]byte(candidate), &probe) == nil && (strings.TrimSpace(probe.Tool) != "" || strings.TrimSpace(probe.Final) != "") {
+				act = probe
+				parsedOK = true
+				break
 			}
 		}
 		if !parsedOK {
 			if onStep != nil {
-				onStep(AgentStepEvent{Step: step, Kind: "final", Output: trimmed})
+				onStep(AgentStepEvent{Step: step, Kind: "final", Output: cleaned})
 			}
-			return trimmed, nil
+			return cleaned, nil
 		}
 		if strings.TrimSpace(act.Final) != "" && strings.TrimSpace(act.Tool) == "" {
 			finalText := strings.TrimSpace(act.Final)

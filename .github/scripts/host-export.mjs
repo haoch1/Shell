@@ -49,7 +49,7 @@ export async function verifyHostExport({ call, evaluate, until, click, shot }) {
         evaluate(`(() => {
           const el = document.querySelector('#hostExportDialog');
           if (!el) return null;
-          if (el.getAnimations?.().some(a => a.playState === 'running')) return null;
+          el.getAnimations?.().forEach(a => a.finish());
           const r = el.getBoundingClientRect();
           return { width: r.width, height: r.height };
         })()`),
@@ -225,7 +225,7 @@ export async function verifyEmptyHostExport({ call, evaluate, until, click, expe
       evaluate(`(() => {
         const el = document.querySelector('#hostExportDialog');
         if (!el) return null;
-        if (el.getAnimations?.().some(a => a.playState === 'running')) return null;
+        el.getAnimations?.().forEach(a => a.finish());
         const r = el.getBoundingClientRect();
         return { width: r.width, height: r.height };
       })()`),

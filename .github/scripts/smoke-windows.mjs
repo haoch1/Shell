@@ -497,7 +497,40 @@ const BRIDGE_MOCK_SCRIPT = `
     Suggest: async () => 'df -h',
     SuggestCommand: async () => ({ command: 'ss -tulpn | grep :8080', explanation: '查看占用 8080 端口的监听进程及 PID。', risk: 'safe' }),
     ExplainTerminal: async () => '分析完成。',
-    RunAIAgent: async () => '巡检完成。',
+    RunAIAgent: async (sessionId, goal, history) => {
+      window.__lastAiAgentCall = { sessionId, goal, history };
+      emit('ai:agent_step', {
+        step: 1,
+        kind: 'tool_call',
+        tool: 'shell_exec',
+        arguments: JSON.stringify({ command: 'ss -tlnp | grep 8080' }),
+      });
+      await new Promise(r => setTimeout(r, 45));
+      emit('ai:agent_step', {
+        step: 1,
+        kind: 'tool_result',
+        tool: 'shell_exec',
+        output: JSON.stringify({
+          exitCode: 0,
+          stdout: 'LISTEN 0 4096 0.0.0.0:8080 0.0.0.0:* users:(("nginx",pid=1842,fd=6))',
+          stderr: '',
+          durationMs: 18,
+        }),
+        risk: 'safe',
+        decision: 'auto-allow',
+        redactedCount: 1,
+      });
+      const summary = [
+        '已定位到占用 \`8080\` 端口的进程为 **\`nginx\`**（PID \`1842\`，监听 \`0.0.0.0:8080\`），已自动脱敏 1 处敏感输出。',
+        '',
+        '如需校验配置并平滑重载服务可执行：',
+        '\`\`\`bash',
+        'sudo nginx -t && sudo systemctl reload nginx',
+        '\`\`\`',
+      ].join('\\n');
+      emit('ai:agent_step', { step: 2, kind: 'final', output: summary });
+      return summary;
+    },
     GetAgentStatus: async () => ({
       enabled: true, running: true, port: 17822, execMode: 'silent', token: 'sh_demo_token_9f8e7d6c5b4a32109876543210abcdef',
       exePath: 'C:\\\\Tools\\\\Shell.exe',
@@ -559,7 +592,9 @@ async function verifyFrontendUI() {
   const edge = spawn(browserPath, [
     '--headless=new',
     '--disable-gpu',
+    '--disable-gpu-vsync',
     '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
     '--no-first-run',
     '--no-default-browser-check',
@@ -583,7 +618,7 @@ async function verifyFrontendUI() {
       const timer = setTimeout(() => {
         outstanding.delete(id);
         reject(new Error('CDP timeout: ' + method));
-      }, 6000);
+      }, 15000);
       outstanding.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ id, method, params }));
     });
@@ -626,9 +661,11 @@ async function verifyFrontendUI() {
     await sleep(220);
   }
 
+  let shotCount = 0;
   async function shot(name) {
     const { data } = await call('Page.captureScreenshot', { format: 'png' });
     await writeFile(path.join(snapshotDir, name + '.png'), Buffer.from(data, 'base64'));
+    shotCount += 1;
   }
 
   try {
@@ -660,6 +697,8 @@ async function verifyFrontendUI() {
     await Promise.all([
       call('Page.enable'),
       call('Runtime.enable'),
+      call('Page.bringToFront'),
+      call('Emulation.setFocusEmulationEnabled', { enabled: true }),
       call('Emulation.setDeviceMetricsOverride', { width: 1280, height: 820, deviceScaleFactor: 2, mobile: false }),
     ]);
 
@@ -995,6 +1034,8 @@ async function verifyFrontendUI() {
       const tileBadges = [...document.querySelectorAll('#connectDialog .icon-choice-btn.is-tile .host-icon-badge.size-sm')];
       const pickerButtons = [...document.querySelectorAll('#connectDialog .icon-choice-btn')];
       const topSet = new Set(pickerButtons.map(b => Math.round(b.getBoundingClientRect().top)));
+      const colorRow = document.querySelector('#connectDialog .color-picker-row')?.getBoundingClientRect();
+      const pinCb = [...document.querySelectorAll('#connectDialog label')].find(el => el.textContent.trim() === '置顶显示')?.getBoundingClientRect();
       return {
         height: sheet.getBoundingClientRect().height,
         scrollHeight: body.scrollHeight,
@@ -1002,6 +1043,7 @@ async function verifyFrontendUI() {
         solidTiles: tileBadges.length,
         singleRow: topSet.size === 1,
         hasDatalist: Boolean(document.querySelector('#connectDialog datalist')),
+        pinAlignDelta: colorRow && pinCb ? Math.abs((colorRow.top + colorRow.height / 2) - (pinCb.top + pinCb.height / 2)) : 999,
       };
     })()`);
     assert.ok(
@@ -1011,6 +1053,7 @@ async function verifyFrontendUI() {
     assert.equal(basicMetrics.solidTiles, 10, 'Expected 10 solid Termius-style OS tiles in HostModal icon picker, got ' + JSON.stringify(basicMetrics));
     assert.equal(basicMetrics.singleRow, true, 'Expected all OS icon choices on a single clean row, got ' + JSON.stringify(basicMetrics));
     assert.equal(basicMetrics.hasDatalist, false, 'Expected native <datalist> removed in favor of custom ComboBox');
+    assert.ok(basicMetrics.pinAlignDelta <= 2, 'Expected 置顶显示 aligned vertically with .color-picker-row, got ' + JSON.stringify(basicMetrics));
     await shot('02-HostModal');
     // Verify custom frosted-glass Group ComboBox opens, lists existing groups, and closes cleanly on Escape without closing HostModal
     await click('#hostGroup');
@@ -1023,8 +1066,13 @@ async function verifyFrontendUI() {
     assert.equal(await evaluate("!!document.querySelector('#connectDialog')"), true, 'Escape on open ComboBox must keep HostModal open');
     await click('#connectDialog .modal-header .segmented button:nth-child(2)');
     await sleep(120);
-    const jumpH = await evaluate(`document.querySelector('#connectDialog .modal-sheet').getBoundingClientRect().height`);
-    assert.ok(Math.abs(basicMetrics.height - jumpH) <= 1, 'Expected identical HostModal height across tabs: ' + basicMetrics.height + ' vs ' + jumpH);
+    const jumpTabCheck = await evaluate(`(() => {
+      const sheetH = document.querySelector('#connectDialog .modal-sheet').getBoundingClientRect().height;
+      const agentRow = [...document.querySelectorAll('#connectDialog .setting-row')].find(el => el.textContent.includes('SSH Agent 转发'));
+      return { height: sheetH, agentBorderBottom: agentRow ? getComputedStyle(agentRow).borderBottomWidth : '' };
+    })()`);
+    assert.ok(Math.abs(basicMetrics.height - jumpTabCheck.height) <= 1, 'Expected identical HostModal height across tabs: ' + basicMetrics.height + ' vs ' + jumpTabCheck.height);
+    assert.equal(jumpTabCheck.agentBorderBottom, '0px', 'Expected zero stray bottom border on SSH Agent 转发 row, got ' + JSON.stringify(jumpTabCheck));
     await click('#connectDialog .modal-header .segmented button:nth-child(1)');
     await sleep(100);
     await click('#authMode [data-auth="key"]');
@@ -1290,19 +1338,69 @@ async function verifyFrontendUI() {
     await sleep(250);
     await shot('05-Terminal-Tunnels');
 
-    // AI Drawer (verify expanded quick examples across 写命令 / 查报错 / 自动运维)
+    // AI Drawer (direct-execution conversational flow: zero mode tabs, target bar, quick chips, Enter-to-run collapsible step + summary)
     await click('#aiOpen');
     await until(() => evaluate("!!document.querySelector('#aiDrawer')"), 'AI drawer');
-    const aiCmdExamples = await evaluate("document.querySelectorAll('#aiDrawer .ai-example-btn').length");
-    assert.ok(aiCmdExamples >= 8, 'Expected >= 8 quick examples in AIDrawer 写命令 mode, got ' + aiCmdExamples);
+    const aiEmptyAudit = await evaluate(`(() => {
+      const drawerText = document.querySelector('#aiDrawer')?.textContent || '';
+      return {
+        segmentedCount: document.querySelectorAll('#aiDrawer .segmented').length,
+        hasLegacyModeTabs: drawerText.includes('写命令') || drawerText.includes('查报错') || drawerText.includes('自动运维'),
+        targetText: document.querySelector('#aiDrawer .ai-target-bar')?.textContent?.trim() || '',
+        quickChipCount: document.querySelectorAll('#aiDrawer .ai-quick-chip').length,
+        hasPromptInput: Boolean(document.querySelector('#aiPromptInput')),
+      };
+    })()`);
+    assert.equal(aiEmptyAudit.segmentedCount, 0, 'Expected legacy 3-mode .segmented tabs completely removed from AIDrawer, got ' + JSON.stringify(aiEmptyAudit));
+    assert.equal(aiEmptyAudit.hasLegacyModeTabs, false, 'Expected legacy 写命令/查报错/自动运维 tabs completely removed from AIDrawer, got ' + JSON.stringify(aiEmptyAudit));
+    assert.ok(aiEmptyAudit.targetText.includes('Tokyo Production'), 'Expected .ai-target-bar showing active session Tokyo Production, got ' + JSON.stringify(aiEmptyAudit));
+    assert.equal(aiEmptyAudit.quickChipCount, 4, 'Expected 4 contextual quick chips in AIDrawer, got ' + JSON.stringify(aiEmptyAudit));
+    assert.equal(aiEmptyAudit.hasPromptInput, true, 'Expected #aiPromptInput composer textarea');
+    await click('#aiPromptInput');
+    await evaluate(`(() => {
+      const ta = document.querySelector('#aiPromptInput');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, '排查 8080 端口占用并给出重载命令');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await until(
+      () =>
+        evaluate(
+          "document.querySelectorAll('#aiDrawer .ai-step-row').length === 1 && !document.querySelector('#aiDrawer .ai-running-row') && (document.querySelector('#aiDrawer .ai-md')?.textContent || '').includes('nginx')",
+        ),
+      'AI drawer direct execution result via Enter',
+    );
+    const aiResultAudit = await evaluate(`(() => {
+      const stepLabel = document.querySelector('#aiDrawer .ai-step-label')?.textContent?.trim() || '';
+      const stepBadge = document.querySelector('#aiDrawer .ai-step-badge')?.textContent?.trim() || '';
+      const hasDoneIcon = Boolean(document.querySelector('#aiDrawer .ai-step-icon.is-done'));
+      const drawerText = document.querySelector('#aiDrawer')?.textContent || '';
+      const codeBlocks = document.querySelectorAll('#aiDrawer .ai-code-block').length;
+      const lastCall = window.__lastAiAgentCall || null;
+      return {
+        stepLabel,
+        stepBadge,
+        hasDoneIcon,
+        hasRawJson: drawerText.includes('{"command"') || drawerText.includes('{"stdout"') || drawerText.includes('{"exitCode"'),
+        codeBlocks,
+        calledWithHistoryArray: Array.isArray(lastCall?.history),
+      };
+    })()`);
+    assert.equal(aiResultAudit.stepLabel, '$ ss -tlnp | grep 8080', 'Expected compact human-readable step row label, got ' + JSON.stringify(aiResultAudit));
+    assert.equal(aiResultAudit.stepBadge, '脱敏 1', 'Expected redaction badge on AI step row, got ' + JSON.stringify(aiResultAudit));
+    assert.equal(aiResultAudit.hasDoneIcon, true, 'Expected success icon (.ai-step-icon.is-done) on AI step row, got ' + JSON.stringify(aiResultAudit));
+    assert.equal(aiResultAudit.hasRawJson, false, 'Expected zero raw JSON exposed in AIDrawer, got ' + JSON.stringify(aiResultAudit));
+    assert.equal(aiResultAudit.codeBlocks, 1, 'Expected lightweight Markdown code block rendered in summary, got ' + JSON.stringify(aiResultAudit));
+    assert.equal(aiResultAudit.calledWithHistoryArray, true, 'Expected RunAIAgent called with conversation history array, got ' + JSON.stringify(aiResultAudit));
+    // Verify expanding collapsible step row shows friendly formatted stdout (no raw JSON), then collapse for crisp screenshot
+    await click('#aiDrawer .ai-step-row');
+    await until(() => evaluate("(document.querySelector('#aiDrawer .ai-step-body')?.textContent || '').includes('LISTEN 0 4096') && (document.querySelector('#aiDrawer .ai-step-body')?.textContent || '').includes('nginx')"), 'expanded AI step output');
+    assert.equal(await evaluate("(document.querySelector('#aiDrawer .ai-step-body')?.textContent || '').includes('\"stdout\"')"), false, 'Expanded shell_exec step body must render clean stdout without raw JSON');
+    await click('#aiDrawer .ai-step-row');
+    await until(() => evaluate("!document.querySelector('#aiDrawer .ai-step-body')"), 'collapsed AI step output');
+    await sleep(150);
     await shot('06-Terminal-AI');
-    await click('#aiDrawer .segmented button:nth-child(2)');
-    await until(() => evaluate("document.querySelectorAll('#aiDrawer .ai-example-btn').length >= 5"), 'AI drawer 查报错 examples');
-    await click('#aiDrawer .segmented button:nth-child(3)');
-    await until(() => evaluate("document.querySelectorAll('#aiDrawer .ai-example-btn').length >= 6"), 'AI drawer 自动运维 examples');
-    const aiAgentExamples = await evaluate("document.querySelectorAll('#aiDrawer .ai-example-btn').length");
-    assert.ok(aiAgentExamples >= 6, 'Expected >= 6 quick examples in AIDrawer 自动运维 mode, got ' + aiAgentExamples);
-    await click('#aiDrawer .segmented button:nth-child(1)');
     await click('#aiOpen');
 
     // Universal Importer Modal (accessed via split New Host dropdown menu)
@@ -1420,6 +1518,33 @@ async function verifyFrontendUI() {
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(4)').click()`);
     await until(() => evaluate("document.querySelector('#model')?.value === 'claude-sonnet-5-5' && !!document.querySelector('#fetchModelsBtn')"), 'AI API tab with latest default model & refresh button');
+    const aiInputAudit = await evaluate(`(() => {
+      const modelEl = document.querySelector('#model');
+      const apiKeyEl = document.querySelector('#apiKey');
+      return {
+        modelPaddingRight: modelEl ? parseFloat(getComputedStyle(modelEl).paddingRight) : 0,
+        apiKeyTypeInitial: apiKeyEl?.type || '',
+        hasEyeInitially: Boolean(document.querySelector('#apiKey ~ .input-eye-btn')),
+      };
+    })()`);
+    assert.ok(aiInputAudit.modelPaddingRight >= 30, 'Expected #model paddingRight >= 30px, got ' + JSON.stringify(aiInputAudit));
+    assert.equal(aiInputAudit.apiKeyTypeInitial, 'password', 'Expected #apiKey password initially');
+    assert.equal(aiInputAudit.hasEyeInitially, false, 'Expected no eye toggle on empty #apiKey');
+    await evaluate(`(() => {
+      const input = document.querySelector('#apiKey');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'sk-test-demo-key');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await until(() => evaluate("!!document.querySelector('#apiKey ~ .input-eye-btn')"), '#apiKey eye toggle appears on input');
+    assert.ok(await evaluate("parseFloat(getComputedStyle(document.querySelector('#apiKey')).paddingRight) >= 30"), 'Expected #apiKey paddingRight >= 30 when eye button is visible');
+    await click('#apiKey ~ .input-eye-btn');
+    assert.equal(await evaluate("document.querySelector('#apiKey')?.type"), 'text', 'Clicking #apiKey eye toggle should reveal input');
+    await evaluate(`(() => {
+      const input = document.querySelector('#apiKey');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await until(() => evaluate("!document.querySelector('#apiKey ~ .input-eye-btn') && document.querySelector('#apiKey')?.type === 'password'"), 'clearing #apiKey hides eye toggle');
     await click('#fetchModelsBtn');
     await until(() => evaluate("document.querySelectorAll('#aiModelMenu [role=\"option\"]').length === 4 && (document.querySelector('#aiModelMenu')?.textContent || '').includes('已获取 4 个在线模型')"), 'fetched AI models dropdown');
     await sleep(150);
@@ -1429,11 +1554,28 @@ async function verifyFrontendUI() {
     assert.equal(await evaluate("!!document.querySelector('#aiModelMenu')"), false, 'Selecting a model option must close #aiModelMenu');
     await evaluate(`document.querySelector('#settingsDialog [data-ai-mode="cli"]').click()`);
     await sleep(200);
+    const hasCliEphemeralNotice = await evaluate("(document.querySelector('#settingsDialog')?.textContent || '').includes('已启用无痕调用，不会向 Codex、Claude Code 等工具写入会话历史')");
+    assert.equal(hasCliEphemeralNotice, true, 'Expected CLI zero-history ephemeral notice visible in Local CLI settings');
     await shot('15-Settings-AI-CLI');
+
+    // Regression guard: selecting a model in Antigravity CLI (agy) must NEVER bleed into Codex CLI when switching cards, and switching back must restore agy's selection
+    await until(() => evaluate("document.querySelector('#cliCommand')?.value === 'agy'"), 'initial Antigravity CLI selected');
+    await click('#cliModel');
+    await until(() => evaluate("!!document.querySelector('#cliModelMenu')"), 'opened Antigravity CLI models menu');
+    await evaluate(`[...document.querySelectorAll('#cliModelMenu [role="option"]')].find(el => el.textContent.trim() === 'gemini-4-neon-medium')?.click()`);
+    await until(() => evaluate("document.querySelector('#cliModel')?.value === 'gemini-4-neon-medium' && !document.querySelector('#cliModelMenu')"), 'selected gemini-4-neon-medium for Antigravity CLI');
+    await evaluate(`[...document.querySelectorAll('#settingsDialog .provider-card')].find(el => el.textContent.includes('Codex CLI'))?.click()`);
+    await until(() => evaluate("document.querySelector('#cliCommand')?.value === 'codex'"), 'selected Codex CLI card');
+    const codexModelAfterSwitch = await evaluate("document.querySelector('#cliModel')?.value ?? ''");
+    assert.equal(codexModelAfterSwitch, '', 'Switching from Antigravity CLI to Codex CLI must clear #cliModel instead of bleeding gemini-4-neon-medium, got ' + JSON.stringify(codexModelAfterSwitch));
+    await evaluate(`[...document.querySelectorAll('#settingsDialog .provider-card')].find(el => el.textContent.includes('Antigravity CLI'))?.click()`);
+    await until(() => evaluate("document.querySelector('#cliCommand')?.value === 'agy'"), 'switched back to Antigravity CLI card');
+    assert.equal(await evaluate("document.querySelector('#cliModel')?.value"), 'gemini-4-neon-medium', 'Switching back to Antigravity CLI must restore its remembered model');
 
     // Exercise Local AI CLI live model refresh & searchable dropdown (Codex CLI -> #fetchCliModelsBtn -> #cliModelMenu)
     await evaluate(`[...document.querySelectorAll('#settingsDialog .provider-card')].find(el => el.textContent.includes('Codex CLI'))?.click()`);
-    await until(() => evaluate("document.querySelector('#cliCommand')?.value === 'codex'"), 'selected Codex CLI card');
+    await until(() => evaluate("document.querySelector('#cliCommand')?.value === 'codex'"), 're-selected Codex CLI card for live refresh');
+    assert.equal(await evaluate("document.querySelector('#cliModel')?.value"), '', 'Codex CLI #cliModel must remain clean before selecting a Codex model');
     await click('#fetchCliModelsBtn');
     await until(
       () =>
@@ -1562,6 +1704,31 @@ async function verifyFrontendUI() {
       'portable cleanup confirm modal',
     );
     await sleep(160);
+    const uninstallAlignAudit = await evaluate(`(() => {
+      const sheet = document.querySelector('#uninstallConfirmDialog .modal-sheet');
+      const dot = document.querySelector('#uninstallConfirmDialog .cleanup-checklist-dot');
+      const cb = document.querySelector('#uninstallConfirmDialog .cleanup-checkbox-row input[type="checkbox"]');
+      const labelSpan = document.querySelector('#uninstallConfirmDialog .cleanup-checkbox-row span');
+      const dotR = dot?.getBoundingClientRect();
+      const cbR = cb?.getBoundingClientRect();
+      const spanR = labelSpan?.getBoundingClientRect();
+      return {
+        role: sheet?.getAttribute('role') || '',
+        ariaModal: sheet?.getAttribute('aria-modal') || '',
+        sheetWidth: sheet ? Math.round(sheet.getBoundingClientRect().width) : 0,
+        checklistCount: document.querySelectorAll('#uninstallConfirmDialog .cleanup-checklist li').length,
+        labelText: labelSpan?.textContent?.trim() || '',
+        labelSpanHeight: spanR ? spanR.height : 999,
+        cbTextCenterDeltaY: cbR && spanR ? Math.abs((cbR.top + cbR.height / 2) - (spanR.top + spanR.height / 2)) : 999,
+        dotCbCenterDeltaX: dotR && cbR ? Math.abs((dotR.left + dotR.width / 2) - (cbR.left + cbR.width / 2)) : 999,
+      };
+    })()`);
+    assert.equal(uninstallAlignAudit.role, 'dialog', 'Expected role="dialog" on #uninstallConfirmDialog .modal-sheet');
+    assert.equal(uninstallAlignAudit.ariaModal, 'true', 'Expected aria-modal="true" on #uninstallConfirmDialog .modal-sheet');
+    assert.equal(uninstallAlignAudit.checklistCount, 2, 'Expected 2 .cleanup-checklist items');
+    assert.ok(uninstallAlignAudit.labelSpanHeight <= 24, 'Expected single-line checkbox label (height <= 24px), got ' + JSON.stringify(uninstallAlignAudit));
+    assert.ok(uninstallAlignAudit.cbTextCenterDeltaY <= 2, 'Expected checkbox & label vertical center delta <= 2px, got ' + JSON.stringify(uninstallAlignAudit));
+    assert.ok(uninstallAlignAudit.dotCbCenterDeltaX <= 2, 'Expected checklist dot & checkbox horizontal center delta <= 2px, got ' + JSON.stringify(uninstallAlignAudit));
     await shot('43-Settings-Uninstall-Dialog');
     await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -1597,10 +1764,71 @@ async function verifyFrontendUI() {
     await evaluate(`window.runtime.EventsEmit('update:progress', null)`);
     await sleep(160);
 
-    // Open Agent & Security tab -> screenshot MCP + Unified Security/Redaction view
+    // Open Backup & Migration tab (Tab 6) -> verify passphrase eye toggle & capture screenshot
+    await evaluate(`document.querySelector('.settings-nav-btn:nth-child(6)').click()`);
+    await until(() => evaluate("!!document.querySelector('#vaultPass')"), 'backup tab');
+    await sleep(180);
+    await shot('44-Settings-Backup');
+    await evaluate(`(() => {
+      const input = document.querySelector('#vaultPass');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'vault-secret-123');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await until(() => evaluate("!!document.querySelector('#vaultPass ~ .input-eye-btn')"), 'vaultPass eye toggle appears');
+    assert.ok(await evaluate("parseFloat(getComputedStyle(document.querySelector('#vaultPass')).paddingRight) >= 30"), 'Expected #vaultPass paddingRight >= 30 with eye button');
+    await click('#vaultPass ~ .input-eye-btn');
+    assert.equal(await evaluate("document.querySelector('#vaultPass')?.type"), 'text', 'Clicking #vaultPass eye toggle should reveal passphrase');
+    await evaluate(`(() => {
+      const input = document.querySelector('#vaultPass');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await until(() => evaluate("!document.querySelector('#vaultPass ~ .input-eye-btn') && document.querySelector('#vaultPass')?.type === 'password'"), 'clearing #vaultPass hides eye toggle');
+
+    // Open Agent & Security tab -> verify plaintext MCP token, accent switch, code-block wrapping & capture MCP + Guard screenshots
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(5)').click()`);
+    await until(() => evaluate("!!document.querySelector('#mcpTokenInput')"), 'agent MCP tab');
     await sleep(250);
+    const mcpAudit = await evaluate(`(() => {
+      const tokInput = document.querySelector('#mcpTokenInput');
+      const sw = document.querySelector('#mcpEnableSwitch');
+      const codeBlock = document.querySelector('#settingsDialog .code-block');
+      const codeStyle = codeBlock ? getComputedStyle(codeBlock) : null;
+      const contentText = document.querySelector('#settingsDialog .settings-content')?.textContent || '';
+      const hideBtnCount = document.querySelectorAll('#settingsDialog button[aria-label="隐藏令牌"], #settingsDialog button[aria-label="显示令牌"]').length;
+      return {
+        inputType: tokInput?.type || '',
+        inputValue: tokInput?.value || '',
+        switchHasAccent: Boolean(sw?.classList.contains('accent')),
+        hasMaskDots: contentText.includes('••••'),
+        hideBtnCount,
+        codeContainsFullToken: Boolean(codeBlock?.textContent?.includes('sh_demo_token_9f8e7d6c5b4a32109876543210abcdef')),
+        wordBreak: codeStyle?.wordBreak || '',
+        overflowWrap: codeStyle?.overflowWrap || '',
+      };
+    })()`);
+    assert.equal(mcpAudit.inputType, 'text', 'Expected #mcpTokenInput type="text" plaintext display, got ' + JSON.stringify(mcpAudit));
+    assert.equal(mcpAudit.inputValue, 'sh_demo_token_9f8e7d6c5b4a32109876543210abcdef', 'Expected full real token in #mcpTokenInput');
+    assert.equal(mcpAudit.switchHasAccent, true, 'Expected #mcpEnableSwitch to carry .accent class, got ' + JSON.stringify(mcpAudit));
+    assert.equal(mcpAudit.hasMaskDots, false, 'Expected zero •••• masked token characters in Agent MCP tab');
+    assert.equal(mcpAudit.hideBtnCount, 0, 'Expected zero hide/show token buttons in Agent MCP tab');
+    assert.equal(mcpAudit.codeContainsFullToken, true, 'Expected MCP JSON config preview to show full plaintext token');
+    assert.equal(mcpAudit.wordBreak, 'normal', 'Expected .code-block word-break: normal, got ' + JSON.stringify(mcpAudit));
+    assert.equal(mcpAudit.overflowWrap, 'anywhere', 'Expected .code-block overflow-wrap: anywhere, got ' + JSON.stringify(mcpAudit));
     await shot('11-Agent-MCP-Settings');
+    // Also verify Claude Code CLI snippet shows full token cleanly without breaking URL ports
+    await evaluate(`[...document.querySelectorAll('#settingsDialog .settings-content .segmented')][2]?.querySelector('button:nth-child(2)')?.click()`);
+    await sleep(160);
+    const claudeSnippetText = await evaluate("document.querySelector('#settingsDialog .code-block')?.textContent || ''");
+    assert.ok(
+      claudeSnippetText.includes('http://127.0.0.1:17822/mcp') &&
+        claudeSnippetText.includes('sh_demo_token_9f8e7d6c5b4a32109876543210abcdef') &&
+        !claudeSnippetText.includes('••••'),
+      'Expected Claude Code MCP snippet to show full URL and plaintext token, got ' + claudeSnippetText,
+    );
+    await shot('45-Agent-MCP-Claude');
+    await evaluate(`[...document.querySelectorAll('#settingsDialog .settings-content .segmented')][2]?.querySelector('button:nth-child(1)')?.click()`);
+    await sleep(100);
     await evaluate(`document.querySelector('#settingsDialog .settings-content .segmented button:nth-child(2)').click()`);
     await sleep(200);
     await shot('12-Redaction-Engine');
@@ -1799,6 +2027,29 @@ async function verifyFrontendUI() {
     assert.equal(darkPaletteAudit.hostBeforeContent, 'none', 'Expected no blue ::before accent bar on .host-row.active, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.tabFullVisible, true, 'Expected full host name visible on tab without premature truncation, got ' + JSON.stringify(darkPaletteAudit));
     await shot('09-Terminal-Dark');
+
+    // Capture Dark Mode Direct-Execution AI Drawer (50-Terminal-AI-Dark)
+    await click('#aiOpen');
+    await until(() => evaluate("!!document.querySelector('#aiDrawer #aiPromptInput')"), 'dark AI drawer');
+    await click('#aiPromptInput');
+    await evaluate(`(() => {
+      const ta = document.querySelector('#aiPromptInput');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, '排查 8080 端口占用并给出重载命令');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await until(
+      () =>
+        evaluate(
+          "document.querySelectorAll('#aiDrawer .ai-step-row').length === 1 && !!document.querySelector('#aiDrawer .ai-step-icon.is-done') && !document.querySelector('#aiDrawer .ai-running-row') && (document.querySelector('#aiDrawer .ai-md')?.textContent || '').includes('nginx')",
+        ),
+      'dark AI drawer execution result',
+    );
+    await sleep(160);
+    await shot('50-Terminal-AI-Dark');
+    await click('#aiOpen');
+    await until(() => evaluate("!document.querySelector('#aiDrawer')"), 'closed dark AI drawer');
 
     // Capture Dark Mode 4-zone Telemetry Popover (35-Telemetry-Popover-Dark)
     await click('.statusbar-right .telemetry-trigger');
@@ -2279,7 +2530,11 @@ async function verifyFrontendUI() {
     await until(() => evaluate("document.querySelectorAll('.tab-item').length === 0"), 'closed local terminal tab');
 
     // Verify Dark Mode split New Host dropdown menu + HostModal solid OS icons + frosted Group ComboBox
-    const darkNewHostBg = await evaluate("getComputedStyle(document.querySelector('.sidebar-new-split')).backgroundColor");
+    const darkNewHostBg = await evaluate(`(() => {
+      const el = document.querySelector('.sidebar-new-split');
+      el?.getAnimations?.().forEach(a => a.finish());
+      return el ? getComputedStyle(el).backgroundColor : '';
+    })()`);
     assert.equal(darkNewHostBg, 'rgb(47, 129, 247)', 'Expected GitHub Dark accent #2F81F7 .sidebar-new-split in dark mode, got ' + darkNewHostBg);
     await click('#addHostMenuBtn');
     await until(() => evaluate("!!document.querySelector('#addHostMenu #importSshBtn') && !!document.querySelector('#addHostMenu #exportHostsBtn') && !document.querySelector('#addHostMenu #sidebarLocalTermBtn')"), 'dark add-host split menu (import/export only)');
@@ -2301,6 +2556,78 @@ async function verifyFrontendUI() {
     await click('#connectDialog [data-close]');
     await until(() => evaluate("!document.querySelector('#connectDialog')"), 'closed dark host modal');
 
+    // Verify Dark Mode Delete Host confirmation dialog (close X button, role="dialog", Escape dismissal)
+    await evaluate(`document.querySelector('.host-row[data-profile-id="p3"] button[title="编辑主机"]')?.click()`);
+    await until(() => evaluate("!!document.querySelector('#connectDialog #deleteProfile')"), 'edit host modal with delete button');
+    await sleep(140);
+    await shot('46-HostModal-Dark-Edit');
+    await click('#deleteProfile');
+    await until(() => evaluate("!!document.querySelector('#confirmDeleteDialog')"), 'delete host confirmation dialog');
+    const delAudit = await evaluate(`(() => {
+      const sheet = document.querySelector('#confirmDeleteDialog .modal-sheet');
+      const closeBtn = document.querySelector('#confirmDeleteDialog .modal-header button[aria-label="关闭"]');
+      return {
+        role: sheet?.getAttribute('role') || '',
+        ariaModal: sheet?.getAttribute('aria-modal') || '',
+        hasCloseBtn: Boolean(closeBtn),
+      };
+    })()`);
+    assert.deepEqual(delAudit, { role: 'dialog', ariaModal: 'true', hasCloseBtn: true }, 'Expected role="dialog", aria-modal="true", and close X button on delete host confirm dialog');
+    await sleep(140);
+    await shot('47-DeleteHost-Confirm-Dark');
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('#confirmDeleteDialog')"), 'Escape closes delete host confirmation dialog');
+    assert.equal(await evaluate("!!document.querySelector('#connectDialog')"), true, 'Escape on delete confirm must keep underlying HostModal open');
+    await click('#connectDialog [data-close]');
+    await until(() => evaluate("!document.querySelector('#connectDialog')"), 'closed edit host modal');
+
+    // Verify High-Risk Agent Approval Dialog button hierarchy (neutral 拒绝 .btn + solid danger 允许一次 .btn-danger-solid)
+    await evaluate(`window.runtime.EventsEmit('agent:approval', {
+      id: 'req-danger-1',
+      source: 'mcp',
+      clientName: 'Claude Code',
+      host: 'Tokyo Production',
+      tool: 'shell_exec',
+      summary: 'rm -rf /var/tmp/old-release && systemctl restart nginx',
+      reason: '包含不可逆删除与服务重启操作，请人工核对后放行',
+      risk: 'danger',
+      canRememberSession: false,
+      segments: [
+        { raw: 'rm -rf /var/tmp/old-release', program: 'rm', args: ['-rf', '/var/tmp/old-release'], wrapped: false, hasRedir: false, risk: 'danger', reason: '递归删除' },
+        { raw: 'systemctl restart nginx', program: 'systemctl', args: ['restart', 'nginx'], wrapped: false, hasRedir: false, risk: 'caution', reason: '服务重启' }
+      ]
+    })`);
+    await until(() => evaluate("!!document.querySelector('#agentApprovalDialog')"), 'high-risk agent approval dialog');
+    const approvalAudit = await evaluate(`(() => {
+      const sheet = document.querySelector('#agentApprovalDialog .modal-sheet');
+      const btns = [...document.querySelectorAll('#agentApprovalDialog .modal-footer button')];
+      const denyBtn = btns.find(b => b.textContent.includes('拒绝'));
+      const allowBtn = btns.find(b => b.textContent.includes('允许一次'));
+      return {
+        role: sheet?.getAttribute('role') || '',
+        ariaModal: sheet?.getAttribute('aria-modal') || '',
+        denyClasses: denyBtn ? [...denyBtn.classList] : [],
+        allowClasses: allowBtn ? [...allowBtn.classList] : [],
+      };
+    })()`);
+    assert.equal(approvalAudit.role, 'dialog', 'Expected role="dialog" on #agentApprovalDialog');
+    assert.equal(approvalAudit.ariaModal, 'true', 'Expected aria-modal="true" on #agentApprovalDialog');
+    assert.equal(approvalAudit.denyClasses.includes('btn-danger'), false, 'Expected neutral .btn (not .btn-danger) on 拒绝 button, got ' + JSON.stringify(approvalAudit));
+    assert.equal(approvalAudit.allowClasses.includes('btn-danger-solid'), true, 'Expected .btn-danger-solid on high-risk 允许一次 button, got ' + JSON.stringify(approvalAudit));
+    await sleep(160);
+    await shot('48-Agent-Approval-Danger-Dark');
+    await evaluate(`[...document.querySelectorAll('#agentApprovalDialog .modal-footer button')].find(b => b.textContent.includes('拒绝'))?.click()`);
+    await until(() => evaluate("!document.querySelector('#agentApprovalDialog')"), 'dismissed agent approval dialog');
+
+    // Verify Snippets Drawer uses unified search-box-sm
+    await click('#snippetsBtn');
+    await until(() => evaluate("!!document.querySelector('.right-drawer .search-box.search-box-sm')"), 'snippets drawer with search-box-sm');
+    await sleep(160);
+    await shot('49-Snippets-Drawer-Dark');
+    await click('#snippetsBtn');
+    await until(() => evaluate("!document.querySelector('.right-drawer')"), 'closed snippets drawer');
+
     const { verifySplitWorkspace } = await import('./split-workspace.mjs');
     await verifySplitWorkspace({ call, evaluate, until, click });
     const exportRect = await verifyHostExport({ call, evaluate, until, click, shot });
@@ -2308,7 +2635,7 @@ async function verifyFrontendUI() {
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 44 Retina screenshots.');
+    console.log(`[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured ${shotCount} Retina screenshots.`);
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

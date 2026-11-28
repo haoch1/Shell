@@ -1213,6 +1213,34 @@ async function verifyFrontendUI() {
     );
     await shot('14-Settings-About');
 
+    // Verify seamless in-app update progress bar inside About tab (no stray horizontal divider above bar, no duplicate status text)
+    await evaluate(`window.runtime.EventsEmit('update:progress', { phase: 'downloading', message: '正在下载新版本…', percent: 68, downloaded: 10800000, total: 15850000 })`);
+    await until(() => evaluate("document.querySelector('#settingsDialog .update-reveal.is-open .update-progress-track') !== null"), 'smooth update progress reveal');
+    await sleep(280);
+    const updateProgressAudit = await evaluate(`(() => {
+      const stack = document.querySelector('#settingsDialog .pref-row-stack');
+      const main = stack?.querySelector('.pref-row-main');
+      const reveal = stack?.querySelector('.update-reveal.is-open');
+      const msgHits = (stack?.textContent || '').split('正在下载新版本…').length - 1;
+      const borderCard = getComputedStyle(document.documentElement).getPropertyValue('--border-card').trim();
+      return {
+        hasStack: !!stack,
+        mainHasBorderBottom: main ? getComputedStyle(main).borderBottomWidth : '',
+        revealVisible: !!reveal && reveal.getBoundingClientRect().height > 15,
+        msgHits,
+        borderCard,
+      };
+    })()`);
+    assert.deepEqual(
+      { hasStack: updateProgressAudit.hasStack, mainHasBorderBottom: updateProgressAudit.mainHasBorderBottom, revealVisible: updateProgressAudit.revealVisible, msgHits: updateProgressAudit.msgHits },
+      { hasStack: true, mainHasBorderBottom: '0px', revealVisible: true, msgHits: 1 },
+      'Expected update progress inside unified pref-row-stack with 0px border above progress bar and single status message, got ' + JSON.stringify(updateProgressAudit),
+    );
+    assert.ok(updateProgressAudit.borderCard, 'Expected --border-card CSS token defined');
+    await shot('34-Settings-About-Updating');
+    await evaluate(`window.runtime.EventsEmit('update:progress', null)`);
+    await sleep(160);
+
     // Open Agent & Security tab -> screenshot MCP + Unified Security/Redaction view
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(5)').click()`);
     await sleep(250);
@@ -1656,7 +1684,7 @@ async function verifyFrontendUI() {
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 33 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 34 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

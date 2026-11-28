@@ -23,8 +23,9 @@ export async function verifySplitWorkspace({ call, evaluate, until, click }) {
     return !!pane?.querySelector('.xterm') && !pane.querySelector('.pane-connect-trace, .pane-connecting-bar, .pane-closed-bar');
   }, profile, count);
 
+  await page(() => { window.__beforeSplitReload = true; });
   await call('Page.reload');
-  await wait('fresh workspace', () => !document.querySelector('[role=tab]') && document.querySelectorAll('.host-row').length === 3);
+  await wait('fresh workspace', () => !window.__beforeSplitReload && !document.querySelector('[role=tab]') && document.querySelectorAll('.host-row').length === 3);
   await page(async () => {
     const fixture = window.splitFixture = { dials: [], disconnects: 0, history: false };
     const api = window.go.main.App;

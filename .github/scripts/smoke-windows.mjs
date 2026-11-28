@@ -138,7 +138,8 @@ async function verifyNativeBinary() {
     console.log('[Stage 1] Verified real Shell.exe Win32 window, WebView2 renderer, clean 5-folder layout, shutdown cleanup, and --cleanup-data guard.');
   } finally {
     if (client.exitCode === null) client.kill();
-    await rm(testProfile, { recursive: true, force: true }).catch(() => {});
+    await Promise.race([exited.catch(() => {}), sleep(2000)]);
+    await rm(testProfile, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 }).catch(() => {});
   }
 }
 
@@ -1427,6 +1428,32 @@ async function verifyFrontendUI() {
     await shot('10-Universal-Import');
     await click('#importDialog button[aria-label="关闭"]');
 
+    // Regression check: minimizing/blurring and restoring the window must NOT pop open the #toggleSidebar tooltip
+    await evaluate(`(() => {
+      const btn = document.querySelector('#toggleSidebar');
+      if (btn) btn.focus();
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new Event('focus'));
+      if (btn) btn.focus();
+    })()`);
+    await sleep(160);
+    const restoreAudit = await evaluate(`({
+      tooltips: document.querySelectorAll('.ui-tooltip-content').length,
+      activeId: document.activeElement?.id || '',
+    })`);
+    assert.equal(restoreAudit.tooltips, 0, 'Expected zero ghost tooltips after window blur/focus restore, got ' + JSON.stringify(restoreAudit));
+    assert.notEqual(restoreAudit.activeId, 'toggleSidebar', 'Expected #toggleSidebar not to keep spurious focus on window restore');
+
+    // Verify genuine mouse hover over #toggleSidebar still opens the tooltip and dismisses on blur
+    const toggleBtnPt = await evaluate(`(() => { const r = document.querySelector('#toggleSidebar')?.getBoundingClientRect(); return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`);
+    assert.ok(toggleBtnPt, 'Expected #toggleSidebar bounding rect for hover tooltip check');
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...toggleBtnPt });
+    await until(() => evaluate("(document.querySelector('.ui-tooltip-content')?.textContent || '').includes('切换侧栏')"), 'hover tooltip on #toggleSidebar');
+    await evaluate(`window.dispatchEvent(new Event('blur'))`);
+    await until(() => evaluate("document.querySelectorAll('.ui-tooltip-content').length === 0"), 'tooltip dismissed on window blur');
+    await evaluate(`window.dispatchEvent(new Event('focus'))`);
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 640, y: 400 });
+
     // Settings Sheet Light + SSH/KnownHosts + Agent Governance + About + Dark
     // Regression check: hovering #settingsBtn then opening #settingsDialog must leave zero phantom tooltip above the modal backdrop
     const settingsBtnPt = await evaluate(`(() => { const r = document.querySelector('#settingsBtn')?.getBoundingClientRect(); return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`);
@@ -2640,8 +2667,13 @@ async function verifyFrontendUI() {
     console.log(`[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured ${shotCount} Retina screenshots.`);
   } finally {
     socket?.close();
-    if (edge.exitCode === null) edge.kill();
+    if (edge.exitCode === null) {
+      const edgeExited = once(edge, 'exit').catch(() => {});
+      edge.kill();
+      await Promise.race([edgeExited, sleep(2500)]);
+    }
     server.close();
+    await rm(userData, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 }).catch(() => {});
   }
 }
 

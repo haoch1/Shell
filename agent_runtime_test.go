@@ -5,16 +5,104 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/haoch1/Shell/internal/agentbridge"
 	"github.com/haoch1/Shell/internal/local"
 	"github.com/haoch1/Shell/internal/security"
 )
+
+func TestAgentBridgeConfigAndTokenLifecycle(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	app := &App{}
+	app.bridge = agentbridge.New(app, "test")
+	t.Cleanup(func() { app.stopAgentBridge(true) })
+	for _, badPort := range []int{0, 1023, 65536} {
+		view, err := app.SaveAgentConfig(local.AgentConfig{Port: badPort})
+		if err != nil || view.Port != 17822 || view.Running {
+			t.Fatalf("invalid port %d did not use the default: port=%d, err=%v", badPort, view.Port, err)
+		}
+	}
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := local.DefaultAgentConfig()
+	cfg.Enabled, cfg.Port = true, probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+	first, err := app.SaveAgentConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	changed := cfg
+	changed.Port = busy.Addr().(*net.TCPAddr).Port
+	if _, err := app.SaveAgentConfig(changed); err == nil {
+		t.Fatal("accepted an occupied port")
+	}
+	after, err := app.GetAgentStatus()
+	saved, readErr := local.LoadAgentConfig()
+	if err != nil || readErr != nil || !after.Running || after.Port != cfg.Port || saved.Port != cfg.Port {
+		t.Fatalf("failed rebind changed listener or saved port: running=%t, ports=%d/%d, err=%v/%v", after.Running, after.Port, saved.Port, err, readErr)
+	}
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Go(func() {
+			if _, err := app.SaveAgentConfig(cfg); err != nil {
+				t.Errorf("save: %v", err)
+			}
+		})
+		wg.Go(func() {
+			if _, err := app.RotateAgentToken(); err != nil {
+				t.Errorf("rotate: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	discovery, token, err := local.ReadBridgeCredentials()
+	if err != nil || discovery.Port != cfg.Port || token == first.Token {
+		t.Fatalf("discovery and latest rotation disagree: port=%d err=%v", discovery.Port, err)
+	}
+	for _, tc := range []struct {
+		token string
+		code  int
+	}{{token, http.StatusOK}, {first.Token, http.StatusUnauthorized}} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/api/v1/health", cfg.Port), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+tc.token)
+		resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.code {
+			t.Fatalf("health status=%d, want %d", resp.StatusCode, tc.code)
+		}
+	}
+	app.stopAgentBridge(true)
+	if _, err := app.SaveAgentConfig(cfg); err == nil {
+		t.Fatal("shutdown allowed a pending settings save to restart the bridge")
+	}
+	if _, _, err := local.ReadBridgeCredentials(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("shutdown left a published runtime: %v", err)
+	}
+}
 
 func TestLocalTerminalAgentToolsPolicyRedactionAndRecentOutput(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", t.TempDir())

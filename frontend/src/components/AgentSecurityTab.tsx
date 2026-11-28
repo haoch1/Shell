@@ -56,6 +56,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
   const [logs, setLogs] = useState<AuditEntry[]>([]);
 
   const load = async () => {
+    setErr('');
     try {
       const st = await getApi().GetAgentStatus();
       setStatus(st);
@@ -68,6 +69,20 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
       onStatusChanged(st);
     } catch (e) {
       setErr(errorMessage(e));
+    }
+  };
+
+  const rotateToken = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      await getApi().RotateAgentToken();
+      await load();
+      onToast('已重置访问令牌');
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -97,6 +112,19 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
   };
 
   if (!status) {
+    if (err) {
+      return (
+        <div className="pref-group-pad">
+          <p className="error-text" role="alert">{err}</p>
+          <div className="pref-row-actions">
+            <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void load()}>重试</button>
+            {err.includes('请重置访问令牌') && (
+              <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void rotateToken()}>重置访问令牌</button>
+            )}
+          </div>
+        </div>
+      );
+    }
     return <div style={{ color: 'var(--ink-tertiary)', padding: 20 }}>加载中…</div>;
   }
 
@@ -201,6 +229,9 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
               <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 7 }}>
                 <span>允许外部 AI 工具连接 Shell</span>
                 {status.running && <span className="pill-badge safe mono">:{status.port}</span>}
+                {status.enabled && !status.running && (
+                  <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void saveConfig(status, 'MCP 服务已开启')}>重新启动</button>
+                )}
               </div>
               <button
                 id="mcpEnableSwitch"
@@ -309,11 +340,8 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                     className="btn btn-sm btn-icon-sm"
                     title="重置令牌"
                     aria-label="重置令牌"
-                    onClick={async () => {
-                      const nextTok = await getApi().RotateAgentToken();
-                      setStatus({ ...status, token: nextTok });
-                      onToast('已重置访问令牌');
-                    }}
+                    disabled={busy}
+                    onClick={() => void rotateToken()}
                   >
                     <RefreshCw size={13} />
                   </button>

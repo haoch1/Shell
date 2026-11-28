@@ -32,7 +32,8 @@ func DefaultAgentConfig() AgentConfig {
 	}
 }
 
-func normalizeAgentConfig(c AgentConfig) AgentConfig {
+// NormalizeAgentConfig supplies the same defaults to storage and the desktop listener.
+func NormalizeAgentConfig(c AgentConfig) AgentConfig {
 	d := DefaultAgentConfig()
 	if c.Port < 1024 || c.Port > 65535 {
 		c.Port = d.Port
@@ -66,14 +67,14 @@ func LoadAgentConfig() (AgentConfig, error) {
 		if !json.Valid(data) || json.NewDecoder(bytes.NewReader(data)).Decode(&cfg) != nil {
 			return errors.New("Agent 配置文件格式无效")
 		}
-		cfg = normalizeAgentConfig(cfg)
+		cfg = NormalizeAgentConfig(cfg)
 		return nil
 	})
 	return cfg, err
 }
 
 func SaveAgentConfig(cfg AgentConfig) (AgentConfig, error) {
-	cfg = normalizeAgentConfig(cfg)
+	cfg = NormalizeAgentConfig(cfg)
 	err := withStore(func(dir string) error {
 		data, err := json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
@@ -94,10 +95,19 @@ func EnsureAgentToken() (string, error) {
 	err := withStore(func(dir string) error {
 		p := securityPath(dir, "agent-token.dpapi")
 		var blob agentTokenBlob
-		err := readProtected(p, &blob)
-		if err == nil && len(blob.Token) >= 32 {
+		sealed, err := readLimited(p, 128<<10)
+		if err == nil {
+			if err := decodeProtected(sealed, &blob); err != nil {
+				return fmt.Errorf("MCP 桥接令牌无法解密，请重置访问令牌：%w", err)
+			}
+			if len(blob.Token) < 32 {
+				return errors.New("MCP 桥接令牌无效，请重置访问令牌")
+			}
 			token = blob.Token
 			return nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("无法读取 Shell MCP 桥接令牌：%w", err)
 		}
 		var b [32]byte
 		if _, err := rand.Read(b[:]); err != nil {
@@ -113,6 +123,13 @@ func EnsureAgentToken() (string, error) {
 func RotateAgentToken() (string, error) {
 	var token string
 	err := withStore(func(dir string) error {
+		other, err := otherDesktopOwnsBridge(dir)
+		if err != nil {
+			return err
+		}
+		if other {
+			return errors.New("请在正在运行 MCP 服务的 Shell 窗口重置访问令牌")
+		}
 		var b [32]byte
 		if _, err := rand.Read(b[:]); err != nil {
 			return err
@@ -143,12 +160,37 @@ func WriteBridgeRuntime(port int, pipeID string) error {
 
 func ClearBridgeRuntime() {
 	_ = withStore(func(dir string) error {
-		err := os.Remove(runtimePath(dir, "bridge.json"))
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
+		other, err := otherDesktopOwnsBridge(dir)
+		if err != nil || other {
+			return err
 		}
-		return err
+		return os.Remove(runtimePath(dir, "bridge.json"))
 	})
+}
+
+// Called with the store lock so a different desktop cannot publish between the check and the change.
+func otherDesktopOwnsBridge(dir string) (bool, error) {
+	data, err := readLimited(runtimePath(dir, "bridge.json"), 4096)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var info BridgeRuntimeInfo
+	if json.Unmarshal(data, &info) != nil || info.PID <= 0 || info.PID == os.Getpid() {
+		return false, nil
+	}
+	process, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(info.PID))
+	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) { // Process already exited.
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer windows.CloseHandle(process)
+	state, err := windows.WaitForSingleObject(process, 0)
+	return state != windows.WAIT_OBJECT_0, err
 }
 
 // ReadBridgeCredentials discovers the running GUI without taking the settings writer lock.

@@ -45,15 +45,17 @@ func (a *App) getCachedAgentConfig() local.AgentConfig {
 	}
 	a.agentCfgMu.RUnlock()
 
-	cfg, err := local.LoadAgentConfig()
-	if err != nil {
-		cfg = local.DefaultAgentConfig()
-	}
 	a.agentCfgMu.Lock()
-	a.agentCfg = cfg
-	a.agentCfgLoaded = true
-	a.agentCfgMu.Unlock()
-	return cfg
+	defer a.agentCfgMu.Unlock()
+	if !a.agentCfgLoaded {
+		cfg, err := local.LoadAgentConfig()
+		if err != nil {
+			cfg = local.DefaultAgentConfig()
+		}
+		a.agentCfg = cfg
+		a.agentCfgLoaded = true
+	}
+	return a.agentCfg
 }
 
 func (a *App) setCachedAgentConfig(cfg local.AgentConfig) {
@@ -64,6 +66,11 @@ func (a *App) setCachedAgentConfig(cfg local.AgentConfig) {
 }
 
 func (a *App) initAgentBridge() {
+	a.agentLifecycleMu.Lock()
+	defer a.agentLifecycleMu.Unlock()
+	if a.agentStopped {
+		return
+	}
 	cfg, err := local.LoadAgentConfig()
 	if err != nil {
 		return
@@ -75,15 +82,37 @@ func (a *App) initAgentBridge() {
 	}
 	token, err := local.EnsureAgentToken()
 	if err != nil {
+		local.ClearBridgeRuntime()
 		return
 	}
 	port, pipeID, err := a.bridge.Start(cfg.Port, token)
-	if err == nil {
-		_ = local.WriteBridgeRuntime(port, pipeID)
+	if err != nil {
+		local.ClearBridgeRuntime()
+		return
+	}
+	if err := local.WriteBridgeRuntime(port, pipeID); err != nil {
+		local.ClearBridgeRuntime()
+	}
+}
+
+func (a *App) stopAgentBridge(clearRuntime bool) {
+	a.agentLifecycleMu.Lock()
+	defer a.agentLifecycleMu.Unlock()
+	a.agentStopped = true
+	if a.bridge != nil {
+		a.bridge.Stop()
+	}
+	if clearRuntime {
+		local.ClearBridgeRuntime()
 	}
 }
 
 func (a *App) GetAgentStatus() (AgentStatusView, error) {
+	a.agentLifecycleMu.Lock()
+	defer a.agentLifecycleMu.Unlock()
+	if a.agentStopped {
+		return AgentStatusView{}, errors.New("Shell 正在退出")
+	}
 	cfg, err := local.LoadAgentConfig()
 	if err != nil {
 		return AgentStatusView{}, err
@@ -93,6 +122,10 @@ func (a *App) GetAgentStatus() (AgentStatusView, error) {
 	if err != nil {
 		return AgentStatusView{}, err
 	}
+	return a.agentStatusView(cfg, token), nil
+}
+
+func (a *App) agentStatusView(cfg local.AgentConfig, token string) AgentStatusView {
 	running, port := a.bridge.Running()
 	if port == 0 {
 		port = cfg.Port
@@ -107,47 +140,54 @@ func (a *App) GetAgentStatus() (AgentStatusView, error) {
 		ExePath:   exePath,
 		Policy:    cfg.Policy,
 		Redaction: cfg.Redaction,
-	}, nil
+	}
 }
 
 func (a *App) SaveAgentConfig(cfg local.AgentConfig) (AgentStatusView, error) {
-	saved, err := local.SaveAgentConfig(cfg)
-	if err != nil {
-		return AgentStatusView{}, err
+	a.agentLifecycleMu.Lock()
+	defer a.agentLifecycleMu.Unlock()
+	if a.agentStopped {
+		return AgentStatusView{}, errors.New("Shell 正在退出")
 	}
-	a.setCachedAgentConfig(saved)
+	cfg = local.NormalizeAgentConfig(cfg)
+	save := func() error {
+		saved, err := local.SaveAgentConfig(cfg)
+		if err == nil {
+			cfg = saved
+			a.setCachedAgentConfig(saved)
+		}
+		return err
+	}
+	if !cfg.Enabled {
+		if err := save(); err != nil {
+			return AgentStatusView{}, err
+		}
+		a.bridge.Stop()
+		local.ClearBridgeRuntime()
+	}
 	token, err := local.EnsureAgentToken()
 	if err != nil {
 		return AgentStatusView{}, err
 	}
-	if saved.Enabled {
-		port, pipeID, err := a.bridge.Start(saved.Port, token)
+	if cfg.Enabled {
+		port, pipeID, err := a.bridge.StartWithConfig(cfg.Port, token, save)
 		if err != nil {
 			return AgentStatusView{}, err
 		}
-		_ = local.WriteBridgeRuntime(port, pipeID)
-	} else {
-		a.bridge.Stop()
-		local.ClearBridgeRuntime()
+		if err := local.WriteBridgeRuntime(port, pipeID); err != nil {
+			local.ClearBridgeRuntime()
+			return AgentStatusView{}, fmt.Errorf("无法发布本地 MCP 连接信息：%w", err)
+		}
 	}
-	running, port := a.bridge.Running()
-	if port == 0 {
-		port = saved.Port
-	}
-	exePath, _ := os.Executable()
-	return AgentStatusView{
-		Enabled:   saved.Enabled,
-		Running:   running,
-		Port:      port,
-		ExecMode:  saved.ExecMode,
-		Token:     token,
-		ExePath:   exePath,
-		Policy:    saved.Policy,
-		Redaction: saved.Redaction,
-	}, nil
+	return a.agentStatusView(cfg, token), nil
 }
 
 func (a *App) RotateAgentToken() (string, error) {
+	a.agentLifecycleMu.Lock()
+	defer a.agentLifecycleMu.Unlock()
+	if a.agentStopped {
+		return "", errors.New("Shell 正在退出")
+	}
 	token, err := local.RotateAgentToken()
 	if err != nil {
 		return "", err

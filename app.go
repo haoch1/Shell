@@ -55,6 +55,8 @@ type App struct {
 	uninstalling     atomic.Bool
 	aiCancel         context.CancelFunc
 	aiSequence       uint64
+	agentLifecycleMu sync.Mutex
+	agentStopped     bool
 	agentCfgMu       sync.RWMutex
 	agentCfg         local.AgentConfig
 	agentCfgLoaded   bool
@@ -283,12 +285,7 @@ func (a *App) stopRuntimeServices(clearBridge bool) {
 	if a.ws != nil {
 		a.ws.Stop()
 	}
-	if a.bridge != nil {
-		a.bridge.Stop()
-	}
-	if clearBridge {
-		local.ClearBridgeRuntime()
-	}
+	a.stopAgentBridge(clearBridge)
 	a.mu.Lock()
 	ids := make([]string, 0, len(a.live))
 	for id := range a.live {

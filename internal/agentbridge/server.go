@@ -57,6 +57,12 @@ func New(handler Handler, version string) *Server {
 }
 
 func (s *Server) Start(port int, token string) (int, string, error) {
+	return s.StartWithConfig(port, token, nil)
+}
+
+// StartWithConfig reserves a changed port before committing the desktop configuration.
+// A bind or configuration error leaves the existing listener and token in service.
+func (s *Server) StartWithConfig(port int, token string, saveConfig func() error) (int, string, error) {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
 	if port < 1024 || port > 65535 {
@@ -64,17 +70,28 @@ func (s *Server) Start(port int, token string) (int, string, error) {
 	}
 	s.mu.Lock()
 	if s.srv != nil && s.port == port {
-		s.token = token
 		pipeID := s.pipeID
 		s.mu.Unlock()
+		if saveConfig != nil {
+			if err := saveConfig(); err != nil {
+				return 0, "", err
+			}
+		}
+		s.SetToken(token)
 		return port, pipeID, nil
 	}
 	s.mu.Unlock()
-	s.stop()
 	ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return 0, "", fmt.Errorf("无法在 127.0.0.1:%d 启动本地 MCP 服务：%w", port, err)
 	}
+	if saveConfig != nil {
+		if err := saveConfig(); err != nil {
+			_ = ln.Close()
+			return 0, "", err
+		}
+	}
+	s.stop()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", s.handleMCP)
 	mux.HandleFunc("/api/v1/health", s.handleHealth)

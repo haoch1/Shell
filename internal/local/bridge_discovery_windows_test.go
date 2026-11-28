@@ -2,6 +2,7 @@ package local
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -40,12 +41,45 @@ func TestBridgeDiscoveryIsReadOnly(t *testing.T) {
 	if _, _, err := ReadBridgeCredentials(); err == nil {
 		t.Fatal("discovery accepted a damaged token")
 	}
+	if _, err := EnsureAgentToken(); err == nil {
+		t.Fatal("reading status silently replaced a damaged token")
+	}
 	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, damaged) {
 		t.Fatalf("discovery replaced a damaged token: %v", err)
 	}
 	ClearBridgeRuntime()
 	if _, err := os.Stat(runtimePath(dir, "bridge.json")); !os.IsNotExist(err) {
 		t.Fatalf("ClearBridgeRuntime did not remove runtime/bridge.json: %v", err)
+	}
+}
+
+func TestBridgeCleanupPreservesAnotherLiveDesktop(t *testing.T) {
+	dir := isolated(t)
+	originalToken, err := EnsureAgentToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteBridgeRuntime(17822, ""); err != nil {
+		t.Fatal(err)
+	}
+	other := BridgeRuntimeInfo{Port: 17824, PID: os.Getppid()}
+	data, err := json.Marshal(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := runtimePath(dir, "bridge.json")
+	if err := writeAtomic(path, data); err != nil {
+		t.Fatal(err)
+	}
+	ClearBridgeRuntime()
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(data, got) {
+		t.Fatalf("removed another live desktop's discovery file: %v", err)
+	}
+	if _, err := RotateAgentToken(); err == nil {
+		t.Fatal("a second desktop replaced the active listener's token")
+	}
+	if _, token, err := ReadBridgeCredentials(); err != nil || token != originalToken {
+		t.Fatalf("changed the other desktop's credentials: %v", err)
 	}
 }
 

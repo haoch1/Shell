@@ -45,9 +45,12 @@ func TestSuggestAndProtectedSettings(t *testing.T) {
 	if err != nil || gotSettings != settings {
 		t.Fatal("DPAPI settings didn't round-trip", err)
 	}
-	blob, err := os.ReadFile(filepath.Join(dir, "ai.dpapi"))
+	blob, err := os.ReadFile(filepath.Join(dir, "security", "ai.dpapi"))
 	if err != nil || bytes.Contains(blob, []byte(secret)) {
-		t.Fatal("settings file missing or key exposed")
+		t.Fatal("settings file missing in security/ or key exposed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ai.dpapi")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected legacy root ai.dpapi created: err=%v", err)
 	}
 	if cmd, err := Suggest(context.Background(), "list files"); err != nil || cmd != "ls -la" {
 		t.Fatalf("wrong suggestion: %q, %v", cmd, err)
@@ -424,5 +427,361 @@ func TestFetchAIModelsOllamaFallbackAndErrors(t *testing.T) {
 	}
 	if _, err := FetchAIModels(context.Background(), AIConfigInput{Endpoint: "http://192.0.2.10/v1"}); err == nil {
 		t.Fatal("expected non-loopback HTTP endpoint to be rejected")
+	}
+}
+
+func TestAIStoragePathSecurityOnly(t *testing.T) {
+	dir := isolated(t)
+	// Seed a legacy root ai.dpapi file to ensure LoadAI does NOT fall back to root.
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProtected(filepath.Join(dir, "ai.dpapi"), AISettings{
+		Mode:       "cli",
+		CLICommand: "legacy-cli",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadAI()
+	if err != nil {
+		t.Fatalf("LoadAI failed with only legacy file present: %v", err)
+	}
+	if loaded.CLICommand != "" {
+		t.Fatalf("expected zero legacy fallback from root ai.dpapi, got %+v", loaded)
+	}
+
+	want := AISettings{Mode: "cli", CLICommand: "codex", CLIModel: "gpt-6.2-sol"}
+	if err := SaveAI(want); err != nil {
+		t.Fatalf("SaveAI failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "security", "ai.dpapi")); err != nil {
+		t.Fatalf("expected security/ai.dpapi to exist: %v", err)
+	}
+	got, err := LoadAI()
+	if err != nil || got != want {
+		t.Fatalf("LoadAI round-trip mismatch: got=%+v want=%+v err=%v", got, want, err)
+	}
+}
+
+func TestParseAgyModelsOutput(t *testing.T) {
+	raw := strings.Join([]string{
+		"\x1b[2K\rFetching available models...",
+		"Usage: agy models [flags]",
+		"Error: transient warning",
+		"ID\tDisplay Name",
+		"",
+		"\x1b[36mgemini-4-neon-high\x1b[0m\tGemini 4 Neon (High)",
+		"gemini-4-neon-medium\tGemini 4 Neon (Medium)",
+		"claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)",
+		"gemini-4-neon-high\tGemini 4 Neon (High)",
+		"gpt-oss-120b-medium\tGPT-OSS 120B (Medium)",
+		"Not logged in, please retry",
+	}, "\r\n")
+
+	got := parseAgyModelsOutput(raw)
+	want := []string{
+		"gemini-4-neon-high",
+		"gemini-4-neon-medium",
+		"claude-sonnet-5-5-high",
+		"gpt-oss-120b-medium",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("parseAgyModelsOutput mismatch: got=%v want=%v", got, want)
+	}
+}
+
+func TestParseCodexModelsCacheAndConfig(t *testing.T) {
+	cacheJSON := []byte(`{
+		"models": [
+			{"slug": "gpt-6.1-sol", "visibility": "list", "priority": 5},
+			{"slug": "gpt-reserve", "visibility": "hide", "priority": 2},
+			{"slug": "gpt-6.2-sol", "visibility": "list", "priority": 1},
+			{"id": "gpt-legacy-unranked", "visibility": ""},
+			{"slug": "gpt-6.2-astra", "visibility": "list", "priority": 2},
+			{"slug": "gpt-6.2-sol", "visibility": "list", "priority": 3},
+			{"slug": "codex-auto-review", "visibility": "HIDE", "priority": 4},
+			{"id": "gpt-second-unranked"}
+		]
+	}`)
+	got := parseCodexModelsCache(cacheJSON)
+	want := []string{
+		"gpt-6.2-sol",
+		"gpt-6.2-astra",
+		"gpt-6.1-sol",
+		"gpt-legacy-unranked",
+		"gpt-second-unranked",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("parseCodexModelsCache mismatch: got=%v want=%v", got, want)
+	}
+
+	tomlCases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "top-level double-quoted with comment",
+			data: "\xef\xbb\xbf# codex config\nmodel = \"gpt-6.2-sol\" # preferred\n[profiles.alt]\nmodel = \"other\"\n",
+			want: "gpt-6.2-sol",
+		},
+		{
+			name: "top-level single-quoted",
+			data: "service_tier = 'priority'\nmodel = 'o3-mini'\n",
+			want: "o3-mini",
+		},
+		{
+			name: "nested only should be ignored",
+			data: "[profiles.fast]\nmodel = \"nested-only\"\n",
+			want: "",
+		},
+	}
+	for _, tc := range tomlCases {
+		if got := parseCodexConfigModel([]byte(tc.data)); got != tc.want {
+			t.Fatalf("parseCodexConfigModel(%s): got=%q want=%q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestParseGenericCLIModelsOutput(t *testing.T) {
+	if got := parseGenericCLIModelsOutput(`{"models":["m-1","m-2","m-1"]}`); !slices.Equal(got, []string{"m-1", "m-2"}) {
+		t.Fatalf("JSON string list mismatch: %v", got)
+	}
+	if got := parseGenericCLIModelsOutput(`{"data":[{"id":"alpha-1"},{"id":"beta-2"}]}`); !slices.Equal(got, []string{"alpha-1", "beta-2"}) {
+		t.Fatalf("JSON data list mismatch: %v", got)
+	}
+	helpOut := "Usage: mycli [options] [command]\n\nOptions:\n  -h, --help   display help\n\nCommands:\n  chat         start chat\n  login        authenticate\n"
+	if got := parseGenericCLIModelsOutput(helpOut); len(got) != 0 {
+		t.Fatalf("expected help output to be rejected, got=%v", got)
+	}
+}
+
+func TestFetchAIModelsCLICodexAndConfigPrepend(t *testing.T) {
+	isolated(t)
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("PATH", t.TempDir())
+
+	cacheBody := `{
+		"models": [
+			{"slug": "gpt-6.1-terra", "visibility": "list", "priority": 3},
+			{"slug": "gpt-reserve", "visibility": "hide", "priority": 1},
+			{"slug": "gpt-6.2-sol", "visibility": "list", "priority": 1}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(codexHome, "models_cache.json"), []byte(cacheBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("model = \"custom-default-model\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	models, err := FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: "codex",
+	})
+	if err != nil {
+		t.Fatalf("FetchAIModels codex failed: %v", err)
+	}
+	want := []string{"custom-default-model", "gpt-6.2-sol", "gpt-6.1-terra"}
+	if !slices.Equal(models, want) {
+		t.Fatalf("codex models mismatch: got=%v want=%v", models, want)
+	}
+
+	// When config.toml model is already in cache, it should not be duplicated.
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("model = \"gpt-6.1-terra\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	models, err = FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: "codex",
+	})
+	if err != nil || !slices.Equal(models, []string{"gpt-6.2-sol", "gpt-6.1-terra"}) {
+		t.Fatalf("codex dedupe mismatch: got=%v err=%v", models, err)
+	}
+
+	// Installed codex without models_cache.json falls back to config.toml, or clean error if empty.
+	shimDir := t.TempDir()
+	codexShim := filepath.Join(shimDir, "codex.cmd")
+	if err := os.WriteFile(codexShim, []byte("@echo off\r\nexit /b 0\r\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	emptyCodexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", emptyCodexHome)
+	if _, err := FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: codexShim,
+	}); err == nil || !strings.Contains(err.Error(), "未找到 Codex 本地模型缓存") {
+		t.Fatalf("expected missing codex cache error, got: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(emptyCodexHome, "config.toml"), []byte("model = \"gpt-6.2-sol\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	models, err = FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: codexShim,
+	})
+	if err != nil || !slices.Equal(models, []string{"gpt-6.2-sol"}) {
+		t.Fatalf("expected config.toml fallback model, got=%v err=%v", models, err)
+	}
+}
+
+func TestFetchAIModelsCLIClaudeLiveAndAliases(t *testing.T) {
+	isolated(t)
+	var gotKey, gotVer, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-api-key")
+		gotVer = r.Header.Get("anthropic-version")
+		gotPath = r.URL.Path
+		io.WriteString(w, `{"data":[{"id":"claude-sonnet-5-5"},{"id":"claude-opus-5-5"}]}`)
+	}))
+	defer srv.Close()
+
+	claudeDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+	t.Setenv("PATH", t.TempDir())
+
+	settingsBody := `{"model":"claude-custom-pin","env":{"ANTHROPIC_BASE_URL":"` + srv.URL + `","ANTHROPIC_API_KEY":"sk-ant-cli-test"}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settingsBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	models, err := FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: "claude",
+	})
+	if err != nil {
+		t.Fatalf("FetchAIModels claude failed: %v", err)
+	}
+	if gotPath != "/v1/models" || gotKey != "sk-ant-cli-test" || gotVer != "2023-06-01" {
+		t.Fatalf("unexpected Anthropic request from claude CLI: path=%q key=%q ver=%q", gotPath, gotKey, gotVer)
+	}
+	want := []string{"claude-custom-pin", "claude-sonnet-5-5", "claude-opus-5-5", "sonnet", "opus", "haiku"}
+	if !slices.Equal(models, want) {
+		t.Fatalf("claude models mismatch: got=%v want=%v", models, want)
+	}
+
+	// OAuth-only Claude config (no API key) still returns configured model + official aliases.
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{"model":"opus"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	models, err = FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: "claude",
+	})
+	if err != nil || !slices.Equal(models, []string{"opus", "sonnet", "haiku"}) {
+		t.Fatalf("claude OAuth fallback mismatch: got=%v err=%v", models, err)
+	}
+}
+
+func TestFetchAIModelsCLIShimAndErrors(t *testing.T) {
+	isolated(t)
+
+	// Mock .cmd shim outputting TSV model list just like `agy models`.
+	shimDir := t.TempDir()
+	tsvShim := filepath.Join(shimDir, "mock-models.cmd")
+	tsvBody := strings.Join([]string{
+		"@echo off",
+		"if \"%~1\"==\"models\" (",
+		"  echo Fetching available models... 1>&2",
+		"  echo gemini-4-neon-high\tGemini 4 Neon ^(High^)",
+		"  echo claude-sonnet-5-5-high\tClaude Sonnet 5.5 ^(High^)",
+		"  echo gemini-4-neon-high\tDuplicate",
+		"  exit /b 0",
+		")",
+		"exit /b 1",
+		"",
+	}, "\r\n")
+	if err := os.WriteFile(tsvShim, []byte(tsvBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	models, err := FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: tsvShim,
+	})
+	if err != nil {
+		t.Fatalf("FetchAIModels TSV shim failed: %v", err)
+	}
+	if !slices.Equal(models, []string{"gemini-4-neon-high", "claude-sonnet-5-5-high"}) {
+		t.Fatalf("TSV shim models mismatch: got=%v", models)
+	}
+
+	// Same shim named agy.cmd exercises the dedicated `agy` branch.
+	agyShim := filepath.Join(shimDir, "agy.cmd")
+	if err := os.WriteFile(agyShim, []byte(tsvBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	agyModels, err := FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: agyShim,
+	})
+	if err != nil || !slices.Equal(agyModels, []string{"gemini-4-neon-high", "claude-sonnet-5-5-high"}) {
+		t.Fatalf("agy shim models mismatch: got=%v err=%v", agyModels, err)
+	}
+
+	// Unsupported custom shim printing help screen returns clean error.
+	helpShim := filepath.Join(shimDir, "no-models.cmd")
+	helpBody := "@echo off\r\necho Usage: no-models [options]\r\necho Options:\r\necho   --help  show help\r\n"
+	if err := os.WriteFile(helpShim, []byte(helpBody), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: helpShim,
+	}); err == nil || !strings.Contains(err.Error(), "暂不支持自动读取模型列表") {
+		t.Fatalf("expected unsupported custom CLI error, got: %v", err)
+	}
+
+	// Gemini CLI shim without `models` subcommand falls back cleanly to official presets.
+	geminiShim := filepath.Join(shimDir, "gemini.cmd")
+	if err := os.WriteFile(geminiShim, []byte("@echo off\r\nexit /b 1\r\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	geminiModels, err := FetchAIModels(context.Background(), AIConfigInput{
+		Mode:       "cli",
+		CLICommand: geminiShim,
+	})
+	if err != nil || !slices.Equal(geminiModels, []string{"gemini-2.5-pro", "gemini-2.5-flash"}) {
+		t.Fatalf("gemini preset fallback mismatch: got=%v err=%v", geminiModels, err)
+	}
+
+	// LOCALAPPDATA fallback for `agy` resolves %LOCALAPPDATA%\agy\bin\agy.exe when not on PATH.
+	fakeLocalAppData := t.TempDir()
+	fakeAgyExe := filepath.Join(fakeLocalAppData, "agy", "bin", "agy.exe")
+	if err := os.MkdirAll(filepath.Dir(fakeAgyExe), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fakeAgyExe, []byte("stub"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("LOCALAPPDATA", fakeLocalAppData)
+	if resolved, err := resolveCLIBinary("agy"); err != nil || resolved != fakeAgyExe {
+		t.Fatalf("expected LOCALAPPDATA agy fallback %q, got %q err=%v", fakeAgyExe, resolved, err)
+	}
+
+	// Missing CLI error cases (isolate PATH, LOCALAPPDATA, CODEX_HOME, CLAUDE_CONFIG_DIR).
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+
+	if _, err := FetchAIModels(context.Background(), AIConfigInput{Mode: "cli"}); err == nil || !strings.Contains(err.Error(), "请先选择或填写本地 AI CLI 命令") {
+		t.Fatalf("expected empty CLI error, got: %v", err)
+	}
+	if _, err := FetchAIModels(context.Background(), AIConfigInput{Mode: "cli", CLICommand: "agy"}); err == nil || !strings.Contains(err.Error(), "Antigravity CLI") {
+		t.Fatalf("expected missing agy error, got: %v", err)
+	}
+	if _, err := FetchAIModels(context.Background(), AIConfigInput{Mode: "cli", CLICommand: "codex"}); err == nil || !strings.Contains(err.Error(), "Codex CLI") {
+		t.Fatalf("expected missing codex error, got: %v", err)
+	}
+	if _, err := FetchAIModels(context.Background(), AIConfigInput{Mode: "cli", CLICommand: "claude"}); err == nil || !strings.Contains(err.Error(), "Claude Code") {
+		t.Fatalf("expected missing claude error, got: %v", err)
+	}
+	if _, err := FetchAIModels(context.Background(), AIConfigInput{Mode: "cli", CLICommand: "nonexistent-cli-xyz"}); err == nil || !strings.Contains(err.Error(), "未在本机 PATH 中找到命令") {
+		t.Fatalf("expected missing custom CLI error, got: %v", err)
 	}
 }

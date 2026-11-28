@@ -53,7 +53,7 @@ type AIResult struct {
 func LoadAI() (AISettings, error) {
 	var result AISettings
 	err := withStore(func(dir string) error {
-		err := readProtected(filepath.Join(dir, "ai.dpapi"), &result)
+		err := readProtected(filepath.Join(dir, "security", "ai.dpapi"), &result)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
@@ -98,7 +98,13 @@ func SaveAI(s AISettings) error {
 			return err
 		}
 	}
-	return withStore(func(dir string) error { return writeProtected(filepath.Join(dir, "ai.dpapi"), s) })
+	return withStore(func(dir string) error {
+		p := filepath.Join(dir, "security", "ai.dpapi")
+		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+			return err
+		}
+		return writeProtected(p, s)
+	})
 }
 
 var aiTransport = http.DefaultTransport.(*http.Transport).Clone()
@@ -853,10 +859,13 @@ func filterAndOrderModels(raw []string, sortDesc bool) []string {
 	return result
 }
 
-// FetchAIModels queries the configured provider endpoint for available text/chat model IDs.
+// FetchAIModels queries the configured provider endpoint or local AI CLI for available text/chat model IDs.
 func FetchAIModels(ctx context.Context, input AIConfigInput) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, modelFetchNetworkError(ctx, err)
+	}
+	if strings.EqualFold(strings.TrimSpace(input.Mode), "cli") {
+		return fetchCLIAvailableModels(ctx, input)
 	}
 	u, base, err := normalizeModelsBaseURL(input.Endpoint)
 	if err != nil {

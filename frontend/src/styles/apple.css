@@ -14,7 +14,7 @@
   --bg-surface: #ffffff;
   --bg-surface-subtle: #e8ecf2;
   --bg-elevated: rgba(255, 255, 255, 0.98);
-  --bg-input: #f2f4f8;
+  --bg-input: #f4f6fa;
   --bg-input-focus: #ffffff;
   --bg-hover: rgba(15, 23, 42, 0.06);
   --bg-active: rgba(15, 23, 42, 0.10);
@@ -26,12 +26,13 @@
   --ink-tertiary: #5b6475;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(15, 23, 42, 0.22);
-  --border-control: rgba(15, 23, 42, 0.36);
-  --border-strong: rgba(15, 23, 42, 0.48);
-  --border-focus: rgba(15, 23, 42, 0.64);
-  --focus-ring: rgba(15, 23, 42, 0.12);
-  --surface-rim: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  --border-hairline: rgba(15, 23, 42, 0.14);
+  --border-card: rgba(15, 23, 42, 0.19);
+  --border-control: rgba(15, 23, 42, 0.25);
+  --border-strong: rgba(15, 23, 42, 0.34);
+  --border-focus: rgba(15, 23, 42, 0.50);
+  --focus-ring: rgba(15, 23, 42, 0.09);
+  --surface-rim: inset 0 1px 0 rgba(255, 255, 255, 0.65);
 
   --accent: #0071e3;
   --accent-hover: #0077ed;
@@ -44,7 +45,7 @@
   --purple: #7e22ce;
   --purple-soft: rgba(126, 34, 206, 0.12);
 
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.09), 0 0.5px 1px rgba(15, 23, 42, 0.06);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.07), 0 0.5px 1px rgba(15, 23, 42, 0.04);
   --shadow-md: 0 10px 26px rgba(15, 23, 42, 0.11), 0 1px 3px rgba(15, 23, 42, 0.06);
   --shadow-lg: 0 24px 64px rgba(15, 23, 42, 0.18), 0 4px 16px rgba(15, 23, 42, 0.08);
 
@@ -69,10 +70,10 @@
   --bg-app: #1b1c20;
   --bg-titlebar: #212226;
   --bg-sidebar: #222328;
-  --bg-surface: #2a2c32;
+  --bg-surface: #282a30;
   --bg-surface-subtle: #24262b;
   --bg-elevated: rgba(36, 38, 44, 0.96);
-  --bg-input: rgba(255, 255, 255, 0.075);
+  --bg-input: rgba(255, 255, 255, 0.065);
   --bg-input-focus: #2e3038;
   --bg-hover: rgba(255, 255, 255, 0.08);
   --bg-active: rgba(255, 255, 255, 0.14);
@@ -84,12 +85,13 @@
   --ink-tertiary: #9399a8;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(255, 255, 255, 0.18);
-  --border-control: rgba(255, 255, 255, 0.28);
-  --border-strong: rgba(255, 255, 255, 0.38);
-  --border-focus: rgba(255, 255, 255, 0.56);
-  --focus-ring: rgba(255, 255, 255, 0.12);
-  --surface-rim: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --border-hairline: rgba(255, 255, 255, 0.10);
+  --border-card: rgba(255, 255, 255, 0.15);
+  --border-control: rgba(255, 255, 255, 0.20);
+  --border-strong: rgba(255, 255, 255, 0.26);
+  --border-focus: rgba(255, 255, 255, 0.44);
+  --focus-ring: rgba(255, 255, 255, 0.10);
+  --surface-rim: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 
   --accent: #0a84ff;
   --accent-hover: #409cff;
@@ -129,12 +131,13 @@
   --ink-tertiary: #8a96bd;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(192, 202, 245, 0.19);
-  --border-control: rgba(192, 202, 245, 0.32);
-  --border-strong: rgba(192, 202, 245, 0.44);
-  --border-focus: rgba(192, 202, 245, 0.62);
-  --focus-ring: rgba(192, 202, 245, 0.13);
-  --surface-rim: inset 0 1px 0 rgba(192, 202, 245, 0.10);
+  --border-hairline: rgba(192, 202, 245, 0.11);
+  --border-card: rgba(192, 202, 245, 0.17);
+  --border-control: rgba(192, 202, 245, 0.23);
+  --border-strong: rgba(192, 202, 245, 0.30);
+  --border-focus: rgba(192, 202, 245, 0.48);
+  --focus-ring: rgba(192, 202, 245, 0.10);
+  --surface-rim: inset 0 1px 0 rgba(192, 202, 245, 0.07);
 
   --accent: #5a82f0;
   --accent-hover: #7095f7;
@@ -170,12 +173,13 @@
   --ink-tertiary: #949cb8;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(205, 214, 244, 0.19);
-  --border-control: rgba(205, 214, 244, 0.31);
-  --border-strong: rgba(205, 214, 244, 0.42);
-  --border-focus: rgba(205, 214, 244, 0.60);
-  --focus-ring: rgba(205, 214, 244, 0.13);
-  --surface-rim: inset 0 1px 0 rgba(205, 214, 244, 0.10);
+  --border-hairline: rgba(205, 214, 244, 0.11);
+  --border-card: rgba(205, 214, 244, 0.17);
+  --border-control: rgba(205, 214, 244, 0.23);
+  --border-strong: rgba(205, 214, 244, 0.30);
+  --border-focus: rgba(205, 214, 244, 0.48);
+  --focus-ring: rgba(205, 214, 244, 0.10);
+  --surface-rim: inset 0 1px 0 rgba(205, 214, 244, 0.07);
 
   --accent: #8867ed;
   --accent-hover: #9b7df5;
@@ -199,7 +203,7 @@
   --bg-surface: #fffdf8;
   --bg-surface-subtle: #e6dfd1;
   --bg-elevated: rgba(255, 253, 248, 0.98);
-  --bg-input: #eee8dc;
+  --bg-input: #f2ede3;
   --bg-input-focus: #fffdf8;
   --bg-hover: rgba(26, 23, 20, 0.065);
   --bg-active: rgba(26, 23, 20, 0.11);
@@ -211,12 +215,13 @@
   --ink-tertiary: #686157;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(26, 23, 20, 0.22);
-  --border-control: rgba(26, 23, 20, 0.36);
-  --border-strong: rgba(26, 23, 20, 0.48);
-  --border-focus: rgba(26, 23, 20, 0.64);
-  --focus-ring: rgba(26, 23, 20, 0.12);
-  --surface-rim: inset 0 1px 0 rgba(255, 253, 248, 0.80);
+  --border-hairline: rgba(26, 23, 20, 0.14);
+  --border-card: rgba(26, 23, 20, 0.19);
+  --border-control: rgba(26, 23, 20, 0.26);
+  --border-strong: rgba(26, 23, 20, 0.35);
+  --border-focus: rgba(26, 23, 20, 0.50);
+  --focus-ring: rgba(26, 23, 20, 0.09);
+  --surface-rim: inset 0 1px 0 rgba(255, 253, 248, 0.72);
 
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
@@ -229,7 +234,7 @@
   --purple: #7c3aed;
   --purple-soft: rgba(124, 58, 237, 0.12);
 
-  --shadow-sm: 0 1px 2px rgba(26, 23, 20, 0.095), 0 0.5px 1px rgba(26, 23, 20, 0.06);
+  --shadow-sm: 0 1px 2px rgba(26, 23, 20, 0.075), 0 0.5px 1px rgba(26, 23, 20, 0.04);
   --shadow-md: 0 10px 26px rgba(26, 23, 20, 0.12), 0 1px 3px rgba(26, 23, 20, 0.07);
   --shadow-lg: 0 24px 64px rgba(26, 23, 20, 0.19), 0 4px 16px rgba(26, 23, 20, 0.08);
 
@@ -811,7 +816,7 @@ html, body, #root {
   height: var(--ctrl-md);
   padding: 0 13px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   background: var(--bg-surface);
   color: var(--ink-primary);
   box-shadow: var(--surface-rim), var(--shadow-sm);
@@ -831,6 +836,7 @@ html, body, #root {
 
 .btn:hover:not(:disabled) {
   background: var(--bg-surface-subtle);
+  border-color: var(--border-strong);
 }
 
 .btn:active:not(:disabled) {
@@ -1114,7 +1120,7 @@ html, body, #root {
   padding: 0 3px 0 6px;
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   animation: selectHeaderIn 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -2087,7 +2093,7 @@ html, body, #root {
   padding: 16px 18px;
   border-radius: var(--radius-lg);
   background: var(--bg-surface);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   box-shadow: var(--surface-rim), var(--shadow-md);
   animation: connectCardIn 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -2502,9 +2508,13 @@ html, body, #root {
   padding: 0 5px 0 12px;
   border-radius: var(--radius-md);
   background: var(--bg-surface);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   box-shadow: var(--shadow-sm);
   transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.quick-connect-form:hover:not(:focus-within) {
+  border-color: var(--border-strong);
 }
 
 .quick-connect-form:focus-within {
@@ -2583,7 +2593,7 @@ html, body, #root {
   min-height: 58px;
   padding: 10px 12px;
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   background: var(--bg-surface);
   box-shadow: var(--surface-rim), var(--shadow-sm);
   text-align: left;
@@ -2593,7 +2603,7 @@ html, body, #root {
 }
 
 .recent-card:hover {
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
   box-shadow: var(--surface-rim), var(--shadow-md);
   transform: translateY(-1px);
 }
@@ -2667,7 +2677,7 @@ html, body, #root {
 
 /* Collapsible Advanced Settings Fold */
 .advanced-fold {
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   background: var(--bg-surface-subtle);
   overflow: hidden;
@@ -2970,7 +2980,7 @@ html, body, #root {
 .soft-card {
   padding: 11px 12px;
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   background: var(--bg-surface-subtle);
   display: flex;
   flex-direction: column;
@@ -2979,14 +2989,14 @@ html, body, #root {
 }
 
 .soft-card:hover {
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
 }
 
 .code-block {
   padding: 8px 10px;
   border-radius: var(--radius-sm);
   background: var(--bg-app);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
@@ -3104,7 +3114,7 @@ html, body, #root {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   background: var(--bg-surface-subtle);
   overflow: hidden;
@@ -3237,7 +3247,7 @@ html, body, #root {
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--bg-surface-subtle);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   font-size: 12px;
   user-select: text;
 }
@@ -3536,7 +3546,7 @@ html, body, #root {
 
 .pref-group {
   background: var(--bg-surface);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
@@ -3544,7 +3554,7 @@ html, body, #root {
 
 .pref-group-pad {
   background: var(--bg-surface);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
   padding: 12px 14px;
@@ -3561,6 +3571,22 @@ html, body, #root {
   min-height: 42px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--border-hairline);
+}
+
+.pref-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+}
+
+.pref-row-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
 }
 
 .pref-row:last-child {
@@ -3645,7 +3671,7 @@ html, body, #root {
   gap: 2px;
   padding: 10px 11px;
   border-radius: var(--radius-md);
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
   background: var(--bg-surface);
   cursor: pointer;
   text-align: left;
@@ -3653,7 +3679,7 @@ html, body, #root {
 }
 
 .provider-card:hover {
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
   background: var(--bg-hover);
 }
 
@@ -3693,7 +3719,7 @@ html, body, #root {
   height: 21px;
   padding: 0 6px;
   border-radius: var(--radius-xs);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   border-bottom-width: 2px;
   background: var(--bg-surface-subtle);
   color: var(--ink-primary);
@@ -3797,8 +3823,29 @@ html, body, #root {
   box-shadow: 0 0 0 2px var(--bg-titlebar);
 }
 
+.update-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease;
+}
+
+.update-reveal.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.update-reveal-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.update-progress-panel {
+  padding-top: 8px;
+}
+
 .update-progress-track {
-  height: 5px;
+  height: 4px;
   width: 100%;
   border-radius: var(--radius-full);
   background: var(--bg-input);
@@ -3809,7 +3856,22 @@ html, body, #root {
   height: 100%;
   border-radius: var(--radius-full);
   background: var(--accent);
-  transition: width 160ms ease;
+  transition: width 180ms ease;
+}
+
+.update-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--ink-tertiary);
+  margin-top: 5px;
+}
+
+.update-badge-in {
+  animation: fadeIn 180ms ease;
 }
 
 /* Toast Notification */
@@ -3874,7 +3936,7 @@ html, body, #root {
 .theme-tile {
   padding: 7px;
   border-radius: var(--radius-md);
-  border: 1.5px solid var(--border-control);
+  border: 1.5px solid var(--border-card);
   background: var(--bg-surface);
   cursor: pointer;
   display: flex;
@@ -3885,7 +3947,7 @@ html, body, #root {
 }
 
 .theme-tile:hover {
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
 }
 
 .theme-tile.active {
@@ -3902,7 +3964,7 @@ html, body, #root {
   justify-content: space-between;
   font-family: var(--font-mono);
   font-size: 10px;
-  border: 1px solid var(--border-control);
+  border: 1px solid var(--border-card);
 }
 
 .theme-swatch-auto {
@@ -4032,7 +4094,7 @@ input[type="checkbox"]:focus-visible {
   line-height: 1.2;
   background: rgba(22, 24, 30, 0.94);
   color: #f2f4f8;
-  border: 1px solid rgba(255, 255, 255, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(20px) saturate(160%);
   pointer-events: none;
@@ -4042,7 +4104,7 @@ input[type="checkbox"]:focus-visible {
 
 [data-theme="dark"] .ui-tooltip-content {
   background: rgba(22, 24, 30, 0.94);
-  border-color: rgba(255, 255, 255, 0.24);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 
 .ui-tooltip-kbd {
@@ -4237,7 +4299,7 @@ input[type="checkbox"]:focus-visible {
 
 .ai-example-btn:hover {
   background: var(--bg-hover);
-  border-color: var(--border-strong);
+  border-color: var(--border-control);
 }
 
 /* Multi-line Paste Guard Sheet */

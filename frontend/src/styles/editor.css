@@ -331,7 +331,7 @@
   margin: 0 4px;
   padding: 0 6px;
   border-radius: 4px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   background: var(--bg-surface-subtle);
   color: var(--ink-secondary);
   font-size: 11px;
@@ -370,7 +370,7 @@
   min-width: 170px;
   padding: 0 8px;
   border-radius: var(--radius-xs);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   background: var(--bg-input);
   color: var(--ink-primary);
   font-family: var(--font-mono);
@@ -389,7 +389,7 @@
   height: 26px;
   padding: 0 9px;
   border-radius: var(--radius-xs);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   background: var(--bg-surface-subtle);
   background-image: none;
   color: var(--ink-primary);
@@ -402,7 +402,7 @@
 
 .remote-editor-cm-host .cm-search .cm-button:hover {
   background: var(--bg-hover);
-  border-color: var(--border-focus);
+  border-color: var(--border-strong);
 }
 
 .remote-editor-cm-host .cm-search label {

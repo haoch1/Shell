@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"path/filepath"
 
 	"github.com/haoch1/Shell/frontend"
 	"github.com/haoch1/Shell/internal/agentbridge"
@@ -59,6 +58,12 @@ func main() {
 	if hasFlag("--apply-update") {
 		os.Exit(runApplyUpdateCLI(os.Args[1:]))
 	}
+	if hasFlag("--cleanup-data") {
+		os.Exit(runCleanupDataCLI(os.Args[1:]))
+	}
+	if hasFlag("--uninstall") {
+		os.Exit(runUninstallCLI())
+	}
 	if hasFlag("--mcp") {
 		runStdioMCPProxy()
 		return
@@ -81,10 +86,11 @@ func main() {
 	if st.WindowMaximised {
 		startState = options.Maximised
 	}
+	isAutoStart := hasFlag("--autostart")
 
 	wvDataDir := ""
-	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
-		wvDataDir = filepath.Join(cacheDir, "Shell", "WebView2")
+	if dir, err := local.WebViewCacheDir(); err == nil {
+		wvDataDir = dir
 	}
 
 	app := newApp()
@@ -95,6 +101,7 @@ func main() {
 		MinWidth:         880,
 		MinHeight:        560,
 		WindowStartState: startState,
+		StartHidden:      isAutoStart,
 		Frameless:        true,
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 255},
 		AssetServer:      &assetserver.Options{Assets: assets},

@@ -24,16 +24,22 @@ import (
 )
 
 func TestAppInfoUsesManifestVersion(t *testing.T) {
-	if got, want := newApp().AppInfo().Version, frontend.Version(); got != want {
+	root := t.TempDir()
+	t.Setenv("LOCALAPPDATA", root)
+	info := newApp().AppInfo()
+	if got, want := info.Version, frontend.Version(); got != want {
 		t.Fatalf("desktop version %q differs from embedded manifest %q", got, want)
+	}
+	if wantDir := filepath.Join(root, "Shell"); info.DataDir != wantDir {
+		t.Fatalf("AppInfo().DataDir = %q, want %q", info.DataDir, wantDir)
 	}
 }
 
 func TestExplainTerminalStopsOnInvalidRedactionSettings(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("LOCALAPPDATA", root)
-	dir := filepath.Join(root, "Shell")
-	if err := os.Mkdir(dir, 0700); err != nil {
+	dir := filepath.Join(root, "Shell", "config")
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte("{"), 0600); err != nil {
@@ -333,7 +339,7 @@ func startAppTestSSH(t *testing.T) *appTestSSHServer {
 
 func pinTestKnownHosts(t *testing.T, root string, srvs ...*appTestSSHServer) {
 	t.Helper()
-	dir := filepath.Join(root, "Shell")
+	dir := filepath.Join(root, "Shell", "security")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}

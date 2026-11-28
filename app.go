@@ -19,6 +19,7 @@ import (
 
 	"github.com/haoch1/Shell/internal/agentbridge"
 	"github.com/haoch1/Shell/internal/local"
+	"github.com/haoch1/Shell/internal/localpty"
 	"github.com/haoch1/Shell/internal/remote"
 	"github.com/haoch1/Shell/internal/security"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -26,9 +27,11 @@ import (
 )
 
 type liveSession struct {
-	cancel  context.CancelFunc
-	session *remote.Session
-	profile local.Profile
+	cancel   context.CancelFunc
+	session  *remote.Session
+	localPTY *localpty.Session
+	isLocal  bool
+	profile  local.Profile
 }
 
 type App struct {
@@ -47,6 +50,7 @@ type App struct {
 	ws               *termWSServer
 	tray             *systemTray
 	quitting         atomic.Bool
+	uninstalling     atomic.Bool
 	aiCancel         context.CancelFunc
 	aiSequence       uint64
 	agentCfgMu       sync.RWMutex
@@ -125,6 +129,7 @@ func (a *App) startup(ctx context.Context) {
 		a.ws = ws
 	}
 	a.tray = startSystemTray(a)
+	go func() { _ = local.SyncAutoStartPath() }()
 }
 
 func (a *App) TermWSURL(sessionID string) string {
@@ -132,7 +137,7 @@ func (a *App) TermWSURL(sessionID string) string {
 }
 
 func (a *App) saveWindowBounds(ctx context.Context) {
-	if ctx == nil || runtime.WindowIsMinimised(ctx) {
+	if a.uninstalling.Load() || ctx == nil || runtime.WindowIsMinimised(ctx) {
 		return
 	}
 	maximised := runtime.WindowIsMaximised(ctx)
@@ -152,6 +157,9 @@ func (a *App) saveWindowBounds(ctx context.Context) {
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
+	if a.uninstalling.Load() {
+		return false
+	}
 	a.saveWindowBounds(ctx)
 	if a.quitting.Load() || os.Getenv("SHELL_EXIT_ON_CLOSE") == "1" {
 		return false
@@ -173,7 +181,9 @@ func (a *App) ShowMainWindow() {
 }
 
 func (a *App) QuitApp() {
-	a.saveWindowBounds(a.ctx)
+	if !a.uninstalling.Load() {
+		a.saveWindowBounds(a.ctx)
+	}
 	a.quitting.Store(true)
 	if a.tray != nil {
 		a.tray.Stop()
@@ -213,12 +223,15 @@ func (a *App) DisconnectAllSessions() {
 			if e.session != nil {
 				e.session.Close()
 			}
+			if e.localPTY != nil {
+				_ = e.localPTY.Close()
+			}
 		}
 	}
 	a.closeAllPooledJumps()
 	total := len(ids) + len(headlessList)
 	if a.ctx != nil && total > 0 {
-		runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("已断开 %d 个 SSH 会话", total))
+		runtime.EventsEmit(a.ctx, "shell:notice", fmt.Sprintf("已关闭 %d 个终端会话", total))
 	}
 }
 
@@ -256,7 +269,7 @@ func (a *App) ToggleCloseToTray() {
 	}
 }
 
-func (a *App) shutdown(context.Context) {
+func (a *App) stopRuntimeServices(clearBridge bool) {
 	if a.tray != nil {
 		a.tray.Stop()
 	}
@@ -266,7 +279,9 @@ func (a *App) shutdown(context.Context) {
 	if a.bridge != nil {
 		a.bridge.Stop()
 	}
-	local.ClearBridgeRuntime()
+	if clearBridge {
+		local.ClearBridgeRuntime()
+	}
 	a.mu.Lock()
 	ids := make([]string, 0, len(a.live))
 	for id := range a.live {
@@ -284,6 +299,7 @@ func (a *App) shutdown(context.Context) {
 	}
 	if a.aiCancel != nil {
 		a.aiCancel()
+		a.aiCancel = nil
 	}
 	a.mu.Unlock()
 	for _, id := range ids {
@@ -297,9 +313,62 @@ func (a *App) shutdown(context.Context) {
 			if e.session != nil {
 				e.session.Close()
 			}
+			if e.localPTY != nil {
+				_ = e.localPTY.Close()
+			}
 		}
 	}
 	a.closeAllPooledJumps()
+}
+
+func (a *App) shutdown(context.Context) {
+	uninstalling := a.uninstalling.Load()
+	a.stopRuntimeServices(!uninstalling)
+	cleanupRuntimeLeftovers()
+}
+
+func (a *App) GetAutoStart() bool {
+	enabled, _ := local.IsAutoStartEnabled()
+	return enabled
+}
+
+func (a *App) SetAutoStart(enabled bool) (bool, error) {
+	if err := local.SetAutoStart(enabled); err != nil {
+		cur, _ := local.IsAutoStartEnabled()
+		return cur, err
+	}
+	cur, err := local.IsAutoStartEnabled()
+	if err != nil {
+		return enabled, nil
+	}
+	return cur, nil
+}
+
+func (a *App) UninstallAndQuit(removeData bool) error {
+	if err := cleanAutoStartRegistry(); err != nil {
+		return err
+	}
+	a.uninstalling.Store(true)
+	a.quitting.Store(true)
+	a.stopRuntimeServices(true)
+
+	if removeData {
+		if dataDir, err := local.DataDir(); err == nil && dataDir != "" {
+			for _, sub := range []string{"config", "security", "logs", "runtime"} {
+				_ = os.RemoveAll(filepath.Join(dataDir, sub))
+			}
+			_ = launchDataCleanup(os.Getpid(), dataDir)
+		}
+	}
+	if a.ctx != nil {
+		go func() {
+			time.Sleep(80 * time.Millisecond)
+			a.QuitApp()
+		}()
+	} else {
+		a.QuitApp()
+	}
+	return nil
 }
 
 type AppInfoView struct {
@@ -308,19 +377,18 @@ type AppInfoView struct {
 }
 
 func (a *App) AppInfo() AppInfoView {
-	root, _ := os.UserCacheDir()
+	dir, _ := local.DataDir()
 	return AppInfoView{
 		Version: appVersion,
-		DataDir: filepath.Join(root, "Shell"),
+		DataDir: dir,
 	}
 }
 
 func (a *App) OpenDataDir() error {
-	root, err := os.UserCacheDir()
+	dir, err := local.DataDir()
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(root, "Shell")
 	_ = os.MkdirAll(dir, 0700)
 	return exec.Command("explorer.exe", dir).Start()
 }
@@ -932,20 +1000,154 @@ func (a *App) get(id string) (*remote.Session, error) {
 	return nil, errors.New("SSH 会话未连接")
 }
 
+func (a *App) writeTerminalInput(id string, data []byte) error {
+	a.mu.Lock()
+	e := a.live[id]
+	var lp *localpty.Session
+	var rs *remote.Session
+	if e != nil {
+		lp = e.localPTY
+		rs = e.session
+	}
+	a.mu.Unlock()
+	if lp != nil {
+		return lp.Write(data)
+	}
+	if rs != nil {
+		return rs.Write(data)
+	}
+	return errors.New("终端会话未连接")
+}
+
+// LocalShells returns all detected local Windows shells and WSL distributions.
+func (a *App) LocalShells() []localpty.ShellProfile {
+	shells := localpty.DetectShells()
+	if shells == nil {
+		return []localpty.ShellProfile{}
+	}
+	return shells
+}
+
+// StartLocalTerminal spawns a native Windows ConPTY session for the requested shell (or default)
+// and wires its I/O through the same zero-latency binary WebSocket / Wails event channel as SSH.
+func (a *App) StartLocalTerminal(id, shellID, cwd string, cols, rows int) (localpty.ShellProfile, error) {
+	id = strings.TrimSpace(id)
+	if len(id) < 1 || len(id) > 80 {
+		return localpty.ShellProfile{}, errors.New("无效的会话标识")
+	}
+
+	var (
+		shell localpty.ShellProfile
+		err   error
+	)
+	shellID = strings.TrimSpace(shellID)
+	if shellID == "" {
+		settings, _ := a.getCachedSettings()
+		shell, err = localpty.ResolveShellOrDefault(settings.DefaultLocalShell)
+	} else {
+		shell, err = localpty.ResolveShell(shellID)
+	}
+	if err != nil {
+		return localpty.ShellProfile{}, err
+	}
+
+	ctx, cancel := context.WithCancel(a.baseContext())
+	entry := &liveSession{
+		cancel:  cancel,
+		isLocal: true,
+		profile: local.Profile{
+			Name: shell.Name,
+			Host: "local",
+		},
+	}
+	a.mu.Lock()
+	if _, found := a.live[id]; found {
+		a.mu.Unlock()
+		cancel()
+		return localpty.ShellProfile{}, errors.New("此会话已打开")
+	}
+	a.live[id] = entry
+	a.mu.Unlock()
+
+	remove := func() {
+		a.mu.Lock()
+		if a.live[id] == entry {
+			delete(a.live, id)
+		}
+		a.clearSessionApprovalsLocked(id)
+		a.mu.Unlock()
+		cancel()
+	}
+
+	var exited atomic.Bool
+	sess, err := localpty.Start(localpty.Options{
+		Command: shell.Command,
+		Args:    shell.Args,
+		Cwd:     cwd,
+		Cols:    cols,
+		Rows:    rows,
+		OnOutput: func(data []byte) {
+			if a.ws != nil && a.ws.SendOutput(id, data) {
+				return
+			}
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "ssh:data", id, base64.StdEncoding.EncodeToString(data))
+			}
+		},
+		OnExit: func(exitCode int, exitErr error) {
+			exited.Store(true)
+			message := "本地终端已退出"
+			if exitCode != 0 {
+				message = fmt.Sprintf("本地终端已退出（代码 %d）", exitCode)
+			} else if exitErr != nil && ctx.Err() == nil {
+				message = exitErr.Error()
+			}
+			remove()
+			if a.ws != nil {
+				a.ws.CloseSession(id)
+			}
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "ssh:end", id, message)
+			}
+		},
+	})
+	if err != nil {
+		remove()
+		return localpty.ShellProfile{}, err
+	}
+
+	a.mu.Lock()
+	active := a.live[id] == entry
+	if active {
+		entry.localPTY = sess
+	}
+	a.mu.Unlock()
+	if !active && !exited.Load() {
+		_ = sess.Close()
+		return localpty.ShellProfile{}, context.Canceled
+	}
+	return shell, nil
+}
+
 func (a *App) Disconnect(id string) {
 	a.mu.Lock()
 	e := a.live[id]
 	delete(a.live, id)
 	var session *remote.Session
+	var lp *localpty.Session
 	if e != nil {
 		session = e.session
+		lp = e.localPTY
 	}
 	a.mu.Unlock()
-	if e != nil {
+	if e != nil && e.cancel != nil {
 		e.cancel()
 	}
 	if session != nil {
 		session.Close()
+	}
+	if lp != nil {
+		_ = lp.Close()
 	}
 	if a.ws != nil {
 		a.ws.CloseSession(id)
@@ -953,10 +1155,6 @@ func (a *App) Disconnect(id string) {
 }
 
 func (a *App) Input(id, data string) error {
-	s, err := a.get(id)
-	if err != nil {
-		return err
-	}
 	if len(data) > 2<<20 {
 		return errors.New("单次输入过大")
 	}
@@ -964,15 +1162,26 @@ func (a *App) Input(id, data string) error {
 	if err != nil {
 		return err
 	}
-	return s.Write(b)
+	return a.writeTerminalInput(id, b)
 }
 
 func (a *App) Resize(id string, cols, rows int) error {
-	s, err := a.get(id)
-	if err != nil {
-		return err
+	a.mu.Lock()
+	e := a.live[id]
+	var lp *localpty.Session
+	var rs *remote.Session
+	if e != nil {
+		lp = e.localPTY
+		rs = e.session
 	}
-	return s.Resize(cols, rows)
+	a.mu.Unlock()
+	if lp != nil {
+		return lp.Resize(cols, rows)
+	}
+	if rs != nil {
+		return rs.Resize(cols, rows)
+	}
+	return errors.New("终端会话未连接")
 }
 
 func (a *App) ProbeSession(id string) (int64, error) {

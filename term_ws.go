@@ -348,17 +348,13 @@ func (c *termWSConn) readLoop(br *bufio.Reader, srv *termWSServer) {
 		case 0x1, 0x2: // Text / Binary frame
 			if fin && len(msgBuf) == 0 {
 				if len(payload) > 0 {
-					if sess, err := srv.app.get(c.sessionID); err == nil {
-						_ = sess.Write(payload)
-					}
+					_ = srv.app.writeTerminalInput(c.sessionID, payload)
 				}
 			} else {
 				msgBuf = append(msgBuf[:0], payload...)
 				if fin {
 					if len(msgBuf) > 0 {
-						if sess, err := srv.app.get(c.sessionID); err == nil {
-							_ = sess.Write(msgBuf)
-						}
+						_ = srv.app.writeTerminalInput(c.sessionID, msgBuf)
 					}
 					msgBuf = msgBuf[:0]
 				}
@@ -369,9 +365,7 @@ func (c *termWSConn) readLoop(br *bufio.Reader, srv *termWSServer) {
 			}
 			if fin {
 				if len(msgBuf) > 0 {
-					if sess, err := srv.app.get(c.sessionID); err == nil {
-						_ = sess.Write(msgBuf)
-					}
+					_ = srv.app.writeTerminalInput(c.sessionID, msgBuf)
 				}
 				msgBuf = msgBuf[:0]
 			}

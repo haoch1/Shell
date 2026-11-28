@@ -903,6 +903,7 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 		cfg.Password = secret
 	}
 
+	var exited atomic.Bool
 	s, err := remote.Connect(ctx, cfg, remote.Callbacks{
 		Status: func(stage, message string) {
 			if a.ctx != nil {
@@ -943,6 +944,7 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 			}
 		},
 		End: func(err error) {
+			exited.Store(true)
 			message := "连接已关闭"
 			if err != nil && ctx.Err() == nil {
 				message = err.Error()
@@ -966,6 +968,10 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 	}
 	a.mu.Unlock()
 	if !active {
+		if exited.Load() {
+			// End is already draining the terminal; reporting a failed connect would close the UI socket early.
+			return nil
+		}
 		s.Close()
 		return context.Canceled
 	}

@@ -321,7 +321,13 @@ export const App: React.FC = () => {
             resolve();
           }
         };
-        const timer = window.setTimeout(done, 120);
+        const timer = window.setTimeout(() => {
+          if (ws.readyState === WebSocket.CONNECTING) {
+            if (wsMapRef.current.get(sessionId) === ws) wsMapRef.current.delete(sessionId);
+            ws.close();
+          }
+          done();
+        }, 120);
         ws.onopen = () => {
           window.clearTimeout(timer);
           done();

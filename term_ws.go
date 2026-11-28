@@ -102,8 +102,8 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-// SendOutput delivers SSH output bytes over the active binary WebSocket if attached.
-// Returns true if queued to WebSocket, false if caller should fall back to Wails EventsEmit.
+// SendOutput transfers ownership of a terminal output buffer to the attached WebSocket.
+// When it returns false, the caller still owns the buffer and can use Wails EventsEmit.
 func (s *termWSServer) SendOutput(sessionID string, data []byte) bool {
 	if s == nil || len(data) == 0 {
 		return false
@@ -253,11 +253,10 @@ func (c *termWSConn) Enqueue(data []byte) bool {
 		return false
 	default:
 	}
-	cp := append([]byte(nil), data...)
 	select {
 	case <-c.done:
 		return false
-	case c.outCh <- cp:
+	case c.outCh <- data:
 		return true
 	}
 }

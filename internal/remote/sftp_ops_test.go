@@ -93,6 +93,30 @@ func (h *modeTrackingHandlers) wrapInfo(fullPath string, info os.FileInfo) os.Fi
 	return trackedFileInfo{FileInfo: info, modeOverride: mode, hasOverride: ok}
 }
 
+func (h *modeTrackingHandlers) renamed(r *sftp.Request, err error) error {
+	if err == nil {
+		h.mu.Lock()
+		from, to := path.Clean(r.Filepath), path.Clean(r.Target)
+		if from != to {
+			delete(h.modes, to)
+			if m, ok := h.modes[from]; ok {
+				h.modes[to] = m
+				delete(h.modes, from)
+			}
+		}
+		h.mu.Unlock()
+	}
+	return err
+}
+
+func (h *modeTrackingHandlers) PosixRename(r *sftp.Request) error {
+	cmd, ok := h.base.FileCmd.(sftp.PosixRenameFileCmder)
+	if !ok {
+		return sftp.ErrSSHFxOpUnsupported
+	}
+	return h.renamed(r, cmd.PosixRename(r))
+}
+
 func (h *modeTrackingHandlers) Filecmd(r *sftp.Request) error {
 	if r.Method == "Setstat" && r.AttrFlags().Permissions {
 		clean := path.Clean(r.Filepath)
@@ -105,16 +129,7 @@ func (h *modeTrackingHandlers) Filecmd(r *sftp.Request) error {
 		return nil
 	}
 	if r.Method == "Rename" {
-		if err := h.base.FileCmd.Filecmd(r); err != nil {
-			return err
-		}
-		h.mu.Lock()
-		if m, ok := h.modes[path.Clean(r.Filepath)]; ok {
-			h.modes[path.Clean(r.Target)] = m
-			delete(h.modes, path.Clean(r.Filepath))
-		}
-		h.mu.Unlock()
-		return nil
+		return h.renamed(r, h.base.FileCmd.Filecmd(r))
 	}
 	return h.base.FileCmd.Filecmd(r)
 }

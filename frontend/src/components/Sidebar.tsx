@@ -26,6 +26,7 @@ import {
 import type { Profile, SessionRecord, WorkspaceTab } from '../types/shell';
 import { connectedProfilePanes, type PaneSource } from '../lib/paneLayout';
 import { copyToClipboard } from '../lib/bridge';
+import { subscribeWindowDismiss } from '../lib/windowFocusGuard';
 import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 import { Checkbox } from './ui/Checkbox';
@@ -147,10 +148,15 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   }, [draggingGroup]);
 
   useEffect(() => {
-    if (!addMenuPos && !sortMenuPos && !groupMenuPos && !selectMode) return;
+    if (!addMenuPos && !sortMenuPos && !groupMenuPos && !ctxMenu && !selectMode) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       if (document.querySelector('.modal-backdrop, .spotlight-backdrop, dialog[open]')) return;
+      if (ctxMenu) {
+        e.preventDefault();
+        setCtxMenu(null);
+        return;
+      }
       if (addMenuPos) {
         e.preventDefault();
         setAddMenuPos(null);
@@ -173,7 +179,23 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [addMenuPos, sortMenuPos, groupMenuPos, selectMode]);
+  }, [addMenuPos, sortMenuPos, groupMenuPos, ctxMenu, selectMode]);
+
+  useEffect(() => {
+    if (!addMenuPos && !sortMenuPos && !groupMenuPos && !ctxMenu) return;
+    const dismissMenus = () => {
+      setAddMenuPos(null);
+      setSortMenuPos(null);
+      setGroupMenuPos(null);
+      setCtxMenu(null);
+    };
+    const offWindowDismiss = subscribeWindowDismiss(dismissMenus);
+    window.addEventListener('resize', dismissMenus);
+    return () => {
+      offWindowDismiss();
+      window.removeEventListener('resize', dismissMenus);
+    };
+  }, [addMenuPos, sortMenuPos, groupMenuPos, ctxMenu]);
 
   const changeSortMode = (next: HostSortMode) => {
     setSortMode(next);

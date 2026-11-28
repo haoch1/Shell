@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Folder, Plus, X } from 'lucide-react';
+import { shouldOpenDropdownOnFocus, subscribeWindowDismiss } from '../../lib/windowFocusGuard';
 
 export interface ComboBoxProps {
   id?: string;
@@ -84,10 +85,12 @@ export const ComboBox: React.FC<ComboBoxProps> = ({
       setOpen(false);
     };
     const onResizeOrScroll = () => updatePosition();
+    const offWindowDismiss = subscribeWindowDismiss(() => setOpen(false));
     document.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('resize', onResizeOrScroll);
     window.addEventListener('scroll', onResizeOrScroll, true);
     return () => {
+      offWindowDismiss();
       document.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('resize', onResizeOrScroll);
       window.removeEventListener('scroll', onResizeOrScroll, true);
@@ -157,7 +160,7 @@ export const ComboBox: React.FC<ComboBoxProps> = ({
         aria-expanded={showMenu}
         aria-autocomplete="list"
         onFocus={() => {
-          if (canOpen) setOpen(true);
+          if (canOpen && shouldOpenDropdownOnFocus()) setOpen(true);
         }}
         onClick={() => {
           if (canOpen && !open) setOpen(true);

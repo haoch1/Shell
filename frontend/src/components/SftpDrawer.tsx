@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import type { RemoteEntry, RemoteEntryDetail, SessionRecord, TransferProgress } from '../types/shell';
 import { copyToClipboard, errorMessage, getApi, onDesktopEvent } from '../lib/bridge';
+import { subscribeWindowDismiss } from '../lib/windowFocusGuard';
 import { formatBytes } from '../lib/utils';
 import {
   basenameRemotePath,
@@ -191,9 +192,10 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
     }
   }, [bookmarkStorageKey]);
 
-  // Close bookmarks popover on outside click / Escape
+  // Close bookmarks popover on outside click / Escape / window blur or resize
   useEffect(() => {
     if (!bookmarksOpen) return;
+    const dismiss = () => setBookmarksOpen(false);
     const onPointerDown = (e: PointerEvent) => {
       if (bookmarkAnchorRef.current && !bookmarkAnchorRef.current.contains(e.target as Node)) {
         setBookmarksOpen(false);
@@ -205,11 +207,15 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
         setBookmarksOpen(false);
       }
     };
+    const offWindowDismiss = subscribeWindowDismiss(dismiss);
     window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('resize', dismiss);
     return () => {
+      offWindowDismiss();
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('resize', dismiss);
     };
   }, [bookmarksOpen]);
 

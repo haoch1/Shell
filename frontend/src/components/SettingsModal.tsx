@@ -45,6 +45,7 @@ import {
   writeCachedSelectedAIModel,
 } from '../lib/aiModelCache';
 import { copyToClipboard, errorMessage, getApi, openExternalURL } from '../lib/bridge';
+import { shouldOpenDropdownOnFocus, subscribeWindowDismiss } from '../lib/windowFocusGuard';
 import { AgentSecurityTab } from './AgentSecurityTab';
 import { Checkbox } from './ui/Checkbox';
 import { Select } from './ui/Select';
@@ -339,26 +340,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     if (!modelMenuOpen) return;
+    const close = () => {
+      setModelMenuOpen(false);
+      setModelHighlightIdx(-1);
+    };
     const onMouseDown = (e: MouseEvent) => {
       if (modelComboRef.current && !modelComboRef.current.contains(e.target as Node)) {
-        setModelMenuOpen(false);
-        setModelHighlightIdx(-1);
+        close();
       }
     };
+    const offWindowDismiss = subscribeWindowDismiss(close);
     document.addEventListener('mousedown', onMouseDown);
-    return () => document.removeEventListener('mousedown', onMouseDown);
+    return () => {
+      offWindowDismiss();
+      document.removeEventListener('mousedown', onMouseDown);
+    };
   }, [modelMenuOpen]);
 
   useEffect(() => {
     if (!cliModelMenuOpen) return;
+    const close = () => {
+      setCliModelMenuOpen(false);
+      setCliModelHighlightIdx(-1);
+    };
     const onMouseDown = (e: MouseEvent) => {
       if (cliModelComboRef.current && !cliModelComboRef.current.contains(e.target as Node)) {
-        setCliModelMenuOpen(false);
-        setCliModelHighlightIdx(-1);
+        close();
       }
     };
+    const offWindowDismiss = subscribeWindowDismiss(close);
     document.addEventListener('mousedown', onMouseDown);
-    return () => document.removeEventListener('mousedown', onMouseDown);
+    return () => {
+      offWindowDismiss();
+      document.removeEventListener('mousedown', onMouseDown);
+    };
   }, [cliModelMenuOpen]);
 
   const patch = (partial: Partial<AppSettings>) => {
@@ -1470,6 +1485,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 style={{ paddingRight: 30 }}
                                 value={aiModel}
                                 onFocus={() => {
+                                  if (!shouldOpenDropdownOnFocus()) return;
                                   setModelFilterActive(false);
                                   setModelMenuOpen(true);
                                   setModelHighlightIdx(-1);
@@ -1814,6 +1830,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 style={{ paddingRight: 30 }}
                                 value={cliModel}
                                 onFocus={() => {
+                                  if (!shouldOpenDropdownOnFocus()) return;
                                   setCliModelFilterActive(false);
                                   setCliModelMenuOpen(true);
                                   setCliModelHighlightIdx(-1);

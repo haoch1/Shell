@@ -10,6 +10,7 @@ import React, {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual';
+import { subscribeWindowDismiss } from '../lib/windowFocusGuard';
 import {
   Copy,
   CopyPlus,
@@ -226,16 +227,16 @@ export const SftpEntryList = memo(function SftpEntryList({
     const close = () => setContextMenu(null);
     const vp = viewportRef.current;
 
+    const offWindowDismiss = subscribeWindowDismiss(close);
     window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('resize', close);
-    window.addEventListener('blur', close);
     vp?.addEventListener('scroll', close, { passive: true });
     return () => {
+      offWindowDismiss();
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('resize', close);
-      window.removeEventListener('blur', close);
       vp?.removeEventListener('scroll', close);
     };
   }, [contextMenu]);

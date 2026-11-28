@@ -31,6 +31,7 @@ import { formatConnectError } from '../lib/connectError';
 import { TerminalHighlighter } from '../lib/terminalHighlight';
 import { terminalBus } from '../lib/terminalBus';
 import { copyToClipboard, openExternalURL, readFromClipboard } from '../lib/bridge';
+import { subscribeWindowDismiss } from '../lib/windowFocusGuard';
 import { formatHostDisplay } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 
@@ -556,6 +557,26 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     settings.terminalTheme,
     isAppDark,
   ]);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const dismiss = () => setCtxMenu(null);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setCtxMenu(null);
+      }
+    };
+    const offWindowDismiss = subscribeWindowDismiss(dismiss);
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      offWindowDismiss();
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [ctxMenu]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     if (showConnectOverlay) return;

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Activity, Bot, Cpu, HardDrive, MemoryStick, Network } from 'lucide-react';
 import type { AgentStatusView, ServerStats, SessionRecord } from '../types/shell';
 import { formatBytes, formatDuration, formatHostDisplay } from '../lib/utils';
+import { subscribeWindowDismiss } from '../lib/windowFocusGuard';
 
 interface StatusBarProps {
   session?: SessionRecord;
@@ -38,13 +39,18 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
   useEffect(() => {
     if (!showPopover) return;
+    const dismiss = () => setShowPopover(false);
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setShowPopover(false);
       }
     };
+    const offWindowDismiss = subscribeWindowDismiss(dismiss);
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => {
+      offWindowDismiss();
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, [showPopover]);
 
   if (!session) {

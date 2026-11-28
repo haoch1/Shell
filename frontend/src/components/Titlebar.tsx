@@ -22,6 +22,7 @@ import {
 import type { DrawerMode, Profile, SessionRecord, WorkspaceTab } from '../types/shell';
 import { collectLeaves, formatHostDisplay } from '../lib/utils';
 import { getRuntime } from '../lib/bridge';
+import { subscribeWindowDismiss } from '../lib/windowFocusGuard';
 import { HostIcon } from './HostIcon';
 import { Tooltip } from './ui/Tooltip';
 import type { usePaneDrag } from '../lib/usePaneDrag';
@@ -98,19 +99,44 @@ export const Titlebar: React.FC<TitlebarProps> = ({
       setTabFilter('');
       return;
     }
+    const dismiss = () => setAllTabsMenu(null);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         setAllTabsMenu(null);
       }
     };
+    const offWindowDismiss = subscribeWindowDismiss(dismiss);
     window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', dismiss);
     const frame = requestAnimationFrame(() => tabFilterRef.current?.focus());
     return () => {
       cancelAnimationFrame(frame);
+      offWindowDismiss();
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', dismiss);
     };
   }, [allTabsMenu]);
+
+  useEffect(() => {
+    if (!tabMenu) return;
+    const dismiss = () => setTabMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setTabMenu(null);
+      }
+    };
+    const offWindowDismiss = subscribeWindowDismiss(dismiss);
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      offWindowDismiss();
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [tabMenu]);
 
   const profileById = useMemo(() => {
     const map = new Map<string, Profile>();
@@ -550,7 +576,10 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           className="win-btn"
           title="最小化"
           aria-label="最小化"
-          onClick={() => rt?.WindowMinimise()}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            rt?.WindowMinimise();
+          }}
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
             <path d="M1 5H9" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
@@ -561,7 +590,10 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           className="win-btn"
           title={maximised ? '向下还原' : '最大化'}
           aria-label={maximised ? '向下还原' : '最大化'}
-          onClick={handleToggleMaximise}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            handleToggleMaximise();
+          }}
         >
           <svg
             className={`win-max-icon ${maximised ? 'is-maximised' : ''}`}
@@ -595,7 +627,10 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           className="win-btn close"
           title="关闭"
           aria-label="关闭窗口"
-          onClick={() => rt?.Quit()}
+          onClick={(e) => {
+            e.currentTarget.blur();
+            rt?.Quit();
+          }}
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
             <path d="M1.5 1.5L8.5 8.5M8.5 1.5L1.5 8.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />

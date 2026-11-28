@@ -1,7 +1,6 @@
 package local
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -445,6 +444,34 @@ func isUnsupportedNoSessionPersistenceErr(text string) bool {
 		strings.Contains(lower, "unrecognized")
 }
 
+// cliStreamOutput is written by os/exec's stdout copier and read by the caller after Wait.
+type cliStreamOutput struct {
+	text      strings.Builder
+	carry     []byte
+	remaining int
+	onDelta   func(string)
+}
+
+func (w *cliStreamOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	if w.remaining == 0 {
+		return n, nil
+	}
+	p = p[:min(len(p), w.remaining)]
+	w.remaining -= len(p)
+	if len(w.carry) > 0 {
+		p = append(w.carry, p...)
+	}
+	ready, tail := splitValidUTF8(p)
+	chunk := ansiEscapeRe.ReplaceAllString(string(ready), "")
+	w.carry = append(w.carry[:0], tail...)
+	w.text.WriteString(chunk)
+	if w.onDelta != nil && chunk != "" {
+		w.onDelta(chunk)
+	}
+	return n, nil
+}
+
 func execLocalAICLIOnce(ctx context.Context, resolved, bin, base string, args []string, stdinText, codexOutFile string, onDelta func(string)) (string, string, error) {
 	cmd, job := prepareCLICommand(ctx, resolved, args...)
 	defer job.close()
@@ -454,76 +481,33 @@ func execLocalAICLIOnce(ctx context.Context, resolved, bin, base string, args []
 	if stdinText != "" {
 		cmd.Stdin = strings.NewReader(stdinText + "\n")
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", "", err
-	}
+	const maxBytes = 256 << 10
+	out := cliStreamOutput{remaining: maxBytes, onDelta: onDelta}
+	cmd.Stdout = &out
 	stderr := cappedBuffer{limit: 64 << 10}
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return "", "", fmt.Errorf("无法启动本地 CLI「%s」：%v", bin, err)
+		if ctx.Err() != nil {
+			return "", "", networkError(ctx, ctx.Err())
+		}
+		return "", "", fmt.Errorf("无法启动本地 CLI「%s」：%w", bin, err)
 	}
 	job.assign(cmd.Process.Pid)
 	if ctx.Err() != nil {
 		job.terminate()
 	}
 
-	const maxBytes = 256 << 10
-	var out strings.Builder
-	reader := bufio.NewReader(stdout)
-	buf := make([]byte, 4096)
-	var carry []byte
-	var rawTotal int
-	for {
-		n, rErr := reader.Read(buf)
-		if n > 0 && rawTotal < maxBytes {
-			take := n
-			if rawTotal+take > maxBytes {
-				take = maxBytes - rawTotal
-			}
-			rawTotal += take
-			combined := buf[:take]
-			if len(carry) > 0 {
-				combined = append(append([]byte(nil), carry...), combined...)
-				carry = carry[:0]
-			}
-			ready, tail := splitValidUTF8(combined)
-			if len(tail) > 0 {
-				carry = append(carry[:0], tail...)
-			}
-			if len(ready) > 0 {
-				chunk := ansiEscapeRe.ReplaceAllString(string(ready), "")
-				out.WriteString(chunk)
-				if onDelta != nil && chunk != "" {
-					onDelta(chunk)
-				}
-			}
-		}
-		if rErr != nil {
-			if errors.Is(rErr, io.EOF) {
-				if len(carry) > 0 {
-					chunk := ansiEscapeRe.ReplaceAllString(string(carry), "")
-					out.WriteString(chunk)
-					if onDelta != nil && chunk != "" {
-						onDelta(chunk)
-					}
-				}
-				break
-			}
-			_ = cmd.Wait()
-			return "", stderr.buf.String(), networkError(ctx, rErr)
-		}
-	}
-
+	// Wait bounds inherited open pipes via WaitDelay and joins both output copiers.
+	waitErr := cmd.Wait()
 	rawErr := ansiEscapeRe.ReplaceAllString(stderr.buf.String(), "")
-	if err := cmd.Wait(); err != nil {
-		if ctx.Err() != nil {
-			return "", rawErr, networkError(ctx, ctx.Err())
-		}
+	if ctx.Err() != nil {
+		return "", rawErr, networkError(ctx, ctx.Err())
+	}
+	if waitErr != nil {
 		errMsg := strings.TrimSpace(rawErr)
 		if errMsg == "" {
-			errMsg = strings.TrimSpace(out.String())
+			errMsg = strings.TrimSpace(out.text.String())
 		}
 		if len(errMsg) > 320 {
 			errMsg = truncateUTF8(errMsg, 320) + "…"
@@ -531,10 +515,10 @@ func execLocalAICLIOnce(ctx context.Context, resolved, bin, base string, args []
 		if errMsg != "" {
 			return "", rawErr, fmt.Errorf("本地 CLI「%s」执行失败：%s", bin, errMsg)
 		}
-		return "", rawErr, fmt.Errorf("本地 CLI「%s」退出异常：%v", bin, err)
+		return "", rawErr, fmt.Errorf("本地 CLI「%s」退出异常：%w", bin, waitErr)
 	}
 
-	result := strings.TrimSpace(out.String())
+	result := strings.TrimSpace(out.text.String())
 	if codexOutFile != "" {
 		if f, oErr := os.Open(codexOutFile); oErr == nil {
 			data, rErr := io.ReadAll(io.LimitReader(f, maxBytes))

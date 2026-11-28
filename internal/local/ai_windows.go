@@ -543,7 +543,7 @@ func classifyRisk(cmd string) string {
 	return "safe"
 }
 
-func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(string)) (string, error) {
+func readStreamOrJSON(ctx context.Context, resp *http.Response, apiKey string, onDelta func(string)) (string, error) {
 	const limit = 256 << 10
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	if strings.Contains(ct, "text/event-stream") {
@@ -569,7 +569,10 @@ func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(str
 				continue
 			}
 			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if payload == "" || payload == "[DONE]" {
+			if payload == "[DONE]" {
+				break
+			}
+			if payload == "" {
 				continue
 			}
 			var chunk struct {
@@ -603,11 +606,14 @@ func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(str
 				if chunk.Error != nil {
 					msg = firstNonEmpty(chunk.Error.Message, chunk.Error.Type)
 				}
-				msg = sanitizeAPIErrorDetail(msg, "")
+				msg = sanitizeAPIErrorDetail(msg, apiKey)
 				if msg == "" {
 					msg = "服务返回流式错误"
 				}
 				return "", fmt.Errorf("AI 流式响应失败：%s", msg)
+			}
+			if chunk.Type == "message_stop" || eventName == "message_stop" {
+				break
 			}
 			var delta string
 			switch {
@@ -663,7 +669,7 @@ func readStreamOrJSON(ctx context.Context, resp *http.Response, onDelta func(str
 		return "", errors.New("未收到有效的 AI 回复，请确认服务兼容 Chat Completions 或 Anthropic Messages")
 	}
 	if strings.EqualFold(result.Type, "error") || (len(result.Choices) == 0 && len(bytes.TrimSpace(result.Content)) == 0 && len(bytes.TrimSpace(result.Error)) > 0) {
-		if detail := extractAPIErrorDetail(data, ""); detail != "" {
+		if detail := extractAPIErrorDetail(data, apiKey); detail != "" {
 			return "", fmt.Errorf("AI 服务返回错误：%s", detail)
 		}
 		return "", errors.New("AI 服务返回错误响应，请检查服务状态")
@@ -728,7 +734,7 @@ func SuggestStructured(ctx context.Context, request, osHint string, onDelta func
 		return AIResult{}, err
 	}
 	defer resp.Body.Close()
-	raw, err := readStreamOrJSON(ctx, resp, onDelta)
+	raw, err := readStreamOrJSON(ctx, resp, s.APIKey, onDelta)
 	if err != nil {
 		return AIResult{}, err
 	}
@@ -834,7 +840,7 @@ func ExplainStream(ctx context.Context, selectedText, question string, onDelta f
 		return "", err
 	}
 	defer resp.Body.Close()
-	return readStreamOrJSON(ctx, resp, onDelta)
+	return readStreamOrJSON(ctx, resp, s.APIKey, onDelta)
 }
 
 // TestAI verifies connectivity to the configured API endpoint or local AI CLI.
@@ -857,7 +863,13 @@ func TestAI(ctx context.Context, s AISettings) error {
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 16<<10))
+	response, err := readStreamOrJSON(testCtx, resp, s.APIKey, nil)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(response) == "" {
+		return errors.New("AI 服务未返回测试回复，请检查模型与服务地址")
+	}
 	return nil
 }
 

@@ -10,11 +10,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -142,13 +144,143 @@ func TestAIStreamSizeLimit(t *testing.T) {
 			Header: http.Header{"Content-Type": {"text/event-stream"}},
 			Body:   io.NopCloser(strings.NewReader(raw)),
 		}
-		got, err := readStreamOrJSON(t.Context(), resp, nil)
+		got, err := readStreamOrJSON(t.Context(), resp, "", nil)
 		if size == limit && (got != "ok" || err != nil) {
 			t.Fatalf("valid stream at limit: %q, %v", got, err)
 		}
 		if size > limit && (got != "" || err == nil || !strings.Contains(err.Error(), "256 KiB")) {
 			t.Fatalf("oversized stream returned as complete: %q, %v", got, err)
 		}
+	}
+}
+
+func TestAIStreamCompletesWithoutWaitingForEOF(t *testing.T) {
+	const textEvent = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"
+	for _, terminator := range []string{
+		"data: [DONE]\n\n",
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+	} {
+		body := io.MultiReader(strings.NewReader(textEvent+terminator), iotest.ErrReader(errors.New("read past final event")))
+		resp := &http.Response{Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(body)}
+		var streamed strings.Builder
+		got, err := readStreamOrJSON(t.Context(), resp, "", func(s string) { streamed.WriteString(s) })
+		if err != nil || got != "hello" || streamed.String() != got {
+			t.Fatalf("terminal event %q: got %q, streamed %q, err %v", terminator, got, streamed.String(), err)
+		}
+	}
+}
+
+func TestCLIOutputDrainsAfterProcessExit(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL_TEST_PIPE_CHILD", "1")
+	args := []string{"-test.run=^TestCLIPipeHelper$", "--", "late-error"}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, err := execLocalAICLIOnce(cancelled, self, "fixture", "fixture", args, "", "", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost cancellation before startup: %v", err)
+	}
+	_, stderr, err := execLocalAICLIOnce(t.Context(), self, "fixture", "fixture", args, "", "", nil)
+	if err == nil || !strings.Contains(err.Error(), "late diagnostic") || !strings.Contains(stderr, "late diagnostic") {
+		t.Fatalf("missing stderr written after stdout closed: %q, %v", stderr, err)
+	}
+	args[len(args)-1] = "inherited"
+	_, _, err = execLocalAICLIOnce(t.Context(), self, "fixture", "fixture", args, "", "", nil)
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("expected WaitDelay for an inherited output pipe, got %v", err)
+	}
+}
+
+func TestAIConnectionTestRequiresAValidReply(t *testing.T) {
+	const key = "custom-demo-key-789"
+	for _, tc := range []struct {
+		name, body string
+		ok         bool
+	}{
+		{"valid", `{"choices":[{"message":{"content":"OK"}}]}`, true},
+		{"login page", "<html>Sign in</html>", false},
+		{"provider error", `{"error":{"message":"invalid credential ` + key + `"}}`, false},
+		{"empty answer", `{"choices":[{"message":{"content":""}}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			err := TestAI(t.Context(), AISettings{Endpoint: srv.URL, Model: "demo", APIKey: key})
+			if (err == nil) != tc.ok || (err != nil && strings.Contains(err.Error(), key)) {
+				t.Fatalf("bad connection result or exposed credential: success=%t", err == nil)
+			}
+		})
+	}
+
+	headersSent := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(headersSent)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- TestAI(ctx, AISettings{Endpoint: srv.URL, Model: "demo"}) }()
+	select {
+	case <-headersSent:
+	case err := <-done:
+		t.Fatalf("request failed before cancellation: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection test did not reach the local server")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("response body cancellation lost: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled connection test did not return")
+	}
+}
+
+func TestCLIPipeHelper(t *testing.T) {
+	if os.Getenv("SHELL_TEST_PIPE_CHILD") != "1" {
+		return
+	}
+	switch os.Args[len(os.Args)-1] {
+	case "late-error":
+		_ = os.Stdout.Close()
+		time.Sleep(100 * time.Millisecond)
+		_, _ = io.WriteString(os.Stderr, "late diagnostic")
+		os.Exit(1)
+	case "inherited":
+		child := exec.Command(os.Args[0], "-test.run=^TestCLIPipeHelper$", "--", "hold")
+		child.Stdout = os.Stdout
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		os.Exit(0)
+	case "hold":
+		time.Sleep(8 * time.Second)
+		os.Exit(0)
+	}
+}
+
+func TestCLIOutputLimitAtUTF8Boundary(t *testing.T) {
+	var emitted strings.Builder
+	w := cliStreamOutput{remaining: 5, onDelta: func(s string) { emitted.WriteString(s) }}
+	p := []byte("你好")
+	for _, b := range [][]byte{p[:1], p[1:4], p[4:]} {
+		n, err := w.Write(b)
+		if err != nil || n != len(b) {
+			t.Fatalf("did not drain output: n=%d, err=%v", n, err)
+		}
+	}
+	if got := w.text.String(); got != "你" || emitted.String() != got {
+		t.Fatalf("truncated UTF-8 stream: text=%q, chunks=%q", got, emitted.String())
 	}
 }
 

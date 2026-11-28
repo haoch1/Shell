@@ -382,7 +382,7 @@
 .remote-editor-cm-host .cm-search .cm-textfield:focus {
   background: var(--bg-input-focus);
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 2px var(--focus-ring);
+  box-shadow: 0 0 0 2.5px var(--focus-ring);
 }
 
 .remote-editor-cm-host .cm-search .cm-button {

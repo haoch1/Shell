@@ -115,7 +115,8 @@
 
 .sftp-tool-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--border-focus);
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 2.5px var(--focus-ring);
 }
 
 /* Compact 26px variant for toolbar rows */
@@ -149,6 +150,12 @@
 .sftp-nav-btn:disabled {
   opacity: 0.32;
   cursor: default;
+}
+
+.sftp-nav-btn:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 2.5px var(--focus-ring);
 }
 
 /* Toolbar */

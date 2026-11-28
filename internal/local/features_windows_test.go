@@ -85,7 +85,7 @@ func TestSnippetsAndSettingsLifecycle(t *testing.T) {
 	}
 
 	s, err := LoadSettings()
-	if err != nil || s.Theme != "light" || s.FontSize != 13 {
+	if err != nil || s.Theme != "light" || s.FontSize != 14 {
 		t.Fatalf("unexpected default settings: %+v, %v", s, err)
 	}
 	s.Theme = "dark"

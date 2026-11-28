@@ -66,7 +66,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   terminalTheme: 'auto',
   fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
-  fontSize: 13,
+  fontSize: 14,
   lineHeight: 1.28,
   cursorStyle: 'bar',
   cursorBlink: true,

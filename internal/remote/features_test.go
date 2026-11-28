@@ -300,10 +300,11 @@ func TestTelemetryParser(t *testing.T) {
 		"K:Linux 6.8.0-45-generic",
 		"O:Ubuntu 24.04.1 LTS",
 		"U:86420",
-		"L:0.42 0.35 0.28",
+		"L:0.42 0.35 0.28 2/148",
 		"C:4",
 		"P:100 0 50 850 0 0 0 120 0 60 920 0 0 0",
 		"M:8192 2048",
+		"S:2048 512",
 		"D:52428800 20971520 40%",
 		"N:1048576 524288",
 	}, "\n")
@@ -316,6 +317,29 @@ func TestTelemetryParser(t *testing.T) {
 	}
 	if !bytes.Equal([]byte(st.Load1), []byte("0.42")) || st.NetRxBytes != 1048576 {
 		t.Fatalf("unexpected load/net: %+v", st)
+	}
+	if st.Processes != 148 || st.SwapTotalMB != 2048 || st.SwapUsedMB != 512 {
+		t.Fatalf("unexpected processes/swap: %+v", st)
+	}
+
+	// Backward compatibility when swap & process count are omitted.
+	legacy := strings.Join([]string{
+		"L:0.15 0.22 0.30",
+		"M:4096 1024",
+	}, "\n")
+	stLegacy := parseTelemetry(legacy)
+	if stLegacy.Load1 != "0.15" || stLegacy.Load5 != "0.22" || stLegacy.Load15 != "0.30" || stLegacy.Processes != 0 || stLegacy.SwapTotalMB != 0 || stLegacy.SwapUsedMB != 0 {
+		t.Fatalf("unexpected legacy telemetry: %+v", stLegacy)
+	}
+
+	// Fallback process count without slash and negative swap clamp.
+	edge := strings.Join([]string{
+		"L:0.10 0.20 0.30 96",
+		"S:1024 -12",
+	}, "\n")
+	stEdge := parseTelemetry(edge)
+	if stEdge.Processes != 96 || stEdge.SwapTotalMB != 1024 || stEdge.SwapUsedMB != 0 {
+		t.Fatalf("unexpected edge telemetry: %+v", stEdge)
 	}
 }
 

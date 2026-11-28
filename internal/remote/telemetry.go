@@ -17,10 +17,13 @@ type ServerStats struct {
 	Load1       string  `json:"load1"`
 	Load5       string  `json:"load5"`
 	Load15      string  `json:"load15"`
+	Processes   int     `json:"processes,omitempty"`
 	CPUCores    int     `json:"cpuCores"`
 	CPUPercent  float64 `json:"cpuPercent"`
 	MemTotalMB  int64   `json:"memTotalMB"`
 	MemUsedMB   int64   `json:"memUsedMB"`
+	SwapTotalMB int64   `json:"swapTotalMB,omitempty"`
+	SwapUsedMB  int64   `json:"swapUsedMB,omitempty"`
 	DiskTotalGB float64 `json:"diskTotalGB"`
 	DiskUsedGB  float64 `json:"diskUsedGB"`
 	DiskPercent int     `json:"diskPercent"`
@@ -41,9 +44,9 @@ else
 fi
 echo "C:$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)"
 if [ -r /proc/uptime ]; then read u _ < /proc/uptime; echo "U:${u%%.*}"; fi
-if [ -r /proc/loadavg ]; then read l1 l2 l3 _ < /proc/loadavg; echo "L:$l1 $l2 $l3"; fi
+if [ -r /proc/loadavg ]; then read l1 l2 l3 pr _ < /proc/loadavg; echo "L:$l1 $l2 $l3 $pr"; fi
 if [ -r /proc/stat ]; then read _ a b c d e f g _ < /proc/stat; echo "P:$a $b $c $d $e $f $g"; fi
-if [ -r /proc/meminfo ]; then awk "/^MemTotal:/{t=\$2} /^MemAvailable:/{a=\$2} /^MemFree:/{f=\$2} /^Buffers:/{b=\$2} /^Cached:/{c=\$2} END{if(a==0)a=f+b+c; print \"M:\"int(t/1024),int((t-a)/1024)}" /proc/meminfo 2>/dev/null; fi
+if [ -r /proc/meminfo ]; then awk "/^MemTotal:/{t=\$2} /^MemAvailable:/{a=\$2} /^MemFree:/{f=\$2} /^Buffers:/{b=\$2} /^Cached:/{c=\$2} /^SwapTotal:/{st=\$2} /^SwapFree:/{sf=\$2} END{if(a==0)a=f+b+c; print \"M:\"int(t/1024),int((t-a)/1024); if(st>0) print \"S:\"int(st/1024),int((st-sf)/1024)}" /proc/meminfo 2>/dev/null; fi
 df -Pk / 2>/dev/null | awk "NR==2{print \"D:\"\$2,\$3,\$5}"
 if [ -r /proc/net/dev ]; then awk "NR>2 && \$1!~/^lo:/{rx+=\$2; tx+=\$10} END{printf \"N:%.0f %.0f\n\", rx, tx}" /proc/net/dev 2>/dev/null; fi
 '`
@@ -51,9 +54,9 @@ if [ -r /proc/net/dev ]; then awk "NR>2 && \$1!~/^lo:/{rx+=\$2; tx+=\$10} END{pr
 // telemetryFastScript runs on subsequent ticks: zero sleep, no hostname/uname/os-release forks.
 const telemetryFastScript = `sh -c '
 if [ -r /proc/uptime ]; then read u _ < /proc/uptime; echo "U:${u%%.*}"; fi
-if [ -r /proc/loadavg ]; then read l1 l2 l3 _ < /proc/loadavg; echo "L:$l1 $l2 $l3"; fi
+if [ -r /proc/loadavg ]; then read l1 l2 l3 pr _ < /proc/loadavg; echo "L:$l1 $l2 $l3 $pr"; fi
 if [ -r /proc/stat ]; then read _ a b c d e f g _ < /proc/stat; echo "P:$a $b $c $d $e $f $g"; fi
-if [ -r /proc/meminfo ]; then awk "/^MemTotal:/{t=\$2} /^MemAvailable:/{a=\$2} /^MemFree:/{f=\$2} /^Buffers:/{b=\$2} /^Cached:/{c=\$2} END{if(a==0)a=f+b+c; print \"M:\"int(t/1024),int((t-a)/1024)}" /proc/meminfo 2>/dev/null; fi
+if [ -r /proc/meminfo ]; then awk "/^MemTotal:/{t=\$2} /^MemAvailable:/{a=\$2} /^MemFree:/{f=\$2} /^Buffers:/{b=\$2} /^Cached:/{c=\$2} /^SwapTotal:/{st=\$2} /^SwapFree:/{sf=\$2} END{if(a==0)a=f+b+c; print \"M:\"int(t/1024),int((t-a)/1024); if(st>0) print \"S:\"int(st/1024),int((st-sf)/1024)}" /proc/meminfo 2>/dev/null; fi
 df -Pk / 2>/dev/null | awk "NR==2{print \"D:\"\$2,\$3,\$5}"
 if [ -r /proc/net/dev ]; then awk "NR>2 && \$1!~/^lo:/{rx+=\$2; tx+=\$10} END{printf \"N:%.0f %.0f\n\", rx, tx}" /proc/net/dev 2>/dev/null; fi
 '`
@@ -170,6 +173,15 @@ func parseTelemetryWithCPU(raw string) (ServerStats, [7]float64, bool) {
 			if len(parts) >= 3 {
 				st.Load1, st.Load5, st.Load15 = parts[0], parts[1], parts[2]
 			}
+			if len(parts) >= 4 {
+				procStr := parts[3]
+				if idx := strings.LastIndexByte(procStr, '/'); idx >= 0 {
+					procStr = procStr[idx+1:]
+				}
+				if p, err := strconv.Atoi(procStr); err == nil && p > 0 {
+					st.Processes = p
+				}
+			}
 		case 'P':
 			parts := strings.Fields(val)
 			if len(parts) >= 14 {
@@ -194,6 +206,18 @@ func parseTelemetryWithCPU(raw string) (ServerStats, [7]float64, bool) {
 				st.MemUsedMB, _ = strconv.ParseInt(parts[1], 10, 64)
 				if st.MemUsedMB < 0 {
 					st.MemUsedMB = 0
+				}
+			}
+		case 'S':
+			parts := strings.Fields(val)
+			if len(parts) >= 2 {
+				st.SwapTotalMB, _ = strconv.ParseInt(parts[0], 10, 64)
+				st.SwapUsedMB, _ = strconv.ParseInt(parts[1], 10, 64)
+				if st.SwapTotalMB < 0 {
+					st.SwapTotalMB = 0
+				}
+				if st.SwapUsedMB < 0 {
+					st.SwapUsedMB = 0
 				}
 			}
 		case 'D':

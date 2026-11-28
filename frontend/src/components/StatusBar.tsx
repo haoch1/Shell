@@ -28,16 +28,12 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   onOpenTunnels,
   onOpenAgentSettings,
 }) => {
-  const [now, setNow] = useState(() => Date.now());
   const [showPopover, setShowPopover] = useState(false);
 
   useEffect(() => {
     if (!session || session.state !== 'connected') {
       setShowPopover(false);
-      return;
     }
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
   }, [session?.id, session?.state]);
 
   if (!session) {
@@ -45,10 +41,16 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   }
 
   const memPct = stats && stats.memTotalMB > 0 ? Math.round((stats.memUsedMB / stats.memTotalMB) * 100) : 0;
-  const elapsed = session.state === 'connected' ? Math.max(0, (now - session.startedAt) / 1000) : 0;
+  const swapTotalMB = stats?.swapTotalMB ?? 0;
+  const swapUsedMB = stats?.swapUsedMB ?? 0;
+  const swapPct = swapTotalMB > 0 ? Math.min(100, Math.max(0, Math.round((swapUsedMB / swapTotalMB) * 100))) : 0;
   const latency = session.latencyMs ?? stats?.latencyMs;
 
   const barTone = (pct: number) => (pct >= 85 ? 'high' : pct >= 65 ? 'warn' : '');
+  const metricColor = (pct: number): string | undefined =>
+    pct >= 85 ? 'var(--red)' : pct >= 70 ? 'var(--orange)' : undefined;
+  const latencyColor = (ms: number): string | undefined =>
+    ms >= 600 ? 'var(--red)' : ms >= 250 ? 'var(--orange)' : undefined;
   const displayName =
     session.profile.name && (!hideHostIp || session.profile.name !== session.profile.host)
       ? session.profile.name
@@ -81,10 +83,9 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           </span>
         )}
         {latency !== undefined && session.state === 'connected' && (
-          <span className="status-chip mono">{latency} ms</span>
-        )}
-        {session.state === 'connected' && (
-          <span className="status-chip mono">{formatDuration(elapsed)}</span>
+          <span className="status-chip mono" style={{ color: latencyColor(latency) }}>
+            {latency} ms
+          </span>
         )}
         {activeTunnelsCount > 0 && (
           <button
@@ -118,9 +119,9 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             onClick={() => setShowPopover((v) => !v)}
             title="查看实时服务器监控详情"
           >
-            <span>CPU {stats.cpuPercent.toFixed(0)}%</span>
-            <span>MEM {memPct}%</span>
-            <span>DISK {stats.diskPercent}%</span>
+            <span style={{ color: metricColor(stats.cpuPercent) }}>CPU {stats.cpuPercent.toFixed(0)}%</span>
+            <span style={{ color: metricColor(memPct) }}>MEM {memPct}%</span>
+            <span style={{ color: metricColor(stats.diskPercent) }}>DISK {stats.diskPercent}%</span>
             {netRate && (
               <span>
                 ↓{formatBytes(netRate.rxPerSec)}/s ↑{formatBytes(netRate.txPerSec)}/s
@@ -146,6 +147,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             <div style={{ fontSize: 11.5, color: 'var(--ink-tertiary)' }} className="mono">
               运行 {formatDuration(stats.uptimeSec)} · 负载 {stats.load1 || '-'} / {stats.load5 || '-'} /{' '}
               {stats.load15 || '-'}
+              {(stats.processes ?? 0) > 0 && ` · ${stats.processes} 进程`}
             </div>
 
             <div className="field-group">
@@ -169,6 +171,20 @@ export const StatusBar: React.FC<StatusBarProps> = ({
                 <div className={`metric-bar-fill ${barTone(memPct)}`} style={{ width: `${memPct}%` }} />
               </div>
             </div>
+
+            {swapTotalMB > 0 && (
+              <div className="field-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
+                  <span className="status-chip"><MemoryStick size={12} />Swap</span>
+                  <span className="mono">
+                    {(swapUsedMB / 1024).toFixed(1)} / {(swapTotalMB / 1024).toFixed(1)} GB ({swapPct}%)
+                  </span>
+                </div>
+                <div className="metric-bar-track">
+                  <div className={`metric-bar-fill ${barTone(swapPct)}`} style={{ width: `${swapPct}%` }} />
+                </div>
+              </div>
+            )}
 
             <div className="field-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>

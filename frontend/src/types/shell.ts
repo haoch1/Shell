@@ -152,10 +152,13 @@ export interface ServerStats {
   load1: string;
   load5: string;
   load15: string;
+  processes?: number;
   cpuCores: number;
   cpuPercent: number;
   memTotalMB: number;
   memUsedMB: number;
+  swapTotalMB?: number;
+  swapUsedMB?: number;
   diskTotalGB: number;
   diskUsedGB: number;
   diskPercent: number;

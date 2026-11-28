@@ -140,7 +140,7 @@ const BRIDGE_MOCK_SCRIPT = `
   let settings = {
     theme: 'light', terminalTheme: 'auto',
     fontFamily: '"Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, "Sarasa Mono SC", "Maple Mono SC NF", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", monospace',
-    fontSize: 14, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
+    fontSize: 13, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
     showTelemetry: true, syntaxHighlight: true, autoReconnect: true, confirmMultilinePaste: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false, groupOrder: []
   };
@@ -627,11 +627,11 @@ async function verifyFrontendUI() {
       'Expected neutral #sortHostsBtn, non-active #toggleSidebar, absent #keysBtn, and balanced left-settings / right-hideIp footer: ' + JSON.stringify(chromeMinimalAudit),
     );
 
-    // Verify --border-control is defined in both light & dark modes, and Dark Mode toggle preserves default fontSize 14
+    // Verify --border-control is defined in both light & dark modes, and Dark Mode toggle preserves default fontSize 13
     const lightBorderControl = await evaluate("getComputedStyle(document.documentElement).getPropertyValue('--border-control').trim()");
     assert.ok(lightBorderControl, 'Expected --border-control CSS token defined in light mode');
     await click('button[aria-label="切换深浅色外观"]');
-    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'dark' && s.fontSize === 14)"), 'persisted dark theme and preserved font size 14');
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'dark' && s.fontSize === 13)"), 'persisted dark theme and preserved font size 13');
     const darkBorderControl = await evaluate("getComputedStyle(document.documentElement).getPropertyValue('--border-control').trim()");
     assert.ok(darkBorderControl, 'Expected --border-control CSS token defined in dark mode');
     await shot('16-Workbench-Dark');
@@ -1180,8 +1180,16 @@ async function verifyFrontendUI() {
     await click('#importDialog button[aria-label="关闭"]');
 
     // Settings Sheet Light + SSH/KnownHosts + Agent Governance + About + Dark
+    // Regression check: hovering #settingsBtn then opening #settingsDialog must leave zero phantom tooltip above the modal backdrop
+    const settingsBtnPt = await evaluate(`(() => { const r = document.querySelector('#settingsBtn')?.getBoundingClientRect(); return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`);
+    assert.ok(settingsBtnPt, 'Expected #settingsBtn bounding rect for tooltip regression check');
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...settingsBtnPt });
+    await sleep(360);
     await click('#settingsBtn');
     await until(() => evaluate("!!document.querySelector('#settingsDialog')"), 'settings modal');
+    await sleep(350);
+    const phantomTooltipCount = await evaluate("document.querySelectorAll('.ui-tooltip-content').length");
+    assert.equal(phantomTooltipCount, 0, 'Expected zero phantom .ui-tooltip-content floating above #settingsDialog backdrop, got ' + phantomTooltipCount);
     await shot('07-Settings-Light');
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(2)').click()`);
@@ -1368,7 +1376,7 @@ async function verifyFrontendUI() {
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.fontFamily.includes('SF Mono'))"), 'restored default font via Radix Select');
     await evaluate(`document.querySelector('#settingsDialog .settings-content').scrollTop = 0`);
     await sleep(200);
-    // Verify Settings: default 14 px font size, concise 隐藏主机 IP label, and 全局配色 3x2 grid
+    // Verify Settings: default 13 px font size, concise 隐藏主机 IP label, and 全局配色 3x2 grid
     const settingsV157 = await evaluate(`(() => {
       const dialogText = document.querySelector('#settingsDialog')?.textContent || '';
       const fontRow = [...document.querySelectorAll('#settingsDialog .pref-row')].find(r => r.querySelector('.pref-row-label')?.textContent?.trim() === '字号');
@@ -1380,7 +1388,7 @@ async function verifyFrontendUI() {
       const legacySuffix = '\\u9690\\u79c1\\u6a21\\u5f0f';
       return { fontText, hideIpLabel, hasDisallowedPrivacyTerm: dialogText.includes(legacySuffix) || sidebarEyeLabel.includes(legacySuffix), sectionTitles, themeTiles };
     })()`);
-    assert.equal(settingsV157.fontText, '14 px', 'Expected default font size 14 px in Settings, got ' + JSON.stringify(settingsV157));
+    assert.equal(settingsV157.fontText, '13 px', 'Expected default font size 13 px in Settings, got ' + JSON.stringify(settingsV157));
     assert.equal(settingsV157.hideIpLabel, '隐藏主机 IP', 'Expected concise 隐藏主机 IP label, got ' + JSON.stringify(settingsV157));
     assert.equal(settingsV157.hasDisallowedPrivacyTerm, false, 'Expected zero disallowed privacy suffix in Settings/Sidebar: ' + JSON.stringify(settingsV157));
     assert.ok(settingsV157.sectionTitles.includes('全局配色'), 'Expected 全局配色 section title, got ' + JSON.stringify(settingsV157.sectionTitles));
@@ -1522,10 +1530,11 @@ async function verifyFrontendUI() {
         '\\x1b[1;34m一、基础信息 (Basic Info)\\x1b[0m',
         '  自治系统号：        \\x1b[1;37mAS15169\\x1b[0m   组织：\\x1b[36mGoogle Cloud (ap-northeast-1)\\x1b[0m',
         '  注册地 / 使用地：   \\x1b[32m[JP] 日本 东京 (Tokyo)\\x1b[0m  时区：Asia/Tokyo (UTC+9)',
-        '  IP 类型属性：       \\x1b[1;30;42m [原生IP] \\x1b[0m  \\x1b[1;30;46m [机房] \\x1b[0m  \\x1b[3;90m(商业数据中心 / 非住宅)\\x1b[0m',
+        '  IP 类型属性：       \\x1b[1;30;42m 原生IP \\x1b[0m  \\x1b[1;30;41m 广播IP \\x1b[0m  \\x1b[1;30;42m 家宽 \\x1b[0m  \\x1b[1;30;43m 商业 \\x1b[0m  \\x1b[1;30;46m 机房 \\x1b[0m  \\x1b[3;90m(商业数据中心 / 非住宅)\\x1b[0m',
         '',
         '\\x1b[1;34m二、风险评分与因子 (Risk & Reputation)\\x1b[0m',
         '  欺诈风险等级：      \\x1b[1;30;42m 极低 \\x1b[0m | \\x1b[32m低\\x1b[0m | \\x1b[33m中等\\x1b[0m | \\x1b[31m高\\x1b[0m | \\x1b[1;97;41m 极高 \\x1b[0m   \\x1b[1;32m[极低 | 低 | 中等 | 高 | 极高]\\x1b[0m',
+        '  安全因子校验：      代理：\\x1b[1;32m否\\x1b[0m  VPN：\\x1b[1;32m否\\x1b[0m  Tor：\\x1b[1;32m否\\x1b[0m  黑名单率：\\x1b[1;37m0.00%\\x1b[0m',
         '  数据库校验：        Scamalytics \\x1b[32m0/100 (低风险)\\x1b[0m  IPQS \\x1b[32m12/100\\x1b[0m  AbuseIPDB \\x1b[32m0%\\x1b[0m',
         '  字体混排校验：      \\x1b[1m粗体中文 Bold English 1234\\x1b[0m  \\x1b[3m斜体中文 Italic Latin 5678\\x1b[0m  常规中文 Regular',
         '',

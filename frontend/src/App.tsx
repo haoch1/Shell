@@ -51,6 +51,7 @@ import { RemoteEditorModal } from './components/RemoteEditorModal';
 import { TerminalSearchBar } from './components/TerminalSearchBar';
 import { ChallengeDialog, VerifyHostDialog } from './components/SecurityDialogs';
 import { AgentApprovalDialog } from './components/AgentApprovalDialog';
+import { DEFAULT_TERMINAL_FONT } from './lib/terminalFont';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { detectOSIconFromText } from './components/HostIcon';
 
@@ -65,7 +66,7 @@ const APPEARANCE_STORAGE_KEY = 'shell:appearance:v1';
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   terminalTheme: 'auto',
-  fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
+  fontFamily: DEFAULT_TERMINAL_FONT,
   fontSize: 14,
   lineHeight: 1.28,
   cursorStyle: 'bar',
@@ -1738,7 +1739,7 @@ export const App: React.FC = () => {
               <button type="button" className="btn" onClick={() => setConfirmDelete(null)}>
                 取消
               </button>
-              <button type="button" className="btn btn-danger" onClick={() => void handleDeleteHost(confirmDelete)}>
+              <button type="button" className="btn btn-danger-solid" onClick={() => void handleDeleteHost(confirmDelete)}>
                 确认删除
               </button>
             </div>

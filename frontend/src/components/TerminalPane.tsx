@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import type { AppSettings, ConnectStage, SessionRecord } from '../types/shell';
 import { getTerminalTheme } from '../lib/themes';
+import { resolveTerminalFontFamily } from '../lib/terminalFont';
 import { formatConnectError } from '../lib/connectError';
 import { TerminalHighlighter } from '../lib/terminalHighlight';
 import { terminalBus } from '../lib/terminalBus';
@@ -202,14 +203,19 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       (settingsRef.current.theme === 'system' &&
         (window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false));
     const term = new Terminal({
-      fontFamily: settingsRef.current.fontFamily,
+      fontFamily: resolveTerminalFontFamily(settingsRef.current.fontFamily),
       fontSize: settingsRef.current.fontSize,
+      fontWeight: '400',
+      fontWeightBold: '700',
       lineHeight: settingsRef.current.lineHeight,
       cursorStyle: settingsRef.current.cursorStyle,
       cursorBlink: settingsRef.current.cursorBlink,
       scrollback: settingsRef.current.scrollback,
       theme: getTerminalTheme(settingsRef.current.terminalTheme, initDark).theme,
-      minimumContrastRatio: 4.5,
+      minimumContrastRatio: 5.5,
+      customGlyphs: true,
+      rescaleOverlappingGlyphs: true,
+      drawBoldTextInBrightColors: true,
       allowProposedApi: true,
       macOptionIsMeta: true,
     });
@@ -506,14 +512,19 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   useEffect(() => {
     const ctrl = terminalBus.get(session.id);
     if (!ctrl) return;
-    ctrl.term.options.fontFamily = settings.fontFamily;
+    ctrl.term.options.fontFamily = resolveTerminalFontFamily(settings.fontFamily);
     ctrl.term.options.fontSize = settings.fontSize;
+    ctrl.term.options.fontWeight = '400';
+    ctrl.term.options.fontWeightBold = '700';
     ctrl.term.options.lineHeight = settings.lineHeight;
     ctrl.term.options.cursorStyle = settings.cursorStyle;
     ctrl.term.options.cursorBlink = settings.cursorBlink;
     ctrl.term.options.scrollback = settings.scrollback;
     ctrl.term.options.theme = getTerminalTheme(settings.terminalTheme, isAppDark).theme;
-    ctrl.term.options.minimumContrastRatio = 4.5;
+    ctrl.term.options.minimumContrastRatio = 5.5;
+    ctrl.term.options.customGlyphs = true;
+    ctrl.term.options.rescaleOverlappingGlyphs = true;
+    ctrl.term.options.drawBoldTextInBrightColors = true;
     requestAnimationFrame(() => ctrl.fit());
   }, [
     session.id,

@@ -30,6 +30,7 @@ import type {
   UpdateProgress,
 } from '../types/shell';
 import { resolveTerminalTheme, syncTerminalThemeForAppearance, TERMINAL_THEMES } from '../lib/themes';
+import { matchFontOptionValue, TERMINAL_FONT_OPTIONS } from '../lib/terminalFont';
 import { copyToClipboard, errorMessage, getApi, openExternalURL } from '../lib/bridge';
 import { AgentSecurityTab } from './AgentSecurityTab';
 import { Checkbox } from './ui/Checkbox';
@@ -98,14 +99,6 @@ const AI_CLI_PRESETS = [
   { id: 'codex', label: 'Codex CLI', command: 'codex', modelHint: '留空使用默认，如 o3 / gpt-5' },
   { id: 'agy', label: 'Antigravity CLI', command: 'agy', modelHint: '留空使用默认模型' },
   { id: 'custom', label: '自定义 CLI', command: '', modelHint: '可选模型参数' },
-];
-
-const FONT_OPTIONS = [
-  { label: '系统推荐等宽', value: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace' },
-  { label: 'Cascadia Mono', value: '"Cascadia Mono", Consolas, monospace' },
-  { label: 'JetBrains Mono', value: '"JetBrains Mono", "Cascadia Mono", Consolas, monospace' },
-  { label: 'Fira Code', value: '"Fira Code", "Cascadia Mono", Consolas, monospace' },
-  { label: 'Consolas', value: 'Consolas, monospace' },
 ];
 
 const SHORTCUTS: { label: string; keys: string[] }[] = [
@@ -492,14 +485,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     { id: 'about', label: '关于 Shell', icon: <Info size={15} /> },
   ];
 
-  const matchedFont = FONT_OPTIONS.some((f) => f.value === settings.fontFamily)
-    ? settings.fontFamily
-    : '__custom__';
+  const matchedFont = matchFontOptionValue(settings.fontFamily);
   const fontSelectOptions = useMemo(
     () =>
       matchedFont === '__custom__'
-        ? [...FONT_OPTIONS, { label: '自定义字体', value: '__custom__' }]
-        : FONT_OPTIONS,
+        ? [...TERMINAL_FONT_OPTIONS, { label: '自定义字体', value: '__custom__' }]
+        : TERMINAL_FONT_OPTIONS,
     [matchedFont],
   );
 
@@ -601,7 +592,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <span style={{ fontSize: 9, opacity: 0.72 }}>浅色</span>
                               </span>
                               <span className="theme-swatch-half dark">
-                                <span style={{ color: '#4ADE80' }}>&gt;_</span>
+                                <span style={{ color: '#56E39F' }}>&gt;_</span>
                                 <span style={{ fontSize: 9, opacity: 0.78 }}>深色</span>
                               </span>
                             </div>

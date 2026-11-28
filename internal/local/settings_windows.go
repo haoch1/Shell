@@ -47,7 +47,7 @@ func DefaultSettings() AppSettings {
 	return AppSettings{
 		Theme:                 "light",
 		TerminalTheme:         "auto",
-		FontFamily:            `"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace`,
+		FontFamily:            `"Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, "Sarasa Mono SC", "Maple Mono SC NF", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", monospace`,
 		FontSize:              14,
 		LineHeight:            1.28,
 		CursorStyle:           "bar",

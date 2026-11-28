@@ -17,7 +17,9 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const { version: expectedVersion } = JSON.parse(await readFile(new URL('../../frontend/package.json', import.meta.url), 'utf8'));
-const snapshotDir = path.resolve(process.env.SHELL_SMOKE_DIR || 'build/preview');
+const outDirIdx = process.argv.indexOf('--out-dir');
+const cliOutDir = outDirIdx !== -1 && process.argv[outDirIdx + 1] ? process.argv[outDirIdx + 1] : '';
+const snapshotDir = path.resolve(cliOutDir || process.env.SHELL_SMOKE_DIR || 'build/preview');
 await mkdir(snapshotDir, { recursive: true });
 
 // =========================================================================
@@ -136,7 +138,7 @@ const BRIDGE_MOCK_SCRIPT = `
   let settings = {
     theme: 'light', terminalTheme: 'auto',
     fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
-    fontSize: 13, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
+    fontSize: 14, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
     showTelemetry: true, syntaxHighlight: true, autoReconnect: true, confirmMultilinePaste: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false, groupOrder: []
   };
@@ -254,8 +256,9 @@ const BRIDGE_MOCK_SCRIPT = `
     AnswerChallenge: async () => {},
     FetchStats: async () => ({
       hostname: 'tokyo-prod-01', os: 'Ubuntu 24.04.1 LTS', kernel: 'Linux 6.8.0-45',
-      uptimeSec: 1214400, load1: '0.42', load5: '0.35', load15: '0.28',
+      uptimeSec: 1214400, load1: '0.42', load5: '0.35', load15: '0.28', processes: 142,
       cpuCores: 8, cpuPercent: 18.4, memTotalMB: 16384, memUsedMB: 4280,
+      swapTotalMB: 2048, swapUsedMB: 512,
       diskTotalGB: 98.3, diskUsedGB: 37.8, diskPercent: 38,
       netRxBytes: 184290000, netTxBytes: 64120000, latencyMs: 18, collectedAt: Math.floor(Date.now()/1000)
     }),
@@ -523,7 +526,7 @@ async function verifyFrontendUI() {
     const pt = await until(
       () =>
         evaluate(
-          `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; const r = el.getBoundingClientRect(); return r.width && r.height ? { x: r.x + r.width/2, y: r.y + r.height/2 } : null; })()`,
+          `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); const r = el.getBoundingClientRect(); return r.width && r.height ? { x: r.x + r.width/2, y: r.y + r.height/2 } : null; })()`,
         ),
       selector,
     );
@@ -621,9 +624,13 @@ async function verifyFrontendUI() {
       'Expected neutral #sortHostsBtn, non-active #toggleSidebar, absent #keysBtn, and balanced left-settings / right-hideIp footer: ' + JSON.stringify(chromeMinimalAudit),
     );
 
-    // Toggle Dark Mode on Welcome Workbench to verify dark OS icons + IPv6 display
+    // Verify --border-control is defined in both light & dark modes, and Dark Mode toggle preserves default fontSize 14
+    const lightBorderControl = await evaluate("getComputedStyle(document.documentElement).getPropertyValue('--border-control').trim()");
+    assert.ok(lightBorderControl, 'Expected --border-control CSS token defined in light mode');
     await click('button[aria-label="切换深浅色外观"]');
-    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'dark' && s.fontSize === 13)"), 'persisted dark theme and preserved font size');
+    await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'dark' && s.fontSize === 14)"), 'persisted dark theme and preserved font size 14');
+    const darkBorderControl = await evaluate("getComputedStyle(document.documentElement).getPropertyValue('--border-control').trim()");
+    assert.ok(darkBorderControl, 'Expected --border-control CSS token defined in dark mode');
     await shot('16-Workbench-Dark');
     await click('button[aria-label="切换深浅色外观"]');
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.theme === 'light')"), 'persisted light theme');
@@ -872,11 +879,35 @@ async function verifyFrontendUI() {
     assert.deepEqual(await evaluate('window.canceledProfileIds'), ['needs-password']);
     await evaluate('window.restoreTestProfiles()');
 
-    // Command Palette
-    await click('#paletteBtn');
-    await until(() => evaluate("!!document.querySelector('#commandPalette')"), 'command palette');
+    // Command Palette opened from tab-strip + button (#newTabBtn): grouped sections with 服务器 first, immediately followed by 操作 -> 新建 SSH 主机
+    await click('#newTabBtn');
+    await until(() => evaluate("!!document.querySelector('#commandPalette')"), 'command palette via #newTabBtn');
+    const paletteAudit = await evaluate(`(() => {
+      const box = document.querySelector('#commandPalette .spotlight-results');
+      const groups = [...(box?.querySelectorAll('.spotlight-group-title') || [])].map(el => el.textContent.trim());
+      const children = [...(box?.children || [])].map(el => ({
+        isGroup: el.classList.contains('spotlight-group-title'),
+        text: el.textContent.trim(),
+        actionId: el.getAttribute('data-action-id') || '',
+      }));
+      const actionsHeaderIdx = children.findIndex(c => c.isGroup && c.text === '操作');
+      const firstAction = actionsHeaderIdx >= 0 ? children[actionsHeaderIdx + 1] : null;
+      return {
+        groups,
+        firstActionId: firstAction?.actionId || '',
+        firstActionText: firstAction?.text || '',
+        hasKbdBadge: Boolean(box?.querySelector('.spotlight-kbd')),
+      };
+    })()`);
+    assert.equal(paletteAudit.groups[0], '服务器', 'Expected 服务器 as first section in Command Palette, got ' + JSON.stringify(paletteAudit));
+    assert.equal(paletteAudit.groups[1], '操作', 'Expected 操作 immediately after 服务器 in Command Palette, got ' + JSON.stringify(paletteAudit));
+    assert.equal(paletteAudit.firstActionId, 'act-new', 'Expected 新建 SSH 主机 (act-new) first in 操作 section, got ' + JSON.stringify(paletteAudit));
+    assert.ok(paletteAudit.firstActionText.includes('新建 SSH 主机'), 'Expected 新建 SSH 主机 label, got ' + JSON.stringify(paletteAudit));
+    assert.equal(paletteAudit.hasKbdBadge, true, 'Expected shortcut badge (.spotlight-kbd) in Command Palette');
     await shot('03-CommandPalette');
-    await click('#commandPalette');
+    await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await until(() => evaluate("!document.querySelector('#commandPalette')"), 'closed command palette');
 
     // Connect to first host & double-click regression guard (must only create 1 tab!)
     await click('.host-row');
@@ -892,14 +923,16 @@ async function verifyFrontendUI() {
         const r = el?.getBoundingClientRect();
         return { sel, text: el?.textContent?.trim() ?? null, w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0 };
       });
+      const statusLeft = document.querySelector('.statusbar-left')?.textContent || '';
       const statusRight = document.querySelector('.statusbar-right')?.textContent || '';
       const legacyOverlay = document.querySelectorAll('.pane-connecting-center, .pane-loading-track').length;
-      return { buttons, statusHasGridSize: /\\d+×\\d+/.test(statusRight), legacyOverlay };
+      return { buttons, statusLeft, statusHasDuration: /\\b\\d{2}:\\d{2}\\b/.test(statusLeft), statusHasGridSize: /\\d+×\\d+/.test(statusRight), legacyOverlay };
     })()`);
     assert.ok(
       chromeAudit.buttons.every(b => b.text === '' && Math.abs(b.w - 28) <= 1 && Math.abs(b.h - 28) <= 1),
       'Expected uniform 28x28 icon-only titlebar buttons, got ' + JSON.stringify(chromeAudit.buttons),
     );
+    assert.equal(chromeAudit.statusHasDuration, false, 'Expected connection duration (00:xx) removed from .statusbar-left, got ' + JSON.stringify(chromeAudit.statusLeft));
     assert.equal(chromeAudit.statusHasGridSize, false, 'Expected statusbar cols×rows readout removed');
     assert.equal(chromeAudit.legacyOverlay, 0, 'Expected legacy connecting overlays removed');
     // Verify ultra-quiet online indicator (no tab green bar / no "在线" pill; single quiet right-edge dot in sidebar)
@@ -913,6 +946,16 @@ async function verifyFrontendUI() {
     assert.ok(barAlign && Math.abs(barAlign.fTop - barAlign.sTop) <= 1 && Math.abs(barAlign.fH - barAlign.sH) <= 1, 'Expected aligned bottom strip, got ' + JSON.stringify(barAlign));
 
     await sleep(900); // let telemetry poll populate
+    // Verify enriched Telemetry Popover renders Swap bar and process count from GetStats/FetchStats
+    await until(() => evaluate("!!document.querySelector('.statusbar-right .telemetry-trigger')"), 'telemetry trigger button');
+    await click('.statusbar-right .telemetry-trigger');
+    await until(() => evaluate("!!document.querySelector('.telemetry-popover')"), 'telemetry popover');
+    const telemetryPopText = await evaluate("document.querySelector('.telemetry-popover')?.textContent || ''");
+    assert.ok(telemetryPopText.includes('142 进程'), 'Expected process count in telemetry popover, got ' + telemetryPopText);
+    assert.ok(telemetryPopText.includes('Swap') && telemetryPopText.includes('0.5 / 2.0 GB (25%)'), 'Expected Swap bar in telemetry popover, got ' + telemetryPopText);
+    await evaluate("document.querySelector('.telemetry-popover')?.previousElementSibling?.click()");
+    await until(() => evaluate("!document.querySelector('.telemetry-popover')"), 'closed telemetry popover');
+
     await click('#sftpBtn');
     await until(() => evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'SFTP drawer files');
     const sftpProCheck = await evaluate(`(() => ({
@@ -1219,7 +1262,7 @@ async function verifyFrontendUI() {
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.fontFamily.includes('SF Mono'))"), 'restored default font via Radix Select');
     await evaluate(`document.querySelector('#settingsDialog .settings-content').scrollTop = 0`);
     await sleep(200);
-    // Verify v1.5.7 Settings: default 13 px font size, concise 隐藏主机 IP label, and 全局配色 3x2 grid
+    // Verify Settings: default 14 px font size, concise 隐藏主机 IP label, and 全局配色 3x2 grid
     const settingsV157 = await evaluate(`(() => {
       const dialogText = document.querySelector('#settingsDialog')?.textContent || '';
       const fontRow = [...document.querySelectorAll('#settingsDialog .pref-row')].find(r => r.querySelector('.pref-row-label')?.textContent?.trim() === '字号');
@@ -1231,7 +1274,7 @@ async function verifyFrontendUI() {
       const legacySuffix = '\\u9690\\u79c1\\u6a21\\u5f0f';
       return { fontText, hideIpLabel, hasDisallowedPrivacyTerm: dialogText.includes(legacySuffix) || sidebarEyeLabel.includes(legacySuffix), sectionTitles, themeTiles };
     })()`);
-    assert.equal(settingsV157.fontText, '13 px', 'Expected default font size 13 px in Settings, got ' + JSON.stringify(settingsV157));
+    assert.equal(settingsV157.fontText, '14 px', 'Expected default font size 14 px in Settings, got ' + JSON.stringify(settingsV157));
     assert.equal(settingsV157.hideIpLabel, '隐藏主机 IP', 'Expected concise 隐藏主机 IP label, got ' + JSON.stringify(settingsV157));
     assert.equal(settingsV157.hasDisallowedPrivacyTerm, false, 'Expected zero disallowed privacy suffix in Settings/Sidebar: ' + JSON.stringify(settingsV157));
     assert.ok(settingsV157.sectionTitles.includes('全局配色'), 'Expected 全局配色 section title, got ' + JSON.stringify(settingsV157.sectionTitles));
@@ -1345,6 +1388,49 @@ async function verifyFrontendUI() {
     await until(() => evaluate("!document.querySelector('.modal-sheet.editor')"), 'closed dark editor');
     await click('#sftpBtn');
     await until(() => evaluate("!document.querySelector('#filesPane')"), 'closed dark SFTP drawer');
+
+    // Verify Dark Mode 2-pane horizontal split: zero broken blue top outline, distinct focused mini-bar, and subtle unfocused dimming
+    await click('button[aria-label="左右分屏"]');
+    await until(() => evaluate("!!document.querySelector('[role=\"dialog\"][aria-label=\"选择分屏主机\"]')"), 'dark split host picker');
+    await click('#commandPalette [data-action-id="host-p3"]');
+    await until(
+      () =>
+        evaluate(
+          "document.querySelectorAll('.pane-box.multi-pane').length === 2 && document.querySelectorAll('.pane-box.multi-pane .xterm-screen').length === 2 && !document.querySelector('.pane-connect-trace') && document.querySelectorAll('.pane-box.multi-pane.focused').length === 1",
+        ),
+      'two connected dark split panes',
+    );
+    await sleep(280);
+    const splitDarkAudit = await evaluate(`(() => {
+      const focused = document.querySelector('.pane-box.multi-pane.focused');
+      const unfocused = document.querySelector('.pane-box.multi-pane:not(.focused)');
+      const fBar = focused?.querySelector('.pane-mini-bar');
+      const uBar = unfocused?.querySelector('.pane-mini-bar');
+      const fHost = focused?.querySelector('.pane-xterm-host');
+      const uHost = unfocused?.querySelector('.pane-xterm-host');
+      return {
+        paneCount: document.querySelectorAll('.pane-box.multi-pane').length,
+        focusedOutlineStyle: focused ? getComputedStyle(focused).outlineStyle : null,
+        focusedBarBg: fBar ? getComputedStyle(fBar).backgroundColor : null,
+        unfocusedBarBg: uBar ? getComputedStyle(uBar).backgroundColor : null,
+        focusedHostOpacity: fHost ? getComputedStyle(fHost).opacity : null,
+        unfocusedHostOpacity: uHost ? parseFloat(getComputedStyle(uHost).opacity) : null,
+      };
+    })()`);
+    assert.equal(splitDarkAudit.paneCount, 2, 'Expected 2 split panes in Dark Mode, got ' + JSON.stringify(splitDarkAudit));
+    assert.equal(splitDarkAudit.focusedOutlineStyle, 'none', 'Expected zero outline on .pane-box.multi-pane.focused, got ' + JSON.stringify(splitDarkAudit));
+    assert.ok(
+      splitDarkAudit.focusedBarBg && splitDarkAudit.unfocusedBarBg && splitDarkAudit.focusedBarBg !== splitDarkAudit.unfocusedBarBg,
+      'Expected focused .pane-mini-bar background to differ cleanly from unfocused .pane-mini-bar, got ' + JSON.stringify(splitDarkAudit),
+    );
+    assert.equal(splitDarkAudit.focusedHostOpacity, '1', 'Expected focused .pane-xterm-host opacity === 1, got ' + JSON.stringify(splitDarkAudit));
+    assert.ok(
+      typeof splitDarkAudit.unfocusedHostOpacity === 'number' && splitDarkAudit.unfocusedHostOpacity < 0.85,
+      'Expected unfocused .pane-xterm-host opacity < 0.85, got ' + JSON.stringify(splitDarkAudit),
+    );
+    await shot('33-Split-Dark');
+    await click('.pane-box.multi-pane.focused .pane-mini-bar button[aria-label="关闭此分屏"]');
+    await until(() => evaluate("document.querySelectorAll('.pane-box').length === 1 && !document.querySelector('.pane-box.multi-pane')"), 'restored single dark pane');
 
     // Verify centered SSH connection progress card (jump hop + elapsed timer + vertical milestone rail)
     await evaluate(`(() => {
@@ -1570,7 +1656,7 @@ async function verifyFrontendUI() {
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 32 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 33 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

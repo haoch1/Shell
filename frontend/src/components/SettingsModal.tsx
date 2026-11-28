@@ -185,6 +185,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [backupErr, setBackupErr] = useState('');
 
   useEffect(() => {
+    if (
+      document.activeElement instanceof HTMLElement &&
+      !document.activeElement.closest('#settingsDialog')
+    ) {
+      document.activeElement.blur();
+    }
+  }, []);
+
+  useEffect(() => {
     const api = getApi();
     void api.AppInfo().then(setAppInfo).catch(() => {});
     void api.DetectSystemProxy?.().then(setSysProxy).catch(() => {});

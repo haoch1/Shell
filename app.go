@@ -635,6 +635,14 @@ func (a *App) challenge(ctx context.Context, id, host, user, instruction string,
 }
 
 func (a *App) confirm(ctx context.Context, id, host, algo, fingerprint string) bool {
+	return a.confirmHostKey(ctx, id, host, algo, fingerprint, "", false)
+}
+
+func (a *App) confirmChanged(ctx context.Context, id, host, algo, newFingerprint, oldFingerprint string) bool {
+	return a.confirmHostKey(ctx, id, host, algo, newFingerprint, oldFingerprint, true)
+}
+
+func (a *App) confirmHostKey(ctx context.Context, id, host, algo, fingerprint, oldFingerprint string, changed bool) bool {
 	ch := make(chan bool, 1)
 	a.mu.Lock()
 	a.verify[id] = ch
@@ -646,12 +654,17 @@ func (a *App) confirm(ctx context.Context, id, host, algo, fingerprint string) b
 		}
 		a.mu.Unlock()
 	}()
-	runtime.EventsEmit(a.ctx, "ssh:verify", map[string]string{
+	payload := map[string]any{
 		"id":          id,
 		"host":        host,
 		"algorithm":   algo,
 		"fingerprint": fingerprint,
-	})
+		"changed":     changed,
+	}
+	if oldFingerprint != "" {
+		payload["previousFingerprint"] = oldFingerprint
+	}
+	runtime.EventsEmit(a.ctx, "ssh:verify", payload)
 	select {
 	case ok := <-ch:
 		return ok
@@ -818,6 +831,9 @@ func (a *App) Connect(id string, p local.Profile, secret string, remember bool, 
 		Verify: func(host, algorithm, fingerprint string) bool {
 			return a.confirm(ctx, id, host, algorithm, fingerprint)
 		},
+		VerifyChanged: func(host, algorithm, newFingerprint, oldFingerprint string) bool {
+			return a.confirmChanged(ctx, id, host, algorithm, newFingerprint, oldFingerprint)
+		},
 		Challenge: func(user, instruction string, questions []string, echo []bool) ([]string, error) {
 			return a.challenge(ctx, id, p.Host, user, instruction, questions, echo)
 		},
@@ -957,6 +973,14 @@ func (a *App) Resize(id string, cols, rows int) error {
 		return err
 	}
 	return s.Resize(cols, rows)
+}
+
+func (a *App) ProbeSession(id string) (int64, error) {
+	s, err := a.get(id)
+	if err != nil {
+		return 0, err
+	}
+	return s.Probe(a.baseContext())
 }
 
 func (a *App) FetchStats(id string) (remote.ServerStats, error) {

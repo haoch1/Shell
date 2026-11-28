@@ -2,6 +2,7 @@ package remote
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -175,6 +176,9 @@ func (s *Session) serveTunnel(t *activeTunnel) {
 			}
 			return
 		}
+		if tcp, ok := inConn.(*net.TCPConn); ok {
+			_ = tcp.SetNoDelay(true)
+		}
 		if !t.track(inConn) {
 			return
 		}
@@ -187,7 +191,9 @@ func (s *Session) serveTunnel(t *activeTunnel) {
 			}()
 			switch t.spec.Mode {
 			case "local":
-				outConn, err := s.client.Dial("tcp", targetAddr)
+				dialCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				outConn, err := s.client.DialContext(dialCtx, "tcp", targetAddr)
+				cancel()
 				if err != nil {
 					t.lastErr.Store(err.Error())
 					return
@@ -303,7 +309,9 @@ func (s *Session) handleSOCKS5(t *activeTunnel, c net.Conn) {
 	}
 	dest := net.JoinHostPort(host, strconv.Itoa(port))
 
-	outConn, err := s.client.Dial("tcp", dest)
+	dialCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	outConn, err := s.client.DialContext(dialCtx, "tcp", dest)
+	cancel()
 	if err != nil {
 		_, _ = c.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return

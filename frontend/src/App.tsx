@@ -76,6 +76,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   showTelemetry: true,
   hideHostIp: false,
   syntaxHighlight: true,
+  autoReconnect: true,
+  confirmMultilinePaste: true,
   groupOrder: [],
   webglEnabled: false,
   defaultKeepAlive: 30,
@@ -190,6 +192,8 @@ export const App: React.FC = () => {
   const settingsRevisionRef = useRef(0);
   const wsMapRef = useRef<Map<string, WebSocket>>(new Map());
   const connectingRef = useRef(new Map<string, { controller: AbortController; requestedProfile: string }>());
+  const reconnectTimersRef = useRef<Map<string, number>>(new Map());
+  const reconnectPaneRef = useRef<(tabId: string, paneId: string, oldSessionId: string, attempt?: number) => void>(() => {});
   const lastSizeRef = useRef<Map<string, string>>(new Map());
   const lastConnectAtRef = useRef<Map<string, number>>(new Map());
   const autoCheckedRef = useRef(false);
@@ -314,6 +318,19 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const cancelAutoReconnect = useCallback((sessionId: string) => {
+    const timer = reconnectTimersRef.current.get(sessionId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      reconnectTimersRef.current.delete(sessionId);
+    }
+    setSessions((prev) => {
+      const cur = prev[sessionId];
+      if (!cur || !cur.reconnectAt) return prev;
+      return { ...prev, [sessionId]: { ...cur, reconnectAt: undefined } };
+    });
+  }, []);
+
   // Start an SSH connection for a newly allocated session ID
   const startSSHConnection = useCallback(
     (sessionId: string, profile: Profile, secret: string, remember: boolean, requestedProfile = '') => {
@@ -322,6 +339,7 @@ export const App: React.FC = () => {
       requestAnimationFrame(async () => {
         const api = getApi();
         const ctrl = terminalBus.get(sessionId);
+        ctrl?.fit();
         const cols = ctrl?.term.cols || 100;
         const rows = ctrl?.term.rows || 32;
 
@@ -345,6 +363,8 @@ export const App: React.FC = () => {
                 ...cur,
                 state: 'connected',
                 hasConnected: true,
+                reconnectAt: undefined,
+                reconnectAttempt: 0,
                 connectSteps: doneSteps,
                 startedAt: Date.now(),
               },
@@ -605,13 +625,55 @@ export const App: React.FC = () => {
         }
         setVerifyQueue((q) => q.filter((r) => r.id !== id));
         setChallengeQueue((q) => q.filter((r) => r.id !== id));
+        const curSnap = sessionsRef.current[id];
+        const cleanMsg = String(message || '连接已关闭').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
+        const isCleanExit = !message || cleanMsg === '连接已关闭' || cleanMsg.includes('exit status 0');
+        const isAuthOrTrustFail = /认证|密码|私钥|指纹|口令|permission denied|unable to authenticate/i.test(cleanMsg);
+        const nextAttempt = (curSnap?.reconnectAttempt ?? 0) + 1;
+        const shouldAutoReconnect = Boolean(
+          curSnap &&
+            curSnap.state !== 'closed' &&
+            curSnap.hasConnected &&
+            settingsRef.current.autoReconnect !== false &&
+            !isCleanExit &&
+            !isAuthOrTrustFail &&
+            nextAttempt <= 3,
+        );
+        const delayMs = nextAttempt === 1 ? 2000 : nextAttempt === 2 ? 4000 : 8000;
+        const reconnectAt = shouldAutoReconnect ? Date.now() + delayMs : undefined;
+
         setSessions((prev) => {
           const cur = prev[id];
           if (!cur || cur.state === 'closed') return prev;
-          return { ...prev, [id]: { ...cur, state: 'closed', endMessage: message || '连接已关闭' } };
+          return {
+            ...prev,
+            [id]: {
+              ...cur,
+              state: 'closed',
+              endMessage: cleanMsg,
+              reconnectAt,
+              reconnectAttempt: shouldAutoReconnect ? nextAttempt : cur.reconnectAttempt,
+            },
+          };
         });
-        const cleanMsg = String(message || '连接已关闭').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
         terminalBus.writeln(id, `\r\n\x1b[90m[${cleanMsg}]\x1b[0m`);
+        if (shouldAutoReconnect) {
+          const existing = reconnectTimersRef.current.get(id);
+          if (existing !== undefined) window.clearTimeout(existing);
+          const timer = window.setTimeout(() => {
+            reconnectTimersRef.current.delete(id);
+            const liveCur = sessionsRef.current[id];
+            if (!liveCur || liveCur.state !== 'closed' || !liveCur.reconnectAt) return;
+            for (const tab of tabsRef.current) {
+              const leaf = collectLeaves(tab.root).find((l) => l.sessionId === id);
+              if (leaf) {
+                reconnectPaneRef.current(tab.id, leaf.paneId, id, nextAttempt);
+                return;
+              }
+            }
+          }, delayMs);
+          reconnectTimersRef.current.set(id, timer);
+        }
       }),
       onDesktopEvent<[string, string, string]>('ssh:status', (id, stage, message) => {
         const validStages: ConnectStage[] = ['jump', 'dial', 'auth', 'shell', 'error'];
@@ -729,6 +791,22 @@ export const App: React.FC = () => {
     ];
     return () => offs.forEach((off) => off());
   }, [connectOrPromptProfile, toast]);
+
+  // Immediately probe live SSH sessions when OS regains network connectivity (e.g. wake from sleep / Wi-Fi switch).
+  useEffect(() => {
+    if (!hasDesktopBridge()) return;
+    const onOnline = () => {
+      const api = getApi();
+      if (typeof api.ProbeSession !== 'function') return;
+      for (const sess of Object.values(sessionsRef.current)) {
+        if (sess.state === 'connected') {
+          void api.ProbeSession(sess.id).catch(() => {});
+        }
+      }
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, []);
 
   // Active tab & session derivation
   const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
@@ -893,6 +971,11 @@ export const App: React.FC = () => {
   }, []);
 
   const closeSessionBackend = useCallback((sessionId: string) => {
+    const rTimer = reconnectTimersRef.current.get(sessionId);
+    if (rTimer !== undefined) {
+      window.clearTimeout(rTimer);
+      reconnectTimersRef.current.delete(sessionId);
+    }
     const attempt = connectingRef.current.get(sessionId);
     attempt?.controller.abort();
     if (attempt?.requestedProfile) void getApi().CancelVisibleConnect(attempt.requestedProfile).catch(() => {});
@@ -1063,13 +1146,16 @@ export const App: React.FC = () => {
   }, []);
 
   const handleReconnectPane = useCallback(
-    (tabId: string, paneId: string, oldSessionId: string) => {
+    (tabId: string, paneId: string, oldSessionId: string, attemptCount = 0) => {
       const old = sessionsRef.current[oldSessionId];
       if (!old) return;
-      const latestProfile = profiles.find((p) => p.id === old.profile.id) ?? old.profile;
+      const latestProfile = profilesRef.current.find((p) => p.id === old.profile.id) ?? old.profile;
       const secret = reconnectSecret(old, latestProfile);
       if (secret === null) {
-        setHostModal({ open: true, profile: latestProfile });
+        cancelAutoReconnect(oldSessionId);
+        if (attemptCount === 0) {
+          setHostModal({ open: true, profile: latestProfile });
+        }
         return;
       }
       const remember = Boolean(latestProfile.remembered);
@@ -1085,7 +1171,14 @@ export const App: React.FC = () => {
         rows: old.rows,
         endMessage: undefined,
         hasConnected: false,
-        connectSteps: [{ stage: 'dial', text: '正在重新连接...', status: 'active' }],
+        reconnectAttempt: attemptCount,
+        connectSteps: [
+          {
+            stage: 'dial',
+            text: attemptCount > 0 ? `正在自动重连 (${attemptCount}/3)...` : '正在重新连接...',
+            status: 'active',
+          },
+        ],
         secret,
         remember,
       };
@@ -1095,8 +1188,9 @@ export const App: React.FC = () => {
       );
       startSSHConnection(newSessionId, latestProfile, secret, remember);
     },
-    [closeSessionBackend, profiles, setHostModal, startSSHConnection],
+    [cancelAutoReconnect, closeSessionBackend, setHostModal, startSSHConnection],
   );
+  reconnectPaneRef.current = handleReconnectPane;
 
   const sendCommandToActive = useCallback(
     (cmd: string, execute: boolean) => {
@@ -1408,6 +1502,7 @@ export const App: React.FC = () => {
                   onPaneResize={handlePaneResize}
                   onPaneCwdChange={handlePaneCwdChange}
                   onReconnectPane={handleReconnectPane}
+                  onCancelAutoReconnect={cancelAutoReconnect}
                   onEditProfile={(profile) => {
                     const latest = profilesRef.current.find((p) => p.id === profile.id) ?? profile;
                     setHostModal({ open: true, profile: latest });

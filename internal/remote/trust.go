@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +37,23 @@ func invalidatePinCache(path string) {
 	pinCacheMu.Unlock()
 }
 
-func hostVerifier(life context.Context, verify func(string, string, string) bool) (ssh.HostKeyCallback, error) {
+type hostKeyMismatchError struct {
+	OldFingerprint string
+	Path           string
+	Cause          error
+}
+
+func (e *hostKeyMismatchError) Error() string {
+	return fmt.Sprintf("主机指纹已变更或已撤销，连接已停止。请核实服务器身份后检查 %s：%v", e.Path, e.Cause)
+}
+
+func (e *hostKeyMismatchError) Unwrap() error { return e.Cause }
+
+func hostVerifier(
+	life context.Context,
+	verify func(string, string, string) bool,
+	verifyChanged func(address, algorithm, newFingerprint, oldFingerprint string) bool,
+) (ssh.HostKeyCallback, error) {
 	dir, err := os.UserCacheDir() // %LOCALAPPDATA% on Windows.
 	if err != nil {
 		return nil, err
@@ -44,9 +62,29 @@ func hostVerifier(life context.Context, verify func(string, string, string) bool
 	return func(host string, peer net.Addr, key ssh.PublicKey) error {
 		ctx, cancel := context.WithTimeout(life, 60*time.Second)
 		defer cancel()
-		trusted, err := verifyPin(ctx, path, host, peer, key, false)
-		if err != nil || trusted {
+		trusted, err := verifyPin(ctx, path, host, peer, key, false, false)
+		if err != nil {
+			var mismatch *hostKeyMismatchError
+			if errors.As(err, &mismatch) && verifyChanged != nil {
+				choice := make(chan bool, 1)
+				go func() {
+					choice <- verifyChanged(host, key.Type(), ssh.FingerprintSHA256(key), mismatch.OldFingerprint)
+				}()
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case accept := <-choice:
+					if !accept {
+						return errors.New("已拒绝变更后的主机指纹")
+					}
+				}
+				_, repErr := verifyPin(ctx, path, host, peer, key, true, true)
+				return repErr
+			}
 			return err
+		}
+		if trusted {
+			return nil
 		}
 		if verify == nil {
 			return errors.New("首次连接需要确认主机指纹")
@@ -63,7 +101,7 @@ func hostVerifier(life context.Context, verify func(string, string, string) bool
 			}
 		}
 		// A concurrent connection may have accepted a different key while the dialog was open.
-		_, err = verifyPin(ctx, path, host, peer, key, true)
+		_, err = verifyPin(ctx, path, host, peer, key, true, false)
 		return err
 	}, nil
 }
@@ -119,7 +157,32 @@ func verifyPinFast(path, host string, peer net.Addr, key ssh.PublicKey) (trusted
 	return false, false, nil
 }
 
-func verifyPin(ctx context.Context, path, host string, peer net.Addr, key ssh.PublicKey, accept bool) (bool, error) {
+func stripHostFromKnownHosts(raw []byte, targetHost string, removeLines map[int]bool) []byte {
+	normalizedTarget := knownhosts.Normalize(targetHost)
+	var out bytes.Buffer
+	sc := bufio.NewScanner(bytes.NewReader(raw))
+	sc.Buffer(make([]byte, 0, 64<<10), 2<<20)
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		line := sc.Text()
+		if removeLines[lineNo] {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "@") {
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 3 && fields[0] == normalizedTarget {
+				continue
+			}
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return out.Bytes()
+}
+
+func verifyPin(ctx context.Context, path, host string, peer net.Addr, key ssh.PublicKey, accept, replaceMismatch bool) (bool, error) {
 	if !accept {
 		if trusted, decided, err := verifyPinFast(path, host, peer, key); decided {
 			return trusted, err
@@ -165,8 +228,24 @@ func verifyPin(ctx context.Context, path, host string, peer net.Addr, key ssh.Pu
 		return true, nil
 	}
 	var missing *knownhosts.KeyError
-	if !errors.As(err, &missing) || len(missing.Want) != 0 {
+	isKeyErr := errors.As(err, &missing)
+	if !isKeyErr {
 		return false, fmt.Errorf("主机指纹已变更或已撤销，连接已停止。请核实服务器身份后检查 %s：%w", path, err)
+	}
+	removeLines := make(map[int]bool)
+	if len(missing.Want) != 0 {
+		oldFP := ""
+		for _, w := range missing.Want {
+			if w.Line > 0 {
+				removeLines[w.Line] = true
+			}
+			if oldFP == "" && w.Key != nil {
+				oldFP = ssh.FingerprintSHA256(w.Key)
+			}
+		}
+		if !replaceMismatch {
+			return false, &hostKeyMismatchError{OldFingerprint: oldFP, Path: path, Cause: err}
+		}
 	}
 	if !accept {
 		return false, nil
@@ -174,6 +253,9 @@ func verifyPin(ctx context.Context, path, host string, peer net.Addr, key ssh.Pu
 	previous, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
+	}
+	if replaceMismatch {
+		previous = stripHostFromKnownHosts(previous, host, removeLines)
 	}
 	if len(previous) > 0 && !bytes.HasSuffix(previous, []byte("\n")) {
 		previous = append(previous, '\n')

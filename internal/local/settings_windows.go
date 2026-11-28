@@ -31,40 +31,44 @@ type AppSettings struct {
 	ProxyPort        int      `json:"proxyPort,omitempty"`
 	ProxyUser        string   `json:"proxyUser,omitempty"`
 	ConfirmOnClose   bool     `json:"confirmOnClose"`
-	CloseToTray      bool     `json:"closeToTray"`
-	AutoCheckUpdate  bool     `json:"autoCheckUpdate"`
-	HideHostIP       bool     `json:"hideHostIp,omitempty"`
-	GroupOrder       []string `json:"groupOrder,omitempty"`
-	SyntaxHighlight  *bool    `json:"syntaxHighlight,omitempty"`
-	WindowWidth      int      `json:"windowWidth,omitempty"`
-	WindowHeight     int      `json:"windowHeight,omitempty"`
-	WindowMaximised  bool     `json:"windowMaximised,omitempty"`
+	CloseToTray           bool     `json:"closeToTray"`
+	AutoCheckUpdate       bool     `json:"autoCheckUpdate"`
+	HideHostIP            bool     `json:"hideHostIp,omitempty"`
+	GroupOrder            []string `json:"groupOrder,omitempty"`
+	SyntaxHighlight       *bool    `json:"syntaxHighlight,omitempty"`
+	AutoReconnect         *bool    `json:"autoReconnect,omitempty"`
+	ConfirmMultilinePaste *bool    `json:"confirmMultilinePaste,omitempty"`
+	WindowWidth           int      `json:"windowWidth,omitempty"`
+	WindowHeight          int      `json:"windowHeight,omitempty"`
+	WindowMaximised       bool     `json:"windowMaximised,omitempty"`
 }
 
 func DefaultSettings() AppSettings {
 	return AppSettings{
-		Theme:            "light",
-		TerminalTheme:    "auto",
-		FontFamily:       `"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace`,
-		FontSize:         13,
-		LineHeight:       1.28,
-		CursorStyle:      "bar",
-		CursorBlink:      true,
-		Scrollback:       10000,
-		CopyOnSelect:     false,
-		RightClickPaste:  false,
-		ShowTelemetry:    true,
-		WebGLEnabled:     false,
-		DefaultKeepAlive: 30,
-		ProxyMode:        "direct",
-		ConfirmOnClose:   true,
-		CloseToTray:      true,
-		AutoCheckUpdate:  true,
-		HideHostIP:       false,
-		SyntaxHighlight:  boolPtr(true),
-		WindowWidth:      1280,
-		WindowHeight:     820,
-		WindowMaximised:  false,
+		Theme:                 "light",
+		TerminalTheme:         "auto",
+		FontFamily:            `"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace`,
+		FontSize:              13,
+		LineHeight:            1.28,
+		CursorStyle:           "bar",
+		CursorBlink:           true,
+		Scrollback:            10000,
+		CopyOnSelect:          false,
+		RightClickPaste:       false,
+		ShowTelemetry:         true,
+		WebGLEnabled:          false,
+		DefaultKeepAlive:      30,
+		ProxyMode:             "direct",
+		ConfirmOnClose:        true,
+		CloseToTray:           true,
+		AutoCheckUpdate:       true,
+		HideHostIP:            false,
+		SyntaxHighlight:       boolPtr(true),
+		AutoReconnect:         boolPtr(true),
+		ConfirmMultilinePaste: boolPtr(true),
+		WindowWidth:           1280,
+		WindowHeight:          820,
+		WindowMaximised:       false,
 	}
 }
 
@@ -74,6 +78,12 @@ func cloneSettings(s AppSettings) AppSettings {
 	}
 	if s.SyntaxHighlight != nil {
 		s.SyntaxHighlight = boolPtr(*s.SyntaxHighlight)
+	}
+	if s.AutoReconnect != nil {
+		s.AutoReconnect = boolPtr(*s.AutoReconnect)
+	}
+	if s.ConfirmMultilinePaste != nil {
+		s.ConfirmMultilinePaste = boolPtr(*s.ConfirmMultilinePaste)
 	}
 	return s
 }
@@ -127,6 +137,16 @@ func normalizeSettings(s AppSettings) AppSettings {
 		s.SyntaxHighlight = boolPtr(true)
 	} else {
 		s.SyntaxHighlight = boolPtr(*s.SyntaxHighlight)
+	}
+	if s.AutoReconnect == nil {
+		s.AutoReconnect = boolPtr(true)
+	} else {
+		s.AutoReconnect = boolPtr(*s.AutoReconnect)
+	}
+	if s.ConfirmMultilinePaste == nil {
+		s.ConfirmMultilinePaste = boolPtr(true)
+	} else {
+		s.ConfirmMultilinePaste = boolPtr(*s.ConfirmMultilinePaste)
 	}
 	if len(s.GroupOrder) > 0 {
 		seen := make(map[string]struct{}, len(s.GroupOrder))

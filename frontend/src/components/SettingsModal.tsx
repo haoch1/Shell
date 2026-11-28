@@ -591,7 +591,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <span style={{ fontSize: 9, opacity: 0.72 }}>浅色</span>
                               </span>
                               <span className="theme-swatch-half dark">
-                                <span style={{ color: '#3FB950' }}>&gt;_</span>
+                                <span style={{ color: '#4ADE80' }}>&gt;_</span>
                                 <span style={{ fontSize: 9, opacity: 0.78 }}>深色</span>
                               </span>
                             </div>
@@ -767,6 +767,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         />
                         <span style={{ fontSize: 12, color: 'var(--ink-tertiary)', width: 16 }}>行</span>
                       </div>
+                    </div>
+                    <div className="pref-row">
+                      <span className="pref-row-label">网络波动断线后自动重连</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={settings.autoReconnect !== false}
+                        className="apple-switch accent"
+                        onClick={() => patch({ autoReconnect: settings.autoReconnect === false })}
+                      />
+                    </div>
+                    <div className="pref-row">
+                      <span className="pref-row-label">终端多行粘贴确认</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={settings.confirmMultilinePaste !== false}
+                        className="apple-switch accent"
+                        onClick={() => patch({ confirmMultilinePaste: settings.confirmMultilinePaste === false })}
+                      />
                     </div>
                   </div>
                 </div>

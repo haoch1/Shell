@@ -17,6 +17,7 @@ interface SplitWorkspaceProps {
   onPaneResize: (sessionId: string, cols: number, rows: number) => void;
   onPaneCwdChange: (sessionId: string, dir: string) => void;
   onReconnectPane: (tabId: string, paneId: string, sessionId: string) => void;
+  onCancelAutoReconnect?: (sessionId: string) => void;
   onEditProfile?: (profile: Profile) => void;
   onClosePane: (tabId: string, paneId: string) => void;
   onDetachPane: (tabId: string, paneId: string) => void;
@@ -70,6 +71,7 @@ export const SplitWorkspace: React.FC<SplitWorkspaceProps> = (props) => {
               onResize={(c, r) => props.onPaneResize(session.id, c, r)}
               onCwdChange={dir => props.onPaneCwdChange(session.id, dir)}
               onReconnect={() => props.onReconnectPane(tab.id, leaf.paneId, session.id)}
+              onCancelAutoReconnect={props.onCancelAutoReconnect ? () => props.onCancelAutoReconnect?.(session.id) : undefined}
               onEditProfile={props.onEditProfile ? () => props.onEditProfile?.(session.profile) : undefined}
               onClosePane={() => props.onClosePane(tab.id, leaf.paneId)}
               onDetachPane={() => props.onDetachPane(tab.id, leaf.paneId)}

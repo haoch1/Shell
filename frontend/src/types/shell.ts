@@ -198,6 +198,8 @@ export interface AppSettings {
   hideHostIp?: boolean;
   groupOrder?: string[];
   syntaxHighlight?: boolean;
+  autoReconnect?: boolean;
+  confirmMultilinePaste?: boolean;
 }
 
 export interface KnownHostEntry {
@@ -390,6 +392,8 @@ export interface HostVerifyRequest {
   host: string;
   algorithm: string;
   fingerprint: string;
+  changed?: boolean;
+  previousFingerprint?: string;
 }
 
 export interface ChallengeRequest {
@@ -425,6 +429,8 @@ export interface SessionRecord {
   connectSteps?: ConnectStep[];
   secret?: string;
   remember?: boolean;
+  reconnectAt?: number;
+  reconnectAttempt?: number;
 }
 
 export type SplitNode =

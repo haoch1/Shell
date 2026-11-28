@@ -44,12 +44,13 @@ type Config struct {
 }
 
 type Callbacks struct {
-	Verify    func(address, algorithm, fingerprint string) bool
-	Challenge func(user, instruction string, questions []string, echo []bool) ([]string, error)
-	Output    func([]byte)
-	End       func(error)
-	Latency   func(ms int64)
-	Status    func(stage, message string)
+	Verify        func(address, algorithm, fingerprint string) bool
+	VerifyChanged func(address, algorithm, newFingerprint, oldFingerprint string) bool
+	Challenge     func(user, instruction string, questions []string, echo []bool) ([]string, error)
+	Output        func([]byte)
+	End           func(error)
+	Latency       func(ms int64)
+	Status        func(stage, message string)
 	// OnReady fires immediately after SSH authentication (before interactive PTY setup finishes)
 	// so callers can run multiplexed Exec/SFTP/Tunnels or reuse the transport without waiting for PTY.
 	OnReady func(*Session)
@@ -340,12 +341,12 @@ func authMode(cfg Config) string {
 	return auth
 }
 
-func authMethod(ctx context.Context, cfg Config) (ssh.AuthMethod, func(), error) {
+func authMethod(ctx context.Context, cfg Config, ask ssh.KeyboardInteractiveChallenge) (ssh.AuthMethod, func(), error) {
 	switch authMode(cfg) {
 	case "password":
 		return ssh.Password(cfg.Password), func() {}, nil
 	case "key", "privatekey", "private-key":
-		signer, err := readKey(cfg.KeyPath, cfg.Passphrase)
+		signer, err := readKeyInteractive(ctx, cfg.Host, cfg.User, cfg.KeyPath, cfg.Passphrase, ask)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -360,15 +361,45 @@ func authMethod(ctx context.Context, cfg Config) (ssh.AuthMethod, func(), error)
 func loginMethods(ctx context.Context, cfg Config, ask ssh.KeyboardInteractiveChallenge) ([]ssh.AuthMethod, func(), error) {
 	var methods []ssh.AuthMethod
 	release := func() {}
-	if ask == nil || cfg.Password != "" || authMode(cfg) != "password" {
-		method, closeAuth, err := authMethod(ctx, cfg)
+	mode := authMode(cfg)
+	if ask == nil || cfg.Password != "" || mode != "password" {
+		method, closeAuth, err := authMethod(ctx, cfg, ask)
 		if err != nil {
 			return nil, nil, err
 		}
 		methods, release = append(methods, method), closeAuth
 	}
 	if ask != nil {
+		var promptMu sync.Mutex
+		var promptedPass string
+		var hasPromptedPass bool
 		var autoUsed atomic.Bool
+
+		// Support password-only servers (without keyboard-interactive PAM) when the user left password blank.
+		if mode == "password" && cfg.Password == "" {
+			methods = append(methods, ssh.PasswordCallback(func() (string, error) {
+				if err := ctx.Err(); err != nil {
+					return "", err
+				}
+				promptMu.Lock()
+				if hasPromptedPass {
+					p := promptedPass
+					promptMu.Unlock()
+					return p, nil
+				}
+				promptMu.Unlock()
+				answers, err := askWithContext(ctx, ask, cfg.User, "服务器需要密码认证", []string{"SSH 密码"}, []bool{false})
+				if err != nil {
+					return "", err
+				}
+				promptMu.Lock()
+				promptedPass = answers[0]
+				hasPromptedPass = true
+				promptMu.Unlock()
+				return answers[0], nil
+			}))
+		}
+
 		methods = append(methods, ssh.KeyboardInteractive(func(name, text string, questions []string, echo []bool) ([]string, error) {
 			if len(questions) != len(echo) || len(questions) > 64 {
 				return nil, errors.New("服务器返回了无效的交互认证问题")
@@ -379,39 +410,60 @@ func loginMethods(ctx context.Context, cfg Config, ask ssh.KeyboardInteractiveCh
 			// Auto-satisfy single non-echo PAM password prompt once when the user already supplied a password.
 			if cfg.Password != "" && len(questions) == 1 && !echo[0] && !autoUsed.Load() {
 				qLower := strings.ToLower(questions[0])
-				if strings.Contains(qLower, "pass") && !strings.Contains(qLower, "code") && !strings.Contains(qLower, "otp") && !strings.Contains(qLower, "token") {
+				isPassPrompt := strings.Contains(qLower, "pass") || strings.Contains(questions[0], "密码") || strings.Contains(questions[0], "口令")
+				isOTP := strings.Contains(qLower, "code") || strings.Contains(qLower, "otp") || strings.Contains(qLower, "token") || strings.Contains(questions[0], "验证")
+				if isPassPrompt && !isOTP {
 					autoUsed.Store(true)
 					return []string{cfg.Password}, nil
 				}
 			}
-			type reply struct {
-				answers []string
-				err     error
-			}
-			choice := make(chan reply, 1)
-			go func() {
-				answers, err := ask(name, text, questions, echo)
-				choice <- reply{answers, err}
-			}()
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case answer := <-choice:
-				if answer.err != nil {
-					return nil, answer.err
-				}
-				if len(answer.answers) != len(questions) {
-					return nil, errors.New("交互认证答复数量与问题不符")
-				}
-				return answer.answers, nil
-			}
+			return askWithContext(ctx, ask, name, text, questions, echo)
 		}))
 	}
 	return methods, release, nil
 }
 
+func askWithContext(ctx context.Context, ask ssh.KeyboardInteractiveChallenge, name, text string, questions []string, echo []bool) ([]string, error) {
+	type reply struct {
+		answers []string
+		err     error
+	}
+	choice := make(chan reply, 1)
+	go func() {
+		answers, err := ask(name, text, questions, echo)
+		choice <- reply{answers, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case answer := <-choice:
+		if answer.err != nil {
+			return nil, answer.err
+		}
+		if len(answer.answers) != len(questions) {
+			return nil, errors.New("交互认证答复数量与问题不符")
+		}
+		return answer.answers, nil
+	}
+}
+
+func expandKeyPath(path string) string {
+	path = strings.TrimSpace(path)
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return home + path[1:]
+		}
+	}
+	return path
+}
+
 func readKey(path, passphrase string) (ssh.Signer, error) {
-	file, err := os.Open(path)
+	return readKeyInteractive(context.Background(), "", "", path, passphrase, nil)
+}
+
+func readKeyInteractive(ctx context.Context, host, user, path, passphrase string, ask ssh.KeyboardInteractiveChallenge) (ssh.Signer, error) {
+	expanded := expandKeyPath(path)
+	file, err := os.Open(expanded)
 	if err != nil {
 		return nil, fmt.Errorf("打开 SSH 私钥失败：%w", err)
 	}
@@ -425,24 +477,43 @@ func readKey(path, passphrase string) (ssh.Signer, error) {
 	if len(data) > limit {
 		return nil, errors.New("SSH 私钥超过 4 MiB")
 	}
-	signer, err := ssh.ParsePrivateKey(data)
+	// Strip UTF-8 BOM if the PEM file was edited on Windows.
+	keyBytes := bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	signer, err := ssh.ParsePrivateKey(keyBytes)
 	var locked *ssh.PassphraseMissingError
 	if errors.As(err, &locked) {
+		if passphrase == "" && ask != nil {
+			answers, askErr := askWithContext(ctx, ask, user, fmt.Sprintf("私钥 %s 已加密，请输入解锁口令", expanded), []string{"私钥口令"}, []bool{false})
+			if askErr != nil {
+				return nil, askErr
+			}
+			passphrase = answers[0]
+		}
 		if passphrase == "" {
 			return nil, errors.New("此私钥需要口令")
 		}
 		secret := []byte(passphrase)
-		signer, err = ssh.ParsePrivateKeyWithPassphrase(data, secret)
+		signer, err = ssh.ParsePrivateKeyWithPassphrase(keyBytes, secret)
 		clear(secret)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("读取 SSH 私钥失败，请检查格式和口令：%w", err)
 	}
+	// OpenSSH certificate auto-discovery: if `<keyPath>-cert.pub` exists alongside the key, present the cert.
+	if certRaw, cErr := os.ReadFile(expanded + "-cert.pub"); cErr == nil && len(certRaw) > 0 && len(certRaw) <= 1<<20 {
+		if pub, _, _, _, pErr := ssh.ParseAuthorizedKey(certRaw); pErr == nil {
+			if cert, ok := pub.(*ssh.Certificate); ok {
+				if certSigner, csErr := ssh.NewCertSigner(cert, signer); csErr == nil {
+					return certSigner, nil
+				}
+			}
+		}
+	}
 	return signer, nil
 }
 
-// preferredSSHConfig prioritizes fast hardware-accelerated AEAD ciphers and modern KEX
-// while retaining full fallback compatibility with older OpenSSH servers.
+// preferredSSHConfig prioritizes fast hardware-accelerated AEAD ciphers, modern KEX, and EtM MACs
+// while retaining full fallback compatibility with older CentOS/OpenWRT/network devices.
 func preferredSSHConfig() ssh.Config {
 	return ssh.Config{
 		Ciphers: []string{
@@ -465,8 +536,37 @@ func preferredSSHConfig() ssh.Config {
 			ssh.KeyExchangeDHGEXSHA256,
 			ssh.InsecureKeyExchangeDH14SHA1,
 		},
+		MACs: []string{
+			ssh.HMACSHA256ETM,
+			ssh.HMACSHA512ETM,
+			ssh.HMACSHA256,
+			ssh.HMACSHA512,
+			ssh.HMACSHA1,
+		},
 	}
 }
+
+var preferredHostKeyAlgos = []string{
+	ssh.CertAlgoED25519v01,
+	ssh.KeyAlgoED25519,
+	ssh.CertAlgoECDSA256v01,
+	ssh.KeyAlgoECDSA256,
+	ssh.CertAlgoECDSA384v01,
+	ssh.KeyAlgoECDSA384,
+	ssh.CertAlgoECDSA521v01,
+	ssh.KeyAlgoECDSA521,
+	ssh.CertAlgoRSASHA512v01,
+	ssh.KeyAlgoRSASHA512,
+	ssh.CertAlgoRSASHA256v01,
+	ssh.KeyAlgoRSASHA256,
+	ssh.CertAlgoRSAv01,
+	ssh.KeyAlgoRSA,
+}
+
+const (
+	// RFC 4254 / OpenSSH IUTF8 mode (opcode 42): ensures Backspace erases full UTF-8/CJK codepoints.
+	ttyModeIUTF8 = 42
+)
 
 func isOpenChannelError(err error) bool {
 	var openErr *ssh.OpenChannelError
@@ -545,7 +645,7 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 		return nil, nil, nil, nil, err
 	}
 	defer release()
-	callback, err := hostVerifier(setup, cb.Verify)
+	callback, err := hostVerifier(setup, cb.Verify, cb.VerifyChanged)
 	if err != nil {
 		cleanupAll()
 		return nil, nil, nil, nil, err
@@ -610,11 +710,13 @@ func dialSSHClient(lifeCtx, setup context.Context, cfg Config, cb Callbacks, par
 
 	cb.emitStatus("auth", "正在校验主机指纹与身份认证...")
 	transport, channels, requests, err := ssh.NewClientConn(raw, address, &ssh.ClientConfig{
-		Config:          preferredSSHConfig(),
-		User:            user,
-		Auth:            methods,
-		HostKeyCallback: callback,
-		Timeout:         20 * time.Second,
+		Config:            preferredSSHConfig(),
+		ClientVersion:     "SSH-2.0-Shell_1.5",
+		User:              user,
+		Auth:              methods,
+		HostKeyCallback:   callback,
+		HostKeyAlgorithms: preferredHostKeyAlgos,
+		Timeout:           20 * time.Second,
 	})
 	if !stopDial() {
 		if err == nil {
@@ -766,8 +868,9 @@ func Connect(ctx context.Context, cfg Config, cb Callbacks) (*Session, error) {
 
 	if err := pty.RequestPty("xterm-256color", cfg.Rows, cfg.Cols, ssh.TerminalModes{
 		ssh.ECHO:          1,
-		ssh.TTY_OP_ISPEED: 38400,
-		ssh.TTY_OP_OSPEED: 38400,
+		ttyModeIUTF8:      1,
+		ssh.TTY_OP_ISPEED: 115200,
+		ssh.TTY_OP_OSPEED: 115200,
 	}); err != nil {
 		if agentCleanup != nil {
 			agentCleanup()
@@ -889,6 +992,10 @@ func runClientKeepAlive(ctx context.Context, client *ssh.Client, interval time.D
 					}
 				}
 				if err != nil {
+					if isFatalTransportErr(err) {
+						onDead()
+						return
+					}
 					missed++
 					if missed >= 3 {
 						onDead()
@@ -921,6 +1028,54 @@ func (s *Session) Client() *ssh.Client {
 		return nil
 	}
 	return s.client
+}
+
+func isFatalTransportErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "forcibly closed") ||
+		strings.Contains(msg, "wsarecv") ||
+		strings.Contains(msg, "wsasend")
+}
+
+// Probe performs an immediate SSH keepalive RTT check and closes the session if transport is dead.
+func (s *Session) Probe(ctx context.Context) (int64, error) {
+	if s == nil || s.closed.Load() || s.client == nil {
+		return 0, net.ErrClosed
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := s.client.SendRequest("keepalive@openssh.com", true, nil)
+		done <- err
+	}()
+	select {
+	case <-probeCtx.Done():
+		return 0, probeCtx.Err()
+	case err := <-done:
+		if err != nil {
+			if isFatalTransportErr(err) {
+				s.Close()
+			}
+			return 0, err
+		}
+		ms := time.Since(start).Milliseconds()
+		if ms < 1 {
+			ms = 1
+		}
+		s.latencyMs.Store(ms)
+		return ms, nil
+	}
 }
 
 // IsClosed reports whether the session has been closed.

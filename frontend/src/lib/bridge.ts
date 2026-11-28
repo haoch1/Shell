@@ -59,6 +59,7 @@ interface GoAppBindings {
   Disconnect(id: string): Promise<void>;
   Input(id: string, b64: string): Promise<void>;
   Resize(id: string, cols: number, rows: number): Promise<void>;
+  ProbeSession?(id: string): Promise<number>;
   ConfirmHost(id: string, accept: boolean): Promise<void>;
   AnswerChallenge(id: string, answers: string[], accept: boolean): Promise<void>;
   FetchStats(id: string): Promise<ServerStats>;

@@ -109,6 +109,7 @@ interface TerminalPaneProps {
   onResize: (cols: number, rows: number) => void;
   onCwdChange?: (dir: string) => void;
   onReconnect: () => void;
+  onCancelAutoReconnect?: () => void;
   onEditProfile?: () => void;
   onClosePane: () => void;
   onDetachPane?: () => void;
@@ -134,6 +135,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   onResize,
   onCwdChange,
   onReconnect,
+  onCancelAutoReconnect,
   onEditProfile,
   onClosePane,
   onDetachPane,
@@ -166,6 +168,25 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
   const [connectElapsedMs, setConnectElapsedMs] = useState(0);
   const [copiedErr, setCopiedErr] = useState(false);
+  const [pendingPaste, setPendingPaste] = useState<string | null>(null);
+  const [reconnectLeftSec, setReconnectLeftSec] = useState(0);
+
+  const isMultilinePaste = (text: string) => {
+    if (!text) return false;
+    const stripped = text.replace(/\r?\n$/, '');
+    return /[\r\n]/.test(stripped);
+  };
+
+  const requestPaste = (text: string) => {
+    if (!text) return;
+    if (settingsRef.current.confirmMultilinePaste !== false && isMultilinePaste(text)) {
+      setPendingPaste(text);
+      return;
+    }
+    terminalBus.get(session.id)?.term.paste(text);
+  };
+  const requestPasteRef = useRef(requestPaste);
+  requestPasteRef.current = requestPaste;
 
   const isAppDark =
     settings.theme === 'dark' ||
@@ -188,6 +209,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       cursorBlink: settingsRef.current.cursorBlink,
       scrollback: settingsRef.current.scrollback,
       theme: getTerminalTheme(settingsRef.current.terminalTheme, initDark).theme,
+      minimumContrastRatio: 4.5,
       allowProposedApi: true,
       macOptionIsMeta: true,
     });
@@ -204,6 +226,17 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     term.unicode.activeVersion = '11';
 
     term.open(container);
+
+    const onCapturePaste = (ev: ClipboardEvent) => {
+      if (stateRef.current !== 'connected' || settingsRef.current.confirmMultilinePaste === false) return;
+      const text = ev.clipboardData?.getData('text') ?? '';
+      if (text && /[\r\n]/.test(text.replace(/\r?\n$/, ''))) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        requestPasteRef.current(text);
+      }
+    };
+    container.addEventListener('paste', onCapturePaste, true);
 
     let webgl: WebglAddon | null = null;
     if (settingsRef.current.webglEnabled) {
@@ -288,7 +321,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyV') {
         e.preventDefault();
         void readFromClipboard().then((t) => {
-          if (t) term.paste(t);
+          if (t) requestPasteRef.current(t);
         });
         return false;
       }
@@ -371,6 +404,8 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       clear: () => term.clear(),
     });
 
+    // Fit synchronously if layout is already painted so initial SSH RequestPty receives exact viewport geometry.
+    doFit();
     const initialFrame = requestAnimationFrame(() => {
       doFit();
       resizeRef.current(term.cols, term.rows);
@@ -379,6 +414,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
 
     return () => {
       cancelAnimationFrame(initialFrame);
+      container.removeEventListener('paste', onCapturePaste, true);
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       observer.disconnect();
       dataDisp.dispose();
@@ -423,6 +459,20 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     return () => window.clearTimeout(id);
   }, [copiedErr]);
 
+  useEffect(() => {
+    if (!session.reconnectAt || session.state !== 'closed') {
+      setReconnectLeftSec(0);
+      return;
+    }
+    const tick = () => {
+      const left = Math.max(0, Math.ceil(((session.reconnectAt ?? 0) - Date.now()) / 1000));
+      setReconnectLeftSec(left);
+    };
+    tick();
+    const id = window.setInterval(tick, 250);
+    return () => window.clearInterval(id);
+  }, [session.reconnectAt, session.state]);
+
   // Focus xterm crisply right as the connection succeeds while this pane is focused.
   useEffect(() => {
     if (session.state === 'connected' && focused) {
@@ -463,6 +513,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     ctrl.term.options.cursorBlink = settings.cursorBlink;
     ctrl.term.options.scrollback = settings.scrollback;
     ctrl.term.options.theme = getTerminalTheme(settings.terminalTheme, isAppDark).theme;
+    ctrl.term.options.minimumContrastRatio = 4.5;
     requestAnimationFrame(() => ctrl.fit());
   }, [
     session.id,
@@ -489,7 +540,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
         ctrl?.term.clearSelection();
       } else {
         void readFromClipboard().then((t) => {
-          if (t && session.state === 'connected') ctrl?.term.paste(t);
+          if (t && session.state === 'connected') requestPaste(t);
         });
       }
       return;
@@ -562,7 +613,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
 
       <div
         className="pane-xterm-wrap"
-        style={{ background: preset.theme.background ?? '#121316', position: 'relative' }}
+        style={{ background: preset.theme.background ?? '#1B1C20', position: 'relative' }}
       >
         <div ref={hostRef} className={`pane-xterm-host ${showConnectOverlay ? 'is-hidden' : ''}`} />
         {showConnectOverlay && (() => {
@@ -671,17 +722,69 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
 
       {!showConnectOverlay && session.state === 'closed' && (
         <div className="pane-closed-bar">
-          <span>{session.endMessage || '会话已断开'}</span>
+          <span>
+            {session.reconnectAt && reconnectLeftSec > 0
+              ? `${session.endMessage || '连接中断'} · ${reconnectLeftSec}s 后自动重连 (${session.reconnectAttempt ?? 1}/3)`
+              : session.endMessage || '会话已断开'}
+          </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-            {onEditProfile && session.profile.id && (
+            {session.reconnectAt && onCancelAutoReconnect && (
+              <button type="button" className="btn btn-sm" onClick={onCancelAutoReconnect}>
+                取消自动重连
+              </button>
+            )}
+            {!session.reconnectAt && onEditProfile && session.profile.id && (
               <button type="button" className="btn btn-sm" onClick={onEditProfile}>
                 编辑配置
               </button>
             )}
             <button type="button" className="btn btn-primary btn-sm" onClick={onReconnect}>
-              重新连接
+              {session.reconnectAt ? '立即重连' : '重新连接'}
             </button>
           </div>
+        </div>
+      )}
+
+      {pendingPaste !== null && (
+        <div className="modal-backdrop" onClick={() => setPendingPaste(null)}>
+          <form
+            id="multilinePasteDialog"
+            className="modal-sheet"
+            style={{ maxWidth: 460 }}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setPendingPaste(null);
+              }
+            }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const text = pendingPaste;
+              setPendingPaste(null);
+              terminalBus.get(session.id)?.term.paste(text);
+              terminalBus.get(session.id)?.focus();
+            }}
+          >
+            <div className="modal-header">
+              <h2>确认粘贴多行文本 · 共 {pendingPaste.replace(/\r?\n$/, '').split(/\r?\n/).length} 行</h2>
+              <button type="button" className="icon-btn" aria-label="关闭" onClick={() => setPendingPaste(null)}>
+                <X size={15} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="code-block paste-preview-box">{pendingPaste}</div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn" onClick={() => setPendingPaste(null)}>
+                取消
+              </button>
+              <button type="submit" className="btn btn-primary" autoFocus>
+                确认粘贴
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -722,7 +825,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
               disabled={session.state !== 'connected'}
               onClick={() => {
                 void readFromClipboard().then((t) => {
-                  if (t) terminalBus.get(session.id)?.term.paste(t);
+                  if (t) requestPaste(t);
                 });
                 setCtxMenu(null);
               }}

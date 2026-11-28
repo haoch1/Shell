@@ -465,10 +465,9 @@ export function modeToSymbolic(mode: number): string {
 }
 
 export function normalizeRemotePath(input: string): string {
-  const raw = (input || '').trim();
-  if (!raw) return '/';
-  if (raw === '.') return '.';
-  const collapsed = raw.replace(/\/+/g, '/');
+  if (!input) return '/';
+  if (input === '.') return '.';
+  const collapsed = input.replace(/\/+/g, '/');
   if (collapsed.length > 1 && collapsed.endsWith('/')) {
     return collapsed.replace(/\/+$/, '') || '/';
   }
@@ -476,13 +475,12 @@ export function normalizeRemotePath(input: string): string {
 }
 
 export function joinRemotePath(dir: string, name: string): string {
-  const cleanName = (name || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
-  const rawName = (name || '').trim();
-  if (rawName.startsWith('/')) {
-    return normalizeRemotePath(rawName);
+  if (name.startsWith('/')) {
+    return normalizeRemotePath(name);
   }
   const cleanDir = normalizeRemotePath(dir || '.');
-  if (!cleanName) return cleanDir;
+  if (!name) return cleanDir;
+  const cleanName = normalizeRemotePath(name);
   if (cleanDir === '/') return `/${cleanName}`;
   return `${cleanDir}/${cleanName}`;
 }
@@ -503,13 +501,8 @@ export function basenameRemotePath(p: string): string {
 }
 
 export function resolveDestinationPath(entryPath: string, userInput: string): string {
-  const trimmed = userInput.trim();
-  if (!trimmed) return entryPath;
-  if (trimmed.startsWith('/')) {
-    return normalizeRemotePath(trimmed);
-  }
-  const parent = parentRemotePath(entryPath);
-  return joinRemotePath(parent, trimmed);
+  if (!userInput) return entryPath;
+  return joinRemotePath(parentRemotePath(entryPath), userInput);
 }
 
 export function suggestCopyName(

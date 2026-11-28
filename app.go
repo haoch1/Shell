@@ -1485,7 +1485,7 @@ func (a *App) WriteRemoteText(id, remotePath, content string) error {
 	if err != nil {
 		return err
 	}
-	return s.WriteText(remotePath, content)
+	return s.EditText(remotePath, content)
 }
 
 // --- Port Forwarding Tunnels ---

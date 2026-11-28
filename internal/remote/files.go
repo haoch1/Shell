@@ -89,7 +89,6 @@ func (s *Session) RealPath(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir = strings.TrimSpace(dir)
 	if dir == "" || dir == "~" {
 		dir = "."
 	}
@@ -178,17 +177,25 @@ func directoryEntry(fullPath string, item os.FileInfo) Entry {
 }
 
 func (s *Session) ResolveFileLink(fullPath string) (Entry, error) {
+	entry, err := s.StatEntry(fullPath)
+	if err == nil {
+		entry.IsSymlink = true
+	}
+	return entry, err
+}
+
+// StatEntry follows a selected link without reading its target or listing a directory.
+func (s *Session) StatEntry(fullPath string) (Entry, error) {
 	c, err := s.fileClient()
 	if err != nil {
 		return Entry{}, err
 	}
 	target, err := c.Stat(fullPath)
 	if err != nil {
+		s.maybeResetFileClient(c, err)
 		return Entry{}, err
 	}
-	entry := directoryEntry(fullPath, target)
-	entry.IsSymlink = true
-	return entry, nil
+	return directoryEntry(fullPath, target), nil
 }
 
 func checkDestination(_ os.FileInfo, err error) error {
@@ -459,7 +466,6 @@ func (s *Session) Mkdir(remoteDir string) error {
 	if err != nil {
 		return err
 	}
-	remoteDir = strings.TrimSpace(remoteDir)
 	if remoteDir == "" || strings.ContainsRune(remoteDir, 0) {
 		return errors.New("请输入有效的目录路径")
 	}
@@ -471,7 +477,6 @@ func (s *Session) CreateEmptyFile(remotePath string) error {
 	if err != nil {
 		return err
 	}
-	remotePath = strings.TrimSpace(remotePath)
 	if remotePath == "" || strings.HasSuffix(remotePath, "/") || strings.ContainsRune(remotePath, 0) {
 		return errors.New("请输入有效的文件路径")
 	}
@@ -523,8 +528,8 @@ func (s *Session) Delete(targetPath string) error {
 	if err != nil {
 		return err
 	}
-	cleaned := path.Clean(strings.TrimSpace(targetPath))
-	if cleaned == "" || cleaned == "/" || cleaned == "." || cleaned == ".." {
+	cleaned := path.Clean(targetPath)
+	if cleaned == "/" || cleaned == "." || cleaned == ".." || strings.ContainsRune(targetPath, 0) {
 		return errors.New("禁止删除根目录或相对当前目录")
 	}
 	info, err := c.Lstat(cleaned)
@@ -547,7 +552,7 @@ func removeDirRecursive(c *sftp.Client, dir string, depth int) error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == "." || name == ".." {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 			continue
 		}
 		child := path.Join(dir, name)
@@ -603,8 +608,60 @@ func (s *Session) ReadText(remotePath string) (string, error) {
 	return string(data), nil
 }
 
-// WriteText stages the new contents before replacing the remote file.
-func (s *Session) WriteText(remotePath, content string) (err error) {
+// A staged save must publish beside the final target to preserve links opened in the editor.
+func editorTarget(c *sftp.Client, remotePath string, followLinks bool) (string, os.FileMode, error) {
+	if remotePath == "" || strings.HasSuffix(remotePath, "/") || strings.ContainsRune(remotePath, 0) {
+		return "", 0, errors.New("请输入有效的远端文件路径")
+	}
+	var seen map[string]bool
+	for hops := 0; hops <= 40; hops++ {
+		info, err := c.Lstat(remotePath)
+		if hops == 0 && errors.Is(err, os.ErrNotExist) {
+			return remotePath, 0644, nil
+		}
+		if err != nil {
+			return "", 0, err
+		}
+		if info.Mode().IsRegular() {
+			return remotePath, info.Mode().Perm(), nil
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return "", 0, errors.New("仅支持编辑普通文本文件")
+		}
+		if !followLinks {
+			return "", 0, errors.New("所选文件是符号链接，请直接指定目标文件")
+		}
+		if seen[remotePath] {
+			return "", 0, errors.New("符号链接循环，请检查远端文件")
+		}
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		seen[remotePath] = true
+		target, err := c.ReadLink(remotePath)
+		if err != nil {
+			return "", 0, err
+		}
+		if !path.IsAbs(target) {
+			dir, _ := path.Split(remotePath)
+			target = dir + target // Keep ".." for the server to resolve across directory symlinks.
+		}
+		remotePath = target
+	}
+	return "", 0, errors.New("符号链接层级过深，请检查远端文件")
+}
+
+// WriteText publishes at the specified path and rejects a final symbolic link.
+func (s *Session) WriteText(remotePath, content string) error {
+	return s.writeText(remotePath, content, false)
+}
+
+// EditText saves to the same file the interactive editor opened through a link.
+func (s *Session) EditText(remotePath, content string) error {
+	return s.writeText(remotePath, content, true)
+}
+
+func (s *Session) writeText(remotePath, content string, followLinks bool) (err error) {
 	if len(content) > maxEditableFileSize {
 		return errors.New("文本内容超过 4 MiB 限制")
 	}
@@ -612,15 +669,16 @@ func (s *Session) WriteText(remotePath, content string) (err error) {
 	if err != nil {
 		return err
 	}
-	var perm os.FileMode = 0644
-	if oldInfo, statErr := c.Stat(remotePath); statErr == nil {
-		perm = oldInfo.Mode().Perm()
+	remotePath, perm, err := editorTarget(c, remotePath, followLinks)
+	if err != nil {
+		return err
 	}
 	var id [12]byte
 	if _, err = rand.Read(id[:]); err != nil {
 		return err
 	}
-	tmp := path.Join(path.Dir(remotePath), ".shell-edit-"+hex.EncodeToString(id[:])+".tmp")
+	dir, _ := path.Split(remotePath)
+	tmp := dir + ".shell-edit-" + hex.EncodeToString(id[:]) + ".tmp"
 	f, err := c.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
 	if err != nil {
 		return err
@@ -663,16 +721,15 @@ func posixPermBits(info os.FileInfo) uint32 {
 
 // StatDetail inspects a remote path via Lstat and collects symlink target, octal mode, UID/GID, access time, and direct child count.
 func (s *Session) StatDetail(remotePath string) (EntryDetail, error) {
-	trimmed := strings.TrimSpace(remotePath)
-	if trimmed == "" || strings.ContainsRune(trimmed, 0) {
+	if remotePath == "" || strings.ContainsRune(remotePath, 0) {
 		return EntryDetail{}, errors.New("请输入有效的远端路径")
 	}
 	c, err := s.fileClient()
 	if err != nil {
 		return EntryDetail{}, err
 	}
-	cleanPath := path.Clean(trimmed)
-	if trimmed == "~" || trimmed == "." {
+	cleanPath := path.Clean(remotePath)
+	if remotePath == "~" || remotePath == "." {
 		if resolved, rpErr := c.RealPath("."); rpErr == nil && resolved != "" {
 			cleanPath = resolved
 		}
@@ -777,7 +834,6 @@ func (s *Session) UploadDir(ctx context.Context, localDir, remoteDir string, ove
 		return 0, err
 	}
 	localDir = filepath.Clean(strings.TrimSpace(localDir))
-	remoteDir = strings.TrimSpace(remoteDir)
 	if localDir == "" || localDir == "." {
 		return 0, errors.New("请输入有效的本地目录路径")
 	}
@@ -929,6 +985,7 @@ func walkRemoteDir(ctx context.Context, c *sftp.Client, curRemote, relPrefix str
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].Name() < items[j].Name()
 	})
+	localNames := make(map[string]bool, len(items))
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -937,13 +994,18 @@ func walkRemoteDir(ctx context.Context, c *sftp.Client, curRemote, relPrefix str
 		if name == "." || name == ".." {
 			continue
 		}
+		// Skip symlinks to avoid cycles or unexpected escapes.
+		if !item.IsDir() && !item.Mode().IsRegular() {
+			continue
+		}
 		if err := validateLocalEntryName(name); err != nil {
 			return err
 		}
-		// Skip symlinks to avoid cycles or unexpected escapes.
-		if item.Mode()&os.ModeSymlink != 0 {
-			continue
+		key := strings.ToUpper(name)
+		if localNames[key] {
+			return fmt.Errorf("目录 %q 包含在 Windows 下同名的条目 %q，请分别下载", curRemote, name)
 		}
+		localNames[key] = true
 		childRemote := path.Join(curRemote, name)
 		childRel := name
 		if relPrefix != "" {
@@ -954,7 +1016,7 @@ func walkRemoteDir(ctx context.Context, c *sftp.Client, curRemote, relPrefix str
 			if err := walkRemoteDir(ctx, c, childRemote, childRel, depth+1, dirs, files, totalBytes); err != nil {
 				return err
 			}
-		} else if item.Mode().IsRegular() {
+		} else {
 			*files = append(*files, remoteDownloadItem{
 				remotePath: childRemote,
 				relPath:    childRel,
@@ -974,7 +1036,6 @@ func (s *Session) DownloadDir(ctx context.Context, remoteDir, localDir string, o
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	remoteDir = strings.TrimSpace(remoteDir)
 	localDir = filepath.Clean(strings.TrimSpace(localDir))
 	if remoteDir == "" || strings.ContainsRune(remoteDir, 0) {
 		return 0, errors.New("请输入有效的远端目录路径")
@@ -986,15 +1047,6 @@ func (s *Session) DownloadDir(ctx context.Context, remoteDir, localDir string, o
 	if err != nil {
 		return 0, err
 	}
-	rootInfo, err := c.Stat(remoteDir)
-	if err != nil {
-		s.maybeResetFileClient(c, err)
-		return 0, err
-	}
-	if !rootInfo.IsDir() {
-		return 0, errors.New("远端路径不是目录")
-	}
-
 	var dirs []string
 	var files []remoteDownloadItem
 	var totalBytes int64
@@ -1074,7 +1126,6 @@ func (s *Session) ChmodRecursive(ctx context.Context, remotePath string, mode ui
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	remotePath = strings.TrimSpace(remotePath)
 	if remotePath == "" || strings.ContainsRune(remotePath, 0) {
 		return errors.New("请输入有效的远端路径")
 	}
@@ -1130,7 +1181,7 @@ func chmodRecursiveWalk(ctx context.Context, c *sftp.Client, target string, perm
 			return err
 		}
 		name := entry.Name()
-		if name == "" || name == "." || name == ".." {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 			continue
 		}
 		if entry.Mode()&os.ModeSymlink != 0 {

@@ -535,6 +535,110 @@ func TestChmodRecursive(t *testing.T) {
 	}
 }
 
+func TestEditorPreservesLinksAndTargetPermissions(t *testing.T) {
+	s := newInMemSFTPSession(t, 0)
+	if err := s.Mkdir("/etc/sub"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteText("/etc/sub/config", "before"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Chmod("/etc/sub/config", 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.files.Symlink("sub/config", "/etc/current"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.files.Symlink("/etc/current", "/entry"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteText("/entry", "unexpected"); err == nil {
+		t.Fatal("path-scoped WriteText accepted a symbolic link")
+	}
+	if data, err := s.ReadText("/etc/sub/config"); err != nil || data != "before" {
+		t.Fatalf("rejected write changed the target: %q, %v", data, err)
+	}
+	if target, err := s.files.ReadLink("/entry"); err != nil || target != "/etc/current" {
+		t.Fatalf("rejected write replaced the selected link: %q, %v", target, err)
+	}
+	if err := s.EditText("/entry", "after"); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := s.ReadText("/etc/sub/config"); err != nil || data != "after" {
+		t.Fatalf("target contents: %q, %v", data, err)
+	}
+	if info, err := s.files.Stat("/etc/sub/config"); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("target permissions: %v, %v", info, err)
+	}
+	for link, want := range map[string]string{"/entry": "/etc/current", "/etc/current": "sub/config"} {
+		if target, err := s.files.ReadLink(link); err != nil || target != want {
+			t.Fatalf("%q points to %q, want %q: %v", link, target, want, err)
+		}
+	}
+	if err := s.files.Symlink("/missing", "/dangling"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EditText("/dangling", "oops"); err == nil {
+		t.Fatal("saved through a dangling link")
+	}
+	if target, err := s.files.ReadLink("/dangling"); err != nil || target != "/missing" {
+		t.Fatalf("dangling link changed: %q, %v", target, err)
+	}
+	if err := s.files.Symlink("/loop", "/loop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EditText("/loop", "oops"); err == nil {
+		t.Fatal("saved through a link cycle")
+	}
+}
+
+func TestSFTPUsesExactRemoteNames(t *testing.T) {
+	s := newInMemSFTPSession(t, 0)
+	for _, suffix := range []string{"", " "} {
+		if err := s.Mkdir("/dir" + suffix); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CreateEmptyFile("/dir/name" + suffix); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if info, err := s.StatDetail("/dir/name "); err != nil || info.Name != "name " {
+		t.Fatalf("wrong entry: %v, %v", info, err)
+	}
+	if err := s.Delete("/dir/name "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.files.Lstat("/dir/name"); err != nil {
+		t.Fatalf("other file was deleted: %v", err)
+	}
+	if _, err := s.files.Lstat("/dir/name "); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("selected file remained: %v", err)
+	}
+	count, err := s.DownloadDir(t.Context(), "/dir ", filepath.Join(t.TempDir(), "empty"), true, nil)
+	if err != nil || count != 0 {
+		t.Fatalf("downloaded a different directory: %d, %v", count, err)
+	}
+}
+
+func TestDownloadDirRejectsCollidingWindowsNamesBeforeWriting(t *testing.T) {
+	s := newInMemSFTPSession(t, 0)
+	if err := s.Mkdir("/case"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"README", "Readme"} {
+		if err := s.WriteText("/case/"+name, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dest := filepath.Join(t.TempDir(), "download")
+	if _, err := s.DownloadDir(t.Context(), "/case", dest, true, nil); err == nil {
+		t.Fatal("download allowed two files with the same Windows destination")
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination was created before detecting name collision: %v", err)
+	}
+}
+
 func TestStatDetailFileDirAndSymlink(t *testing.T) {
 	s := newInMemSFTPSession(t, 0)
 	if err := s.Mkdir("/inspect/nested"); err != nil {

@@ -143,11 +143,13 @@ test('path helpers normalize, join, parent, basename, and resolve destinations c
   assert.equal(normalizeRemotePath('/'), '/');
   assert.equal(normalizeRemotePath(''), '/');
   assert.equal(normalizeRemotePath('.'), '.');
+  assert.equal(normalizeRemotePath('/tmp//folder /'), '/tmp/folder ');
 
   assert.equal(joinRemotePath('/', 'etc'), '/etc');
   assert.equal(joinRemotePath('/etc/nginx/', 'nginx.conf'), '/etc/nginx/nginx.conf');
   assert.equal(joinRemotePath('/etc/nginx', '/var/log/app.log'), '/var/log/app.log');
   assert.equal(joinRemotePath('.', 'hello.txt'), './hello.txt');
+  assert.equal(joinRemotePath('/tmp/folder ', ' name '), '/tmp/folder / name ');
 
   assert.equal(parentRemotePath('/etc/nginx/nginx.conf'), '/etc/nginx');
   assert.equal(parentRemotePath('/etc/nginx/'), '/etc');
@@ -157,10 +159,12 @@ test('path helpers normalize, join, parent, basename, and resolve destinations c
 
   assert.equal(basenameRemotePath('/etc/nginx/nginx.conf'), 'nginx.conf');
   assert.equal(basenameRemotePath('/'), '/');
+  assert.equal(basenameRemotePath('/tmp/file '), 'file ');
 
   assert.equal(resolveDestinationPath('/etc/nginx/site.conf', 'api.conf'), '/etc/nginx/api.conf');
   assert.equal(resolveDestinationPath('/etc/nginx/site.conf', '/tmp/site.conf'), '/tmp/site.conf');
   assert.equal(resolveDestinationPath('/etc/nginx/site.conf', 'sites-enabled/site.conf'), '/etc/nginx/sites-enabled/site.conf');
+  assert.equal(resolveDestinationPath('/tmp/folder /file', 'file '), '/tmp/folder /file ');
 });
 
 test('suggestCopyName handles standard files, extensionless names, dotfiles, multi-ext archives, dirs, and collisions', () => {

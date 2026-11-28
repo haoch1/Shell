@@ -206,7 +206,6 @@ func (a *App) DownloadDirectory(id, remoteDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	remoteDir = strings.TrimSpace(remoteDir)
 	if remoteDir == "" {
 		return "", errors.New("请输入有效的远端目录路径")
 	}
@@ -224,16 +223,35 @@ func (a *App) DownloadDirectory(id, remoteDir string) (string, error) {
 	return destDir, nil
 }
 
+func batchDownloadPaths(remotePaths []string) ([]string, error) {
+	paths := make([]string, 0, len(remotePaths))
+	seen := make(map[string]string)
+	for _, rp := range remotePaths {
+		if rp == "" {
+			continue
+		}
+		leaf := sanitizeWinName(path.Base(path.Clean(rp)))
+		key := strings.ToUpper(leaf)
+		if prev, ok := seen[key]; ok {
+			if prev == rp {
+				continue
+			}
+			return nil, fmt.Errorf("选中的多个条目在 Windows 下对应同名文件 %q，请分别下载", leaf)
+		}
+		seen[key] = rp
+		paths = append(paths, rp)
+	}
+	return paths, nil
+}
+
 func (a *App) BatchDownloadRemote(id string, remotePaths []string) (string, error) {
 	s, err := a.get(id)
 	if err != nil {
 		return "", err
 	}
-	cleaned := make([]string, 0, len(remotePaths))
-	for _, rp := range remotePaths {
-		if trimmed := strings.TrimSpace(rp); trimmed != "" {
-			cleaned = append(cleaned, trimmed)
-		}
+	cleaned, err := batchDownloadPaths(remotePaths)
+	if err != nil {
+		return "", err
 	}
 	if len(cleaned) == 0 {
 		return "", nil
@@ -247,23 +265,17 @@ func (a *App) BatchDownloadRemote(id string, remotePaths []string) (string, erro
 
 	var firstErr error
 	for _, rp := range cleaned {
-		detail, statErr := s.StatDetail(rp)
+		entry, statErr := s.StatEntry(rp)
 		if statErr != nil {
 			if firstErr == nil {
 				firstErr = statErr
 			}
 			continue
 		}
-		isDir := detail.IsDir
-		if detail.IsSymlink {
-			if resolved, linkErr := s.ResolveFileLink(rp); linkErr == nil {
-				isDir = resolved.IsDir
-			}
-		}
 		leaf := sanitizeWinName(path.Base(path.Clean(rp)))
 		localDest := filepath.Join(destParent, leaf)
 		var dlErr error
-		if isDir {
+		if entry.IsDir {
 			dlErr = a.downloadRemoteDirInto(s, id, rp, localDest, leaf)
 		} else {
 			dlErr = a.downloadRemoteFileInto(s, id, rp, localDest, leaf)
@@ -288,11 +300,10 @@ func (a *App) DeleteRemoteBatch(id string, paths []string) (int, error) {
 	deleted := 0
 	var firstErr error
 	for _, target := range paths {
-		trimmed := strings.TrimSpace(target)
-		if trimmed == "" {
+		if target == "" {
 			continue
 		}
-		if delErr := s.Delete(trimmed); delErr != nil {
+		if delErr := s.Delete(target); delErr != nil {
 			if firstErr == nil {
 				firstErr = delErr
 			}

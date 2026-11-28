@@ -239,7 +239,7 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
       target: string,
       options?: { afterMutation?: boolean; historyMode?: 'push' | 'replace' | 'none' },
     ) => {
-      const normalizedTarget = target.trim() || '.';
+      const normalizedTarget = target || '.';
       const afterMutation = options?.afterMutation ?? false;
       const historyMode = options?.historyMode ?? 'push';
 
@@ -266,9 +266,9 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
           setSelectedPaths(new Set());
           setFilter('');
         } else {
-          const validPaths = new Set(nextEntries.map((item) => item.path));
           setSelectedPaths((prev) => {
             if (prev.size === 0) return prev;
+            const validPaths = new Set(nextEntries.map((item) => item.path));
             const pruned = new Set<string>();
             prev.forEach((p) => {
               if (validPaths.has(p)) pruned.add(p);
@@ -702,14 +702,14 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
     setErr('');
     try {
       if (actionModal.kind === 'mkdir') {
-        const name = actionModal.value.trim();
-        if (!name) return;
+        const name = actionModal.value;
+        if (!name.trim()) return;
         const target = joinRemotePath(targetDir, name);
         await api.MakeDir(session.id, target);
         onToast(`已创建文件夹 ${name}`);
       } else if (actionModal.kind === 'newfile') {
-        const name = actionModal.value.trim();
-        if (!name) return;
+        const name = actionModal.value;
+        if (!name.trim()) return;
         const target = joinRemotePath(targetDir, name);
         await api.CreateRemoteFile(session.id, target);
         onToast(`已创建文件 ${name}`);
@@ -723,8 +723,8 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
         }
         return;
       } else if (actionModal.kind === 'rename') {
-        const rawInput = actionModal.value.trim();
-        if (!rawInput) return;
+        const rawInput = actionModal.value;
+        if (!rawInput.trim()) return;
         const nextPath = resolveDestinationPath(actionModal.entry.path, rawInput);
         if (nextPath === actionModal.entry.path) {
           setActionModal(null);
@@ -733,8 +733,8 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
         await api.RenameRemote(session.id, actionModal.entry.path, nextPath);
         onToast(rawInput.includes('/') ? `已移动到 ${nextPath}` : `已重命名为 ${rawInput}`);
       } else if (actionModal.kind === 'copy') {
-        const rawInput = actionModal.value.trim();
-        if (!rawInput) return;
+        const rawInput = actionModal.value;
+        if (!rawInput.trim()) return;
         const dstPath = resolveDestinationPath(actionModal.entry.path, rawInput);
         if (dstPath === actionModal.entry.path) {
           setErr('目标路径不能与源路径相同');

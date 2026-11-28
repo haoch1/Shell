@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -103,6 +104,25 @@ func TestDirectoryBrowseRoundTrips(t *testing.T) {
 	legacy, err := s.List(canonical)
 	if err != nil || len(legacy) != links || !legacy[0].IsDir || p[fxpRealpath] != 2 || p[fxpStat] != links {
 		t.Fatalf("legacy listing: %v, requests %v", err, p)
+	}
+}
+
+func TestBatchDownloadClassifiesAndListsDirectoryOnce(t *testing.T) {
+	s, probe := linkDirectory(t, 12)
+	entry, err := s.StatEntry("/listing")
+	if err != nil || !entry.IsDir || probe.packets[fxpStat] != 1 || len(probe.packets) != 1 {
+		t.Fatalf("type lookup: %+v, %v, requests %v", entry, err, probe.packets)
+	}
+	if _, err := s.DownloadDir(t.Context(), entry.Path, filepath.Join(t.TempDir(), "listing"), true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if probe.packets[fxpStat] != 1 || probe.packets[fxpOpendir] != 1 || probe.packets[fxpReaddir] != 2 {
+		t.Fatalf("directory requests across classification and transfer: %v", probe.packets)
+	}
+	clear(probe.packets)
+	link, err := s.StatEntry("/listing/link-00")
+	if err != nil || !link.IsDir || link.Path != "/listing/link-00" || probe.packets[fxpStat] != 1 || len(probe.packets) != 1 {
+		t.Fatalf("link type lookup: %+v, %v, requests %v", link, err, probe.packets)
 	}
 }
 

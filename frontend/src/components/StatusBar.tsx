@@ -51,6 +51,49 @@ export const StatusBar: React.FC<StatusBarProps> = ({
     return null;
   }
 
+  const isLocal = session.kind === 'local';
+  if (isLocal) {
+    const shellName = session.localShell?.name || session.profile.name || '本地终端';
+    const cwd = session.dir && session.dir !== '.' ? session.dir : '';
+    const isWSL = session.localShell?.category === 'wsl';
+    return (
+      <footer className="statusbar">
+        <div className="statusbar-left">
+          <span className="status-chip" title={shellName}>
+            <span className={`tab-dot ${session.state}`} />
+            <span className="status-host-text">{shellName}</span>
+          </span>
+          {cwd && (
+            <span className="status-chip status-cwd mono" title={cwd}>
+              {cwd}
+            </span>
+          )}
+          {agentStatus?.running && (
+            <button
+              type="button"
+              className="telemetry-trigger"
+              style={{ color: 'var(--accent)', gap: 4 }}
+              onClick={onOpenAgentSettings}
+              title="本地 MCP Agent 服务运行中，点击管理权限与执行方式"
+            >
+              <Bot size={12} />
+              <span>MCP :{agentStatus.port}</span>
+            </button>
+          )}
+        </div>
+
+        <div className="statusbar-right">
+          <span className="pill-badge neutral status-local-badge">
+            {isWSL ? 'WSL' : '本机终端'}
+          </span>
+          <span className="status-chip mono tabular status-dims">
+            {session.cols} × {session.rows}
+          </span>
+        </div>
+      </footer>
+    );
+  }
+
   const memPct = stats && stats.memTotalMB > 0 ? Math.round((stats.memUsedMB / stats.memTotalMB) * 100) : 0;
   const swapTotalMB = stats?.swapTotalMB ?? 0;
   const swapUsedMB = stats?.swapUsedMB ?? 0;

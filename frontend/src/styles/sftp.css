@@ -450,8 +450,8 @@
 }
 
 .sftp-batch-btn.danger:hover {
-  background: var(--red);
-  border-color: var(--red);
+  background: var(--red-solid);
+  border-color: var(--red-solid);
   color: #ffffff;
 }
 

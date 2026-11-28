@@ -7,7 +7,7 @@
     <script>
       (function () {
         try {
-          var raw = localStorage.getItem('shell:appearance:v1');
+          var raw = localStorage.getItem('shell:appearance:v2');
           if (!raw) return;
           var saved = JSON.parse(raw);
           if (!saved || typeof saved !== 'object') return;

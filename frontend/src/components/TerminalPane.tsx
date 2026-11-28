@@ -294,10 +294,23 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       try {
         const u = new URL(data);
         if (u.protocol === 'file:' && u.pathname) {
-          cwdRef.current?.(decodeURIComponent(u.pathname));
+          const decoded = decodeURIComponent(u.pathname);
+          const winDrive = /^\/([A-Za-z]:\/.*)$/.exec(decoded);
+          cwdRef.current?.(winDrive ? winDrive[1].replace(/\//g, '\\') : decoded);
         }
       } catch {
         // Ignore non-URI OSC 7 payloads
+      }
+      return false;
+    });
+    // Track Windows Terminal standard OSC 9;9 working directory updates (\x1b]9;9;<cwd>\x07)
+    const osc9Disp = term.parser.registerOscHandler(9, (data) => {
+      if (data.startsWith('9;')) {
+        const rawPath = data.slice(2).replace(/^"(.*)"$/, '$1').trim();
+        if (rawPath) {
+          cwdRef.current?.(rawPath);
+        }
+        return true;
       }
       return false;
     });
@@ -334,6 +347,9 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyF') {
         e.preventDefault();
         searchOpenRef.current();
+        return false;
+      }
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyT') {
         return false;
       }
       if (e.ctrlKey && !e.shiftKey && (e.key === '=' || e.key === '+')) {
@@ -427,6 +443,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       binDisp.dispose();
       resizeDisp.dispose();
       osc7Disp.dispose();
+      osc9Disp.dispose();
       selDisp.dispose();
       webgl?.dispose();
       highlighter.reset();
@@ -445,7 +462,8 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     }
   }, [session.state]);
 
-  const showConnectOverlay = !session.hasConnected && session.state !== 'connected';
+  const isLocal = session.kind === 'local';
+  const showConnectOverlay = !isLocal && !session.hasConnected && session.state !== 'connected';
 
   useEffect(() => {
     if (!showConnectOverlay || session.state !== 'connecting') {
@@ -560,8 +578,10 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
   };
 
   const hideHostIp = Boolean(settings.hideHostIp);
-  const paneDisplayName =
-    session.profile.name && (!hideHostIp || session.profile.name !== session.profile.host)
+  const localCwd = isLocal && session.dir && session.dir !== '.' ? session.dir : '';
+  const paneDisplayName = isLocal
+    ? session.localShell?.name || session.profile.name || '本地终端'
+    : session.profile.name && (!hideHostIp || session.profile.name !== session.profile.host)
       ? session.profile.name
       : hideHostIp
         ? session.profile.user || 'SSH 主机'
@@ -580,13 +600,30 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <span className={`tab-dot ${session.state}`} />
             <span className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{paneDisplayName}</span>
-              <span
-                className={`ip-inline-collapsible ${hideHostIp ? 'is-hidden' : ''}`}
-                data-ip-hidden={hideHostIp ? 'true' : undefined}
-              >
-                {hideHostIp ? '' : ` (${session.profile.user}@${formatHostDisplay(session.profile.host, session.profile.port)})`}
-              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: isLocal && localCwd ? 0 : 1 }}>{paneDisplayName}</span>
+              {isLocal ? (
+                localCwd ? (
+                  <span
+                    style={{
+                      marginLeft: 6,
+                      color: 'var(--ink-tertiary)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title={localCwd}
+                  >
+                    {localCwd}
+                  </span>
+                ) : null
+              ) : (
+                <span
+                  className={`ip-inline-collapsible ${hideHostIp ? 'is-hidden' : ''}`}
+                  data-ip-hidden={hideHostIp ? 'true' : undefined}
+                >
+                  {hideHostIp ? '' : ` (${session.profile.user}@${formatHostDisplay(session.profile.host, session.profile.port)})`}
+                </span>
+              )}
             </span>
           </div>
           <div className="pane-mini-actions">
@@ -736,7 +773,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
           <span>
             {session.reconnectAt && reconnectLeftSec > 0
               ? `${session.endMessage || '连接中断'} · ${reconnectLeftSec}s 后自动重连 (${session.reconnectAttempt ?? 1}/3)`
-              : session.endMessage || '会话已断开'}
+              : session.endMessage || (isLocal ? '本地终端已退出' : '会话已断开')}
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
             {session.reconnectAt && onCancelAutoReconnect && (
@@ -744,13 +781,13 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
                 取消自动重连
               </button>
             )}
-            {!session.reconnectAt && onEditProfile && session.profile.id && (
+            {!isLocal && !session.reconnectAt && onEditProfile && session.profile.id && (
               <button type="button" className="btn btn-sm" onClick={onEditProfile}>
                 编辑配置
               </button>
             )}
             <button type="button" className="btn btn-primary btn-sm" onClick={onReconnect}>
-              {session.reconnectAt ? '立即重连' : '重新连接'}
+              {isLocal ? '重新打开' : session.reconnectAt ? '立即重连' : '重新连接'}
             </button>
           </div>
         </div>
@@ -928,7 +965,7 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
                 移出为独立标签页
               </button>
             )}
-            {session.state === 'connected' && (
+            {!isLocal && session.state === 'connected' && (
               <button
                 type="button"
                 className="context-menu-item"

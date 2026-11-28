@@ -11,7 +11,21 @@ export type HostIconId =
   | 'fedora'
   | 'linux'
   | 'windows'
-  | 'docker';
+  | 'docker'
+  | 'powershell'
+  | 'cmd'
+  | 'git'
+  | 'terminal';
+
+export interface LocalShellProfile {
+  id: string;
+  name: string;
+  command: string;
+  args?: string[];
+  icon: HostIconId;
+  category?: 'shell' | 'wsl';
+  isDefault?: boolean;
+}
 export type TunnelMode = 'local' | 'remote' | 'dynamic';
 export type ProxyType = '' | 'direct' | 'system' | 'socks5' | 'http';
 export type GlobalProxyMode = 'direct' | 'system' | 'socks5' | 'http';
@@ -203,6 +217,7 @@ export interface AppSettings {
   syntaxHighlight?: boolean;
   autoReconnect?: boolean;
   confirmMultilinePaste?: boolean;
+  defaultLocalShell?: string;
 }
 
 export interface KnownHostEntry {
@@ -420,6 +435,8 @@ export interface ConnectStep {
 
 export interface SessionRecord {
   id: string;
+  kind?: 'ssh' | 'local';
+  localShell?: LocalShellProfile;
   profile: Profile;
   state: SessionState;
   startedAt: number;

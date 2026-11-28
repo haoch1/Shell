@@ -169,42 +169,22 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   },
 ];
 
-const LEGACY_THEME_MAP: Record<string, string> = {
-  'one-dark': 'shell-dark',
-  'one-half-dark': 'shell-dark',
-  'one-dark-pro': 'shell-dark',
-  'termius-dark': 'shell-dark',
-  'apple-dark': 'shell-dark',
-  nord: 'shell-dark',
-  dracula: 'tokyo-night',
-  'rose-pine': 'catppuccin-mocha',
-  'termius-light': 'shell-light',
-  'apple-light': 'shell-light',
-  'github-light': 'shell-light',
-  'tokyo-day': 'shell-light',
-  'nord-light': 'shell-light',
-  'solarized-light': 'warm-paper',
-  'catppuccin-latte': 'warm-paper',
-  'rose-pine-dawn': 'warm-paper',
-};
-
-/** Resolves a theme ID (including "auto" and legacy IDs) against the current Light/Dark app appearance. */
+/** Resolves a theme ID (including "auto") against the current Light/Dark app appearance. */
 export function resolveTerminalTheme(id: string, isDark: boolean): TerminalThemePreset {
   const lightFallback = TERMINAL_THEMES.find((t) => t.id === 'shell-light') ?? TERMINAL_THEMES[0];
   const darkFallback = TERMINAL_THEMES.find((t) => t.id === 'shell-dark') ?? TERMINAL_THEMES[0];
   if (!id || id === 'auto') {
     return isDark ? darkFallback : lightFallback;
   }
-  const normalized = LEGACY_THEME_MAP[id] ?? id;
-  return TERMINAL_THEMES.find((t) => t.id === normalized) ?? (isDark ? darkFallback : lightFallback);
+  return TERMINAL_THEMES.find((t) => t.id === id) ?? (isDark ? darkFallback : lightFallback);
 }
 
 /** Returns a matching Light/Dark sibling when switching app appearance so terminal & UI always stay harmonious. */
 export function syncTerminalThemeForAppearance(currentId: string, nextIsDark: boolean): string {
   if (!currentId || currentId === 'auto') return 'auto';
-  const normalized = LEGACY_THEME_MAP[currentId] ?? currentId;
-  const cur = TERMINAL_THEMES.find((t) => t.id === normalized);
-  if (!cur || cur.isDark === nextIsDark) return normalized;
+  const cur = TERMINAL_THEMES.find((t) => t.id === currentId);
+  if (!cur) return nextIsDark ? 'shell-dark' : 'shell-light';
+  if (cur.isDark === nextIsDark) return cur.id;
   return cur.pairId ?? (nextIsDark ? 'shell-dark' : 'shell-light');
 }
 

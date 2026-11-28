@@ -38,14 +38,6 @@ export const TERMINAL_FONT_OPTIONS: FontOption[] = [
   },
 ];
 
-const LEGACY_FONT_MAP: Record<string, string> = {
-  '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace': TERMINAL_FONT_OPTIONS[0].value,
-  '"Cascadia Mono", Consolas, monospace': TERMINAL_FONT_OPTIONS[1].value,
-  '"JetBrains Mono", "Cascadia Mono", Consolas, monospace': TERMINAL_FONT_OPTIONS[2].value,
-  '"Fira Code", "Cascadia Mono", Consolas, monospace': TERMINAL_FONT_OPTIONS[3].value,
-  'Consolas, monospace': TERMINAL_FONT_OPTIONS[5].value,
-};
-
 const HAS_CJK_FONT_RE =
   /(yahei|pingfang|sarasa|maple\s*mono.*sc|noto\s*sans\s*(cjk|sc)|source\s*han|hiragino|harmonyos|misans|heiti|wenquanyi|微软雅黑|思源黑体)/i;
 
@@ -70,11 +62,10 @@ export function resolveTerminalFontFamily(raw?: string): string {
   return `${parts.join(', ')}, ${CJK_SANS_FALLBACK}, monospace`;
 }
 
-/** Matches a saved fontFamily (including legacy stacks without CJK fallback) to a curated preset option. */
+/** Matches a saved fontFamily directly to a curated preset option, returning '__custom__' otherwise. */
 export function matchFontOptionValue(raw?: string): string {
   const trimmed = (raw ?? '').trim();
   if (!trimmed) return TERMINAL_FONT_OPTIONS[0].value;
   if (TERMINAL_FONT_OPTIONS.some((o) => o.value === trimmed)) return trimmed;
-  if (LEGACY_FONT_MAP[trimmed]) return LEGACY_FONT_MAP[trimmed];
   return '__custom__';
 }

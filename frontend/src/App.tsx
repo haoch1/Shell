@@ -9,6 +9,7 @@ import type {
   ConnectStep,
   DrawerMode,
   HostVerifyRequest,
+  LocalShellProfile,
   Profile,
   ServerStats,
   SessionRecord,
@@ -61,7 +62,15 @@ interface SplitTarget {
   direction: 'horizontal' | 'vertical';
 }
 
-const APPEARANCE_STORAGE_KEY = 'shell:appearance:v1';
+const APPEARANCE_STORAGE_KEY = 'shell:appearance:v2';
+
+const DEFAULT_PREVIEW_LOCAL_SHELLS: LocalShellProfile[] = [
+  { id: 'pwsh', name: 'PowerShell 7', command: 'pwsh.exe', args: ['-NoLogo'], icon: 'powershell', category: 'shell', isDefault: true },
+  { id: 'powershell', name: 'Windows PowerShell', command: 'powershell.exe', args: ['-NoLogo'], icon: 'powershell', category: 'shell' },
+  { id: 'cmd', name: '命令提示符', command: 'cmd.exe', icon: 'cmd', category: 'shell' },
+  { id: 'git-bash', name: 'Git Bash', command: 'bash.exe', args: ['--login', '-i'], icon: 'git', category: 'shell' },
+  { id: 'wsl:Ubuntu', name: 'WSL · Ubuntu', command: 'wsl.exe', args: ['-d', 'Ubuntu', '--cd', '~'], icon: 'ubuntu', category: 'wsl' },
+];
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
@@ -79,6 +88,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   syntaxHighlight: true,
   autoReconnect: true,
   confirmMultilinePaste: true,
+  defaultLocalShell: '',
   groupOrder: [],
   webglEnabled: false,
   defaultKeepAlive: 30,
@@ -132,6 +142,9 @@ function getInitialSettings(): AppSettings {
 export const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const [localShells, setLocalShells] = useState<LocalShellProfile[]>(() =>
+    hasDesktopBridge() ? [] : DEFAULT_PREVIEW_LOCAL_SHELLS,
+  );
   const [settings, setSettings] = useState<AppSettings>(getInitialSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [agentStatus, setAgentStatus] = useState<AgentStatusView | null>(null);
@@ -159,7 +172,11 @@ export const App: React.FC = () => {
     updateHostModal(next);
   }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [splitPicker, setSplitPicker] = useState<{ target: SplitTarget; source: Profile } | null>(null);
+  const [splitPicker, setSplitPicker] = useState<{
+    target: SplitTarget;
+    source: Profile;
+    sourceLocalShell?: LocalShellProfile;
+  } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [exportIds, setExportIds] = useState<string[] | null>(null);
   const [settingsModal, setSettingsModal] = useState<{ open: boolean; tab: SettingsTab }>({
@@ -198,6 +215,7 @@ export const App: React.FC = () => {
   const lastSizeRef = useRef<Map<string, string>>(new Map());
   const lastConnectAtRef = useRef<Map<string, number>>(new Map());
   const autoCheckedRef = useRef(false);
+  const checkingUpdateRef = useRef(false);
   const textEncoderRef = useRef(new TextEncoder());
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
@@ -205,6 +223,8 @@ export const App: React.FC = () => {
   tabsRef.current = tabs;
   const profilesRef = useRef(profiles);
   profilesRef.current = profiles;
+  const localShellsRef = useRef(localShells);
+  localShellsRef.current = localShells;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -243,17 +263,26 @@ export const App: React.FC = () => {
 
   // Initial load from Go backend
   const reloadData = useCallback(async () => {
-    if (!hasDesktopBridge()) return;
+    if (!hasDesktopBridge()) {
+      setLocalShells((cur) => (cur.length > 0 ? cur : DEFAULT_PREVIEW_LOCAL_SHELLS));
+      return;
+    }
     const revBefore = settingsRevisionRef.current;
     const api = getApi();
-    const [profs, snips, cfg, agSt] = await Promise.all([
+    const [profs, snips, cfg, agSt, shells] = await Promise.all([
       api.Profiles().catch(() => []),
       api.Snippets().catch(() => []),
       api.GetSettings().catch(() => null),
       api.GetAgentStatus().catch(() => null),
+      typeof api.LocalShells === 'function' ? api.LocalShells().catch(() => null) : Promise.resolve(null),
     ]);
     setProfiles(profs || []);
     setSnippets(snips || []);
+    if (Array.isArray(shells) && shells.length > 0) {
+      setLocalShells(shells);
+    } else if (typeof api.LocalShells !== 'function') {
+      setLocalShells((cur) => (cur.length > 0 ? cur : DEFAULT_PREVIEW_LOCAL_SHELLS));
+    }
     if (cfg) {
       if (settingsRevisionRef.current === revBefore) {
         const merged = { ...DEFAULT_SETTINGS, ...cfg };
@@ -460,6 +489,7 @@ export const App: React.FC = () => {
       const tabId = split?.tabId ?? randomId();
       const rec: SessionRecord = {
         id: sessionId,
+        kind: 'ssh',
         profile,
         state: 'connecting',
         startedAt: Date.now(),
@@ -492,6 +522,219 @@ export const App: React.FC = () => {
       startSSHConnection(sessionId, profile, secret, remember, requestedProfile);
     },
     [startSSHConnection, toast],
+  );
+
+  const resolveTargetLocalShell = useCallback((shellId?: string): LocalShellProfile => {
+    const shells = localShellsRef.current;
+    if (shellId) {
+      const explicit = shells.find((s) => s.id === shellId);
+      if (explicit) return explicit;
+    }
+    const pref = settingsRef.current.defaultLocalShell;
+    if (pref) {
+      const preferred = shells.find((s) => s.id === pref);
+      if (preferred) return preferred;
+    }
+    return (
+      shells.find((s) => s.isDefault) ??
+      shells[0] ?? {
+        id: shellId || 'powershell',
+        name: 'PowerShell',
+        command: 'powershell.exe',
+        args: ['-NoLogo'],
+        icon: 'powershell',
+        category: 'shell',
+        isDefault: true,
+      }
+    );
+  }, []);
+
+  const startLocalConnection = useCallback(
+    (sessionId: string, shell: LocalShellProfile, cwd = '') => {
+      const attempt = new AbortController();
+      connectingRef.current.set(sessionId, { controller: attempt, requestedProfile: '' });
+      requestAnimationFrame(async () => {
+        const ctrl = terminalBus.get(sessionId);
+        ctrl?.fit();
+        const cols = ctrl?.term.cols || 100;
+        const rows = ctrl?.term.rows || 32;
+
+        const writePreviewBanner = (sh: LocalShellProfile) => {
+          const banner =
+            sh.category === 'wsl'
+              ? `\x1b[32muser@wsl\x1b[0m:\x1b[34m~\x1b[0m$ `
+              : sh.id === 'cmd'
+                ? `Microsoft Windows [Version 10.0]\r\n(c) Microsoft Corporation.\r\n\r\nC:\\Users\\user> `
+                : sh.id === 'git-bash'
+                  ? `\x1b[32muser@desktop\x1b[0m \x1b[35mMINGW64\x1b[0m \x1b[33m~\x1b[0m\r\n$ `
+                  : `${sh.name}\r\n\x1b[36mPS C:\\Users\\user>\x1b[0m `;
+          terminalBus.writeBytes(sessionId, textEncoderRef.current.encode(banner));
+        };
+
+        if (!hasDesktopBridge()) {
+          connectingRef.current.delete(sessionId);
+          if (!attempt.signal.aborted) {
+            writePreviewBanner(shell);
+            ctrl?.focus();
+          }
+          return;
+        }
+
+        const api = getApi();
+        if (typeof api.StartLocalTerminal !== 'function') {
+          connectingRef.current.delete(sessionId);
+          if (!attempt.signal.aborted) {
+            writePreviewBanner(shell);
+            ctrl?.focus();
+          }
+          return;
+        }
+
+        try {
+          let actualShell: LocalShellProfile | null = null;
+          const opened = await connectIfOpen(
+            attempt.signal,
+            () => attachSessionWS(sessionId, attempt.signal),
+            async () => {
+              actualShell = await api.StartLocalTerminal!(sessionId, shell.id, cwd, cols, rows);
+            },
+            () => api.Disconnect(sessionId),
+          );
+          if (!opened) return;
+          if (actualShell) {
+            const resolvedShell = actualShell as LocalShellProfile;
+            setSessions((prev) => {
+              const cur = prev[sessionId];
+              if (!cur) return prev;
+              return {
+                ...prev,
+                [sessionId]: {
+                  ...cur,
+                  localShell: resolvedShell,
+                  profile: {
+                    ...cur.profile,
+                    name: resolvedShell.name,
+                    icon: resolvedShell.icon || cur.profile.icon,
+                  },
+                },
+              };
+            });
+            setTabs((prev) =>
+              prev.map((t) =>
+                t.root.type === 'leaf' && t.root.sessionId === sessionId
+                  ? { ...t, title: resolvedShell.name }
+                  : t,
+              ),
+            );
+          }
+          const latestCtrl = terminalBus.get(sessionId);
+          if (latestCtrl) {
+            latestCtrl.fit();
+            const nextSizeKey = `${latestCtrl.term.cols}x${latestCtrl.term.rows}`;
+            lastSizeRef.current.set(sessionId, nextSizeKey);
+            if (latestCtrl.term.cols !== cols || latestCtrl.term.rows !== rows) {
+              void api.Resize(sessionId, latestCtrl.term.cols, latestCtrl.term.rows).catch(() => {});
+            }
+            latestCtrl.focus();
+          }
+        } catch (err) {
+          if (attempt.signal.aborted) return;
+          const msg = errorMessage(err);
+          const ws = wsMapRef.current.get(sessionId);
+          if (ws) {
+            ws.close();
+            wsMapRef.current.delete(sessionId);
+          }
+          setSessions((prev) => {
+            const cur = prev[sessionId];
+            if (!cur) return prev;
+            return {
+              ...prev,
+              [sessionId]: {
+                ...cur,
+                state: 'closed',
+                endMessage: msg,
+              },
+            };
+          });
+          terminalBus.writeln(sessionId, `\r\n\x1b[31m本地终端启动失败：${msg}\x1b[0m`);
+          toast(msg);
+        } finally {
+          connectingRef.current.delete(sessionId);
+        }
+      });
+    },
+    [attachSessionWS, toast],
+  );
+
+  const openLocalTerminal = useCallback(
+    (shellId?: string, split?: SplitTarget, cwd = '') => {
+      if (split) {
+        const tab = tabsRef.current.find((t) => t.id === split.tabId);
+        const leaves = tab ? collectLeaves(tab.root) : [];
+        if (!leaves.some((l) => l.paneId === split.paneId)) {
+          toast('原窗格已关闭');
+          return;
+        }
+        if (leaves.length >= 6) {
+          toast('单个标签最多支持 6 个分屏');
+          return;
+        }
+      }
+      const shell = resolveTargetLocalShell(shellId);
+      const sessionId = randomId();
+      const paneId = randomId();
+      const tabId = split?.tabId ?? randomId();
+      const placeholderProfile: Profile = {
+        id: '',
+        name: shell.name,
+        host: 'local',
+        port: 0,
+        user: '',
+        auth: 'agent',
+        icon: shell.icon || 'terminal',
+      };
+      const rec: SessionRecord = {
+        id: sessionId,
+        kind: 'local',
+        localShell: shell,
+        profile: placeholderProfile,
+        state: 'connected',
+        startedAt: Date.now(),
+        dir: cwd || '',
+        cols: 100,
+        rows: 32,
+        hasConnected: true,
+      };
+      setSessions((prev) => ({ ...prev, [sessionId]: rec }));
+      if (split) {
+        setTabs((prev) =>
+          prev.map((t) =>
+            t.id === tabId
+              ? {
+                  ...t,
+                  root: splitPaneNode(t.root, split.paneId, split.direction, paneId, sessionId),
+                  activePaneId: paneId,
+                }
+              : t,
+          ),
+        );
+      } else {
+        setTabs((prev) => [
+          ...prev,
+          {
+            id: tabId,
+            title: shell.name,
+            root: { type: 'leaf', paneId, sessionId },
+            activePaneId: paneId,
+            broadcast: false,
+          },
+        ]);
+      }
+      setActiveTabId(tabId);
+      startLocalConnection(sessionId, shell, cwd);
+    },
+    [resolveTargetLocalShell, startLocalConnection, toast],
   );
 
   const connectOrPromptProfile = useCallback(
@@ -549,21 +792,55 @@ export const App: React.FC = () => {
       if (!hasDesktopBridge()) return;
       const api = getApi();
       if (typeof api.CheckForUpdate !== 'function') return;
+
+      if (silent) {
+        if (checkingUpdateRef.current) return;
+        try {
+          const info = await api.CheckForUpdate();
+          setUpdateInfo(info);
+          if (info.hasUpdate) {
+            toast(`发现新版本 v${info.latestVersion}，可在「关于 Shell」中一键更新`);
+          }
+        } catch {
+          // Silent background check failures should not surface errors or flash UI.
+        }
+        return;
+      }
+
+      if (checkingUpdateRef.current) return;
+      checkingUpdateRef.current = true;
       setCheckingUpdate(true);
       setUpdateError('');
+      const startedAt = Date.now();
+      let failed = false;
+      let nextInfo: UpdateInfo | null = null;
+      let nextError = '';
       try {
-        const info = await api.CheckForUpdate();
-        setUpdateInfo(info);
-        if (!silent) {
-          toast(info.hasUpdate ? `发现新版本 v${info.latestVersion}` : `已是最新版本 v${info.currentVersion}`);
-        } else if (info.hasUpdate) {
-          toast(`发现新版本 v${info.latestVersion}，可在「关于 Shell」中一键更新`);
-        }
+        nextInfo = await api.CheckForUpdate();
       } catch (ex) {
-        if (!silent) {
-          setUpdateError(errorMessage(ex));
+        failed = true;
+        nextError = errorMessage(ex);
+      }
+
+      const minMs = failed ? 480 : 720;
+      const waitMs = Math.max(0, minMs - (Date.now() - startedAt));
+      if (waitMs > 0) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, waitMs));
+      }
+
+      try {
+        if (failed) {
+          setUpdateError(nextError);
+        } else if (nextInfo) {
+          setUpdateInfo(nextInfo);
+          toast(
+            nextInfo.hasUpdate
+              ? `发现新版本 v${nextInfo.latestVersion}`
+              : `已是最新版本 v${nextInfo.currentVersion}`,
+          );
         }
       } finally {
+        checkingUpdateRef.current = false;
         setCheckingUpdate(false);
       }
     },
@@ -633,6 +910,7 @@ export const App: React.FC = () => {
         const nextAttempt = (curSnap?.reconnectAttempt ?? 0) + 1;
         const shouldAutoReconnect = Boolean(
           curSnap &&
+            curSnap.kind !== 'local' &&
             curSnap.state !== 'closed' &&
             curSnap.hasConnected &&
             settingsRef.current.autoReconnect !== false &&
@@ -800,7 +1078,7 @@ export const App: React.FC = () => {
       const api = getApi();
       if (typeof api.ProbeSession !== 'function') return;
       for (const sess of Object.values(sessionsRef.current)) {
-        if (sess.state === 'connected') {
+        if (sess.state === 'connected' && sess.kind !== 'local') {
           void api.ProbeSession(sess.id).catch(() => {});
         }
       }
@@ -827,9 +1105,35 @@ export const App: React.FC = () => {
     return profiles.find((p) => p.id === jid)?.name;
   }, [profiles, activeSession?.profile.jumpHostId]);
 
+  const activeOsHint = useMemo(() => {
+    if (!activeSession) return undefined;
+    if (activeSession.kind === 'local') {
+      const sh = activeSession.localShell;
+      if (sh?.category === 'wsl') {
+        const distro = sh.name.replace(/^WSL\s*·\s*/i, '').trim();
+        return distro ? `Linux (WSL ${distro})` : 'Linux (WSL)';
+      }
+      return sh?.name ? `Windows (${sh.name})` : 'Windows (PowerShell)';
+    }
+    return statsBySession[activeSession.id]?.os;
+  }, [activeSession, statsBySession]);
+
+  // Automatically close SSH-only drawers when switching to a local terminal session.
+  useEffect(() => {
+    if (activeSession?.kind === 'local' && (drawer === 'sftp' || drawer === 'tunnels')) {
+      setDrawer('none');
+    }
+  }, [activeSession?.id, activeSession?.kind, drawer]);
+
   // Non-overlapping, zero-sleep live server telemetry polling + automatic OS distro icon detection
   useEffect(() => {
-    if (!hasDesktopBridge() || !settings.showTelemetry || !activeSession || activeSession.state !== 'connected') {
+    if (
+      !hasDesktopBridge() ||
+      !settings.showTelemetry ||
+      !activeSession ||
+      activeSession.kind === 'local' ||
+      activeSession.state !== 'connected'
+    ) {
       return;
     }
     const sid = activeSession.id;
@@ -888,7 +1192,7 @@ export const App: React.FC = () => {
       canceled = true;
       if (timerId !== null) window.clearTimeout(timerId);
     };
-  }, [activeSession?.id, activeSession?.state, settings.showTelemetry]);
+  }, [activeSession?.id, activeSession?.kind, activeSession?.state, settings.showTelemetry]);
 
   useEffect(() => {
     const t = window.setTimeout(() => terminalBus.fitAll(), 210);
@@ -922,7 +1226,7 @@ export const App: React.FC = () => {
       }
       return;
     }
-    if (s.state !== 'connected') return;
+    if (s.state !== 'connected' || !hasDesktopBridge()) return;
     // Fallback path (mock / non-WS environments)
     let chain = writeChainsRef.current.get(sessionId) ?? Promise.resolve();
     for (let start = 0; start < bytes.length; start += 32768) {
@@ -957,7 +1261,7 @@ export const App: React.FC = () => {
       if (!cur || (cur.cols === cols && cur.rows === rows)) return prev;
       return { ...prev, [sessionId]: { ...cur, cols, rows } };
     });
-    if (sessionsRef.current[sessionId]?.state === 'connected' && lastSizeRef.current.get(sessionId) !== sizeKey) {
+    if (hasDesktopBridge() && sessionsRef.current[sessionId]?.state === 'connected' && lastSizeRef.current.get(sessionId) !== sizeKey) {
       lastSizeRef.current.set(sessionId, sizeKey);
       void getApi().Resize(sessionId, cols, rows).catch(() => {});
     }
@@ -986,7 +1290,9 @@ export const App: React.FC = () => {
       ws.close();
       wsMapRef.current.delete(sessionId);
     }
-    void getApi().Disconnect(sessionId).catch(() => {});
+    if (hasDesktopBridge()) {
+      void getApi().Disconnect(sessionId).catch(() => {});
+    }
     writeChainsRef.current.delete(sessionId);
     lastSizeRef.current.delete(sessionId);
     setVerifyQueue((q) => q.filter((r) => r.id !== sessionId));
@@ -1056,9 +1362,13 @@ export const App: React.FC = () => {
       const srcLeaf = leaves.find((l) => l.paneId === tab.activePaneId) ?? leaves[0];
       const src = srcLeaf ? sessionsRef.current[srcLeaf.sessionId] : undefined;
       if (!src) return;
+      if (src.kind === 'local') {
+        openLocalTerminal(src.localShell?.id, undefined, src.dir && src.dir !== '.' ? src.dir : '');
+        return;
+      }
       openSession(src.profile, src.secret ?? '', Boolean(src.remember ?? src.profile.remembered));
     },
-    [openSession],
+    [openLocalTerminal, openSession],
   );
 
   const handleSplitPane = useCallback(
@@ -1075,7 +1385,11 @@ export const App: React.FC = () => {
       if (!sourceSession) return;
 
       setPaletteOpen(false);
-      setSplitPicker({target: {tabId, paneId, direction}, source: sourceSession.profile});
+      setSplitPicker({
+        target: { tabId, paneId, direction },
+        source: sourceSession.profile,
+        sourceLocalShell: sourceSession.kind === 'local' ? sourceSession.localShell : undefined,
+      });
     },
     [toast],
   );
@@ -1150,6 +1464,38 @@ export const App: React.FC = () => {
     (tabId: string, paneId: string, oldSessionId: string, attemptCount = 0) => {
       const old = sessionsRef.current[oldSessionId];
       if (!old) return;
+      if (old.kind === 'local') {
+        const shell = old.localShell ?? resolveTargetLocalShell();
+        const cwd = old.dir && old.dir !== '.' ? old.dir : '';
+        const newSessionId = randomId();
+        closeSessionBackend(oldSessionId);
+        const rec: SessionRecord = {
+          id: newSessionId,
+          kind: 'local',
+          localShell: shell,
+          profile: {
+            id: '',
+            name: shell.name,
+            host: 'local',
+            port: 0,
+            user: '',
+            auth: 'agent',
+            icon: shell.icon || 'terminal',
+          },
+          state: 'connected',
+          startedAt: Date.now(),
+          dir: cwd,
+          cols: old.cols,
+          rows: old.rows,
+          hasConnected: true,
+        };
+        setSessions((prev) => ({ ...prev, [newSessionId]: rec }));
+        setTabs((prev) =>
+          prev.map((t) => (t.id === tabId ? { ...t, root: replacePaneSession(t.root, paneId, newSessionId) } : t)),
+        );
+        startLocalConnection(newSessionId, shell, cwd);
+        return;
+      }
       const latestProfile = profilesRef.current.find((p) => p.id === old.profile.id) ?? old.profile;
       const secret = reconnectSecret(old, latestProfile);
       if (secret === null) {
@@ -1164,6 +1510,7 @@ export const App: React.FC = () => {
       closeSessionBackend(oldSessionId);
       const rec: SessionRecord = {
         id: newSessionId,
+        kind: 'ssh',
         profile: latestProfile,
         state: 'connecting',
         startedAt: Date.now(),
@@ -1189,14 +1536,16 @@ export const App: React.FC = () => {
       );
       startSSHConnection(newSessionId, latestProfile, secret, remember);
     },
-    [cancelAutoReconnect, closeSessionBackend, setHostModal, startSSHConnection],
+    [cancelAutoReconnect, closeSessionBackend, resolveTargetLocalShell, setHostModal, startLocalConnection, startSSHConnection],
   );
   reconnectPaneRef.current = handleReconnectPane;
 
   const sendCommandToActive = useCallback(
     (cmd: string, execute: boolean) => {
       if (!activeTab || !activeLeaf) return;
-      const payload = execute ? cmd + '\n' : cmd;
+      const activeSess = sessionsRef.current[activeLeaf.sessionId];
+      const eol = activeSess?.kind === 'local' ? '\r' : '\n';
+      const payload = execute ? cmd + eol : cmd;
       handlePaneInput(activeTab.id, activeLeaf.paneId, activeLeaf.sessionId, payload);
       terminalBus.get(activeLeaf.sessionId)?.focus();
     },
@@ -1258,6 +1607,9 @@ export const App: React.FC = () => {
       } else if (e.shiftKey && key === 'a') {
         e.preventDefault();
         setDrawer((d) => (d === 'ai' ? 'none' : 'ai'));
+      } else if (e.shiftKey && key === 't') {
+        e.preventDefault();
+        openLocalTerminal();
       } else if (e.shiftKey && key === 'f' && activeSession) {
         e.preventDefault();
         setSearchOpen(true);
@@ -1277,7 +1629,7 @@ export const App: React.FC = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [activeSession, activeTabId]);
+  }, [activeSession, activeTabId, openLocalTerminal]);
 
   const existingGroups = useMemo(
     () => [...new Set(profiles.map((p) => p.group?.trim()).filter((g): g is string => Boolean(g)))],
@@ -1363,6 +1715,9 @@ export const App: React.FC = () => {
   };
 
   const toggleDrawer = (mode: DrawerMode) => {
+    if (activeSession?.kind === 'local' && (mode === 'sftp' || mode === 'tunnels')) {
+      return;
+    }
     setDrawer((prev) => (prev === mode ? 'none' : mode));
   };
 
@@ -1378,6 +1733,8 @@ export const App: React.FC = () => {
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         profiles={profiles}
+        localShells={localShells}
+        defaultLocalShellId={settings.defaultLocalShell}
         tabs={tabs}
         activeTabId={activeTabId}
         sessions={sessions}
@@ -1393,6 +1750,7 @@ export const App: React.FC = () => {
         onCloneTab={handleCloneTab}
         onDetachPane={handleDetachPane}
         onNewConnection={() => setHostModal({ open: true, profile: null })}
+        onOpenLocalTerminal={(shellId) => openLocalTerminal(shellId)}
         onSplit={(dir, tabId) => {
           const tab = tabId ? tabs.find(t => t.id === tabId) : activeTab;
           if (tab) handleSplitPane(tab.id, tab.activePaneId, dir);
@@ -1422,6 +1780,7 @@ export const App: React.FC = () => {
           onConnectNewSession={(p) => connectOrPromptProfile(p, true)}
           onQuickConnect={handleQuickConnect}
           onAddHost={() => setHostModal({ open: true, profile: null })}
+          onOpenLocalTerminal={() => openLocalTerminal()}
           onEditHost={(p) => setHostModal({ open: true, profile: p })}
           onDuplicateHost={async (p) => {
             await getApi().DuplicateProfile(p.id);
@@ -1474,9 +1833,12 @@ export const App: React.FC = () => {
               {tabs.length === 0 ? (
                 <WelcomeView
                   profiles={profiles}
+                  localShells={localShells}
+                  defaultLocalShellId={settings.defaultLocalShell}
                   hideHostIp={Boolean(settings.hideHostIp)}
                   onConnect={(p) => connectOrPromptProfile(p, false)}
                   onQuickConnect={handleQuickConnect}
+                  onOpenLocalTerminal={(shellId) => openLocalTerminal(shellId)}
                   onNewConnection={() => setHostModal({ open: true, profile: null })}
                   onImportSSH={() => setImportOpen(true)}
                   onClearRecent={() => void handleClearRecent()}
@@ -1535,7 +1897,7 @@ export const App: React.FC = () => {
               )}
             </div>
 
-            {drawer === 'sftp' && activeSession?.state === 'connected' && (
+            {drawer === 'sftp' && activeSession?.state === 'connected' && activeSession.kind !== 'local' && (
               <SftpDrawer
                 key={activeSession.id}
                 session={activeSession}
@@ -1551,7 +1913,7 @@ export const App: React.FC = () => {
               />
             )}
 
-            {drawer === 'tunnels' && activeSession?.state === 'connected' && (
+            {drawer === 'tunnels' && activeSession?.state === 'connected' && activeSession.kind !== 'local' && (
               <TunnelsDrawer
                 key={activeSession.id}
                 session={activeSession}
@@ -1589,7 +1951,7 @@ export const App: React.FC = () => {
                 configVersion={aiConfigVersion}
                 activeSessionId={activeSession?.state === 'connected' ? activeSession.id : undefined}
                 hasActiveSession={activeSession?.state === 'connected'}
-                osHint={activeSession ? statsBySession[activeSession.id]?.os : undefined}
+                osHint={activeOsHint}
                 initialExplainText={explainText}
                 onClearInitialExplain={() => setExplainText('')}
                 onClose={() => setDrawer('none')}
@@ -1643,14 +2005,19 @@ export const App: React.FC = () => {
         <CommandPalette
           key={splitPicker ? `split-${splitPicker.target.paneId}` : 'commands'}
           splitSource={splitPicker?.source}
+          splitSourceLocalShell={splitPicker?.sourceLocalShell}
           profiles={profiles}
+          localShells={localShells}
+          defaultLocalShellId={settings.defaultLocalShell}
           snippets={snippets}
           hasActiveSession={activeSession?.state === 'connected'}
+          isActiveLocalSession={activeSession?.kind === 'local'}
           isDark={effectiveDark}
           hideHostIp={Boolean(settings.hideHostIp)}
           onClose={() => { setPaletteOpen(false); setSplitPicker(null); }}
           onConnectProfile={splitPicker ? chooseSplitProfile : connectOrPromptProfile}
           onQuickConnect={(target) => handleQuickConnect(target, splitPicker?.target)}
+          onOpenLocalTerminal={(shellId) => openLocalTerminal(shellId, splitPicker?.target)}
           onRunSnippet={(s) => sendCommandToActive(s.command, false)}
           onNewHost={() => setHostModal({ open: true, profile: null, split: splitPicker?.target })}
           onImportSSH={() => setImportOpen(true)}
@@ -1692,7 +2059,8 @@ export const App: React.FC = () => {
         <SettingsModal
           initialTab={settingsModal.tab}
           settings={settings}
-          activeSessionId={activeSession?.state === 'connected' ? activeSession.id : undefined}
+          localShells={localShells}
+          activeSessionId={activeSession?.state === 'connected' && activeSession.kind !== 'local' ? activeSession.id : undefined}
           updateInfo={updateInfo}
           updateProgress={updateProgress}
           checkingUpdate={checkingUpdate}

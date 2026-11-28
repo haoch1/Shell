@@ -144,25 +144,23 @@ test('Light presets keep all bright chromatic ANSI colors >= 6.5:1 contrast agai
   }
 });
 
-test('resolveTerminalTheme handles auto, legacy IDs, unknown IDs, and direct presets', () => {
+test('resolveTerminalTheme handles auto, direct presets, and unknown ID fallbacks', () => {
   assert.equal(resolveTerminalTheme('auto', true).id, 'shell-dark');
   assert.equal(resolveTerminalTheme('auto', false).id, 'shell-light');
   assert.equal(resolveTerminalTheme('', true).id, 'shell-dark');
   assert.equal(resolveTerminalTheme('', false).id, 'shell-light');
 
-  assert.equal(resolveTerminalTheme('one-dark', false).id, 'shell-dark');
-  assert.equal(resolveTerminalTheme('dracula', false).id, 'tokyo-night');
-  assert.equal(resolveTerminalTheme('rose-pine', false).id, 'catppuccin-mocha');
-  assert.equal(resolveTerminalTheme('github-light', true).id, 'shell-light');
-  assert.equal(resolveTerminalTheme('solarized-light', true).id, 'warm-paper');
-  assert.equal(resolveTerminalTheme('rose-pine-dawn', true).id, 'warm-paper');
-  assert.equal(resolveTerminalTheme('catppuccin-latte', true).id, 'warm-paper');
+  assert.equal(resolveTerminalTheme('shell-dark', false).id, 'shell-dark');
+  assert.equal(resolveTerminalTheme('tokyo-night', false).id, 'tokyo-night');
+  assert.equal(resolveTerminalTheme('catppuccin-mocha', false).id, 'catppuccin-mocha');
+  assert.equal(resolveTerminalTheme('shell-light', true).id, 'shell-light');
+  assert.equal(resolveTerminalTheme('warm-paper', true).id, 'warm-paper');
 
   assert.equal(resolveTerminalTheme('nonexistent-theme', true).id, 'shell-dark');
   assert.equal(resolveTerminalTheme('nonexistent-theme', false).id, 'shell-light');
 });
 
-test('syncTerminalThemeForAppearance preserves auto, keeps same-polarity choices, and pairs across light/dark', () => {
+test('syncTerminalThemeForAppearance preserves auto, keeps same-polarity choices, pairs across light/dark, and falls back on unknown IDs', () => {
   assert.equal(syncTerminalThemeForAppearance('auto', true), 'auto');
   assert.equal(syncTerminalThemeForAppearance('auto', false), 'auto');
   assert.equal(syncTerminalThemeForAppearance('', true), 'auto');
@@ -179,9 +177,7 @@ test('syncTerminalThemeForAppearance preserves auto, keeps same-polarity choices
   assert.equal(syncTerminalThemeForAppearance('catppuccin-mocha', false), 'warm-paper');
   assert.equal(syncTerminalThemeForAppearance('warm-paper', true), 'catppuccin-mocha');
 
-  // Legacy IDs normalize before pairing
-  assert.equal(syncTerminalThemeForAppearance('rose-pine-dawn', false), 'warm-paper');
-  assert.equal(syncTerminalThemeForAppearance('rose-pine-dawn', true), 'catppuccin-mocha');
-  assert.equal(syncTerminalThemeForAppearance('dracula', true), 'tokyo-night');
-  assert.equal(syncTerminalThemeForAppearance('dracula', false), 'shell-light');
+  // Unknown IDs fall back cleanly to the target appearance default
+  assert.equal(syncTerminalThemeForAppearance('unknown-theme', true), 'shell-dark');
+  assert.equal(syncTerminalThemeForAppearance('unknown-theme', false), 'shell-light');
 });

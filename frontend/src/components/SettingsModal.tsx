@@ -25,6 +25,7 @@ import type {
   DetectedAICLI,
   KnownHostEntry,
   LocalKeyInfo,
+  LocalShellProfile,
   SystemProxyInfo,
   UpdateInfo,
   UpdateProgress,
@@ -41,6 +42,7 @@ export type SettingsTab = 'appearance' | 'ssh' | 'keys' | 'ai' | 'agent' | 'back
 interface SettingsModalProps {
   initialTab: SettingsTab;
   settings: AppSettings;
+  localShells?: LocalShellProfile[];
   activeSessionId?: string;
   updateInfo?: UpdateInfo | null;
   updateProgress?: UpdateProgress | null;
@@ -95,16 +97,41 @@ const AI_PRESETS = [
 const normalizeEndpoint = (ep: string) => ep.trim().replace(/\/+$/, '');
 
 const AI_CLI_PRESETS = [
-  { id: 'claude', label: 'Claude Code', command: 'claude', modelHint: '留空使用默认，如 sonnet / opus' },
-  { id: 'codex', label: 'Codex CLI', command: 'codex', modelHint: '留空使用默认，如 o3 / gpt-5' },
-  { id: 'agy', label: 'Antigravity CLI', command: 'agy', modelHint: '留空使用默认模型' },
-  { id: 'custom', label: '自定义 CLI', command: '', modelHint: '可选模型参数' },
+  {
+    id: 'claude',
+    label: 'Claude Code',
+    command: 'claude',
+    modelHint: '留空使用默认，如 sonnet / opus',
+    models: ['sonnet', 'opus', 'haiku'],
+  },
+  {
+    id: 'codex',
+    label: 'Codex CLI',
+    command: 'codex',
+    modelHint: '留空使用默认，如 gpt-6.2-sol',
+    models: ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-terra', 'gpt-6.1-sol'],
+  },
+  {
+    id: 'agy',
+    label: 'Antigravity CLI',
+    command: 'agy',
+    modelHint: '留空使用默认，如 gemini-4-neon-high',
+    models: ['gemini-4-neon-high', 'gemini-4-neon-medium', 'claude-sonnet-5-5-high', 'claude-opus-5-5-high'],
+  },
+  {
+    id: 'custom',
+    label: '自定义 CLI',
+    command: '',
+    modelHint: '可选模型参数',
+    models: [] as string[],
+  },
 ];
 
 const SHORTCUTS: { label: string; keys: string[] }[] = [
   { label: '全局命令面板', keys: ['Ctrl', 'K'] },
   { label: '新建 SSH 主机', keys: ['Ctrl', 'N'] },
-  { label: '切换侧边栏', keys: ['Ctrl', 'B'] },
+  { label: '新建本地终端', keys: ['Ctrl', 'Shift', 'T'] },
+  { label: '切换侧栏', keys: ['Ctrl', 'B'] },
   { label: '偏好设置', keys: ['Ctrl', ','] },
   { label: '终端内搜索', keys: ['Ctrl', 'Shift', 'F'] },
   { label: 'AI 助手', keys: ['Ctrl', 'Shift', 'A'] },
@@ -115,6 +142,7 @@ const SHORTCUTS: { label: string; keys: string[] }[] = [
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   initialTab,
   settings,
+  localShells = [],
   activeSessionId,
   updateInfo,
   updateProgress,
@@ -178,11 +206,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [modelHighlightIdx, setModelHighlightIdx] = useState(-1);
   const modelComboRef = useRef<HTMLDivElement>(null);
   const modelInputRef = useRef<HTMLInputElement>(null);
+  const [fetchingCliModels, setFetchingCliModels] = useState(false);
+  const [fetchedCliModels, setFetchedCliModels] = useState<{ command: string; models: string[] } | null>(null);
+  const [cliModelMenuOpen, setCliModelMenuOpen] = useState(false);
+  const [cliModelFilterActive, setCliModelFilterActive] = useState(false);
+  const [cliModelHighlightIdx, setCliModelHighlightIdx] = useState(-1);
+  const cliModelComboRef = useRef<HTMLDivElement>(null);
+  const cliModelInputRef = useRef<HTMLInputElement>(null);
 
   // Backup state
   const [vaultPass, setVaultPass] = useState('');
   const [includeSecrets, setIncludeSecrets] = useState(false);
   const [backupErr, setBackupErr] = useState('');
+
+  // Auto-start & portable clean uninstall state
+  const [autoStart, setAutoStart] = useState(false);
+  const [autoStartBusy, setAutoStartBusy] = useState(false);
+  const [uninstallOpen, setUninstallOpen] = useState(false);
+  const [uninstallRemoveData, setUninstallRemoveData] = useState(true);
+  const [uninstalling, setUninstalling] = useState(false);
 
   useEffect(() => {
     if (
@@ -196,6 +238,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     const api = getApi();
     void api.AppInfo().then(setAppInfo).catch(() => {});
+    void api.GetAutoStart?.().then((v) => setAutoStart(Boolean(v))).catch(() => {});
     void api.DetectSystemProxy?.().then(setSysProxy).catch(() => {});
     void api.KnownHosts().then(setKnownHosts).catch(() => {});
     void api.LocalKeys().then(setKeys).catch(() => {});
@@ -225,10 +268,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         if (e.defaultPrevented || document.querySelector('[data-radix-select-viewport]')) {
           return;
         }
+        if (uninstallOpen) {
+          if (!uninstalling) {
+            e.stopPropagation();
+            setUninstallOpen(false);
+          }
+          return;
+        }
         if (modelMenuOpen) {
           e.stopPropagation();
           setModelMenuOpen(false);
           setModelHighlightIdx(-1);
+          return;
+        }
+        if (cliModelMenuOpen) {
+          e.stopPropagation();
+          setCliModelMenuOpen(false);
+          setCliModelHighlightIdx(-1);
           return;
         }
         onClose();
@@ -236,7 +292,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, modelMenuOpen]);
+  }, [onClose, modelMenuOpen, cliModelMenuOpen, uninstallOpen, uninstalling]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -249,6 +305,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     document.addEventListener('mousedown', onMouseDown);
     return () => document.removeEventListener('mousedown', onMouseDown);
   }, [modelMenuOpen]);
+
+  useEffect(() => {
+    if (!cliModelMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (cliModelComboRef.current && !cliModelComboRef.current.contains(e.target as Node)) {
+        setCliModelMenuOpen(false);
+        setCliModelHighlightIdx(-1);
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [cliModelMenuOpen]);
 
   const patch = (partial: Partial<AppSettings>) => {
     void onUpdateSettings(partial);
@@ -413,6 +481,99 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setAiErr('');
   };
 
+  const normalizedCliCommand = cliCommand.trim().toLowerCase();
+
+  const matchedCliPreset = useMemo(
+    () => AI_CLI_PRESETS.find((p) => p.command && p.command === normalizedCliCommand) || null,
+    [normalizedCliCommand],
+  );
+
+  const liveCliModels = useMemo(
+    () => (fetchedCliModels && fetchedCliModels.command === normalizedCliCommand ? fetchedCliModels.models : null),
+    [fetchedCliModels, normalizedCliCommand],
+  );
+
+  const availableCliModels = useMemo(
+    () => liveCliModels ?? matchedCliPreset?.models ?? [],
+    [liveCliModels, matchedCliPreset],
+  );
+
+  const filteredCliModels = useMemo(() => {
+    const q = cliModel.trim().toLowerCase();
+    if (!cliModelFilterActive || !q) return availableCliModels;
+    return availableCliModels.filter((m) => m.toLowerCase().includes(q));
+  }, [availableCliModels, cliModel, cliModelFilterActive]);
+
+  const showCliDefaultOption = !cliModelFilterActive || !cliModel.trim() || filteredCliModels.length === 0;
+
+  const cliMenuOptions = useMemo(() => {
+    const opts: { value: string; label: string; isDefault?: boolean }[] = [];
+    if (showCliDefaultOption) {
+      opts.push({ value: '', label: '使用 CLI 默认模型（留空）', isDefault: true });
+    }
+    for (const m of filteredCliModels) {
+      opts.push({ value: m, label: m });
+    }
+    return opts;
+  }, [showCliDefaultOption, filteredCliModels]);
+
+  const handleFetchCliModels = async () => {
+    if (!normalizedCliCommand) {
+      setAiErr('请先选择或填写 CLI 命令');
+      return;
+    }
+    const fetchFn = getApi().FetchAIModels;
+    if (!fetchFn) {
+      setAiErr('当前版本暂不支持自动刷新模型列表');
+      return;
+    }
+    setFetchingCliModels(true);
+    setAiErr('');
+    setAiMsg('');
+    const startedAt = Date.now();
+    let clean: string[] = [];
+    let fetchErr = '';
+    try {
+      const list = await fetchFn(buildAIInput());
+      clean = Array.isArray(list)
+        ? list.filter((m): m is string => typeof m === 'string' && m.trim() !== '')
+        : [];
+    } catch (ex) {
+      fetchErr = errorMessage(ex);
+    }
+
+    const waitMs = Math.max(0, 420 - (Date.now() - startedAt));
+    if (waitMs > 0) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, waitMs));
+    }
+
+    try {
+      if (fetchErr) {
+        setAiErr(fetchErr);
+        return;
+      }
+      if (clean.length === 0) {
+        setAiErr('未获取到可用模型，请手动输入或留空使用 CLI 默认模型');
+        return;
+      }
+      setFetchedCliModels({ command: normalizedCliCommand, models: clean });
+      setCliModelFilterActive(false);
+      setCliModelMenuOpen(true);
+      setCliModelHighlightIdx(-1);
+      onToast(`已获取 ${clean.length} 个可用模型`);
+    } finally {
+      setFetchingCliModels(false);
+    }
+  };
+
+  const selectCliModelOption = (modelId: string) => {
+    setCliModel(modelId);
+    setCliModelFilterActive(false);
+    setCliModelMenuOpen(false);
+    setCliModelHighlightIdx(-1);
+    setAiErr('');
+  };
+
   const saveAI = async (e: React.FormEvent) => {
     e.preventDefault();
     setAiBusy(true);
@@ -502,8 +663,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         : TERMINAL_FONT_OPTIONS,
     [matchedFont],
   );
+  const autoLocalShell = useMemo(
+    () => localShells.find((s) => s.isDefault) ?? localShells[0],
+    [localShells],
+  );
+  const localShellSelectOptions = useMemo(
+    () => [
+      {
+        value: '__auto__',
+        label: autoLocalShell ? `自动（${autoLocalShell.name}）` : '自动推荐',
+      },
+      ...localShells.map((s) => ({ value: s.id, label: s.name })),
+    ],
+    [autoLocalShell, localShells],
+  );
+  const selectedLocalShellValue =
+    settings.defaultLocalShell && localShells.some((s) => s.id === settings.defaultLocalShell)
+      ? settings.defaultLocalShell
+      : '__auto__';
 
   return (
+    <>
     <div id="settingsDialog" className="modal-backdrop" onClick={onClose}>
       <div className="modal-sheet wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
@@ -556,6 +736,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           </button>
                         ))}
                       </div>
+                    </div>
+                    <div className="pref-row">
+                      <div>
+                        <div className="pref-row-label">开机自动启动</div>
+                        <div className="pref-row-sub">登录 Windows 时静默启动到系统托盘</div>
+                      </div>
+                      <button
+                        id="autoStartSwitch"
+                        type="button"
+                        role="switch"
+                        aria-checked={autoStart}
+                        disabled={autoStartBusy}
+                        className="apple-switch accent"
+                        onClick={async () => {
+                          const setFn = getApi().SetAutoStart;
+                          if (!setFn) return;
+                          const next = !autoStart;
+                          setAutoStartBusy(true);
+                          try {
+                            const actual = await setFn(next);
+                            setAutoStart(Boolean(actual));
+                            onToast(actual ? '已开启开机自动启动' : '已关闭开机自动启动并清理注册表项');
+                          } catch (ex) {
+                            onToast(errorMessage(ex));
+                          } finally {
+                            setAutoStartBusy(false);
+                          }
+                        }}
+                      />
                     </div>
                     <div className="pref-row">
                       <span className="pref-row-label">关闭窗口时最小化到托盘</span>
@@ -641,12 +850,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="pref-section-title">排版与光标</div>
                   <div className="pref-group">
                     <div className="pref-row">
+                      <span className="pref-row-label">默认本地终端</span>
+                      <Select
+                        id="defaultLocalShellSelect"
+                        ariaLabel="默认本地终端"
+                        size="sm"
+                        style={{ width: 220 }}
+                        value={selectedLocalShellValue}
+                        options={localShellSelectOptions}
+                        onValueChange={(val) => {
+                          patch({ defaultLocalShell: val === '__auto__' ? '' : val });
+                        }}
+                      />
+                    </div>
+                    <div className="pref-row">
                       <span className="pref-row-label">终端字体</span>
                       <Select
                         id="terminalFontSelect"
                         ariaLabel="终端字体"
                         size="sm"
-                        style={{ width: 186 }}
+                        style={{ width: 220 }}
                         value={matchedFont}
                         options={fontSelectOptions}
                         onValueChange={(val) => {
@@ -1107,6 +1330,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className={aiMode === 'api' ? 'active' : ''}
                     onClick={() => {
                       setAiMode('api');
+                      setModelMenuOpen(false);
+                      setCliModelMenuOpen(false);
                       setAiErr('');
                       setAiMsg('');
                     }}
@@ -1119,6 +1344,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className={aiMode === 'cli' ? 'active' : ''}
                     onClick={() => {
                       setAiMode('cli');
+                      setModelMenuOpen(false);
+                      setCliModelMenuOpen(false);
                       setAiErr('');
                       setAiMsg('');
                     }}
@@ -1433,6 +1660,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 } else if (['claude', 'codex', 'agy'].includes(cliCommand.trim().toLowerCase())) {
                                   setCliCommand('');
                                 }
+                                setCliModelMenuOpen(false);
+                                setCliModelFilterActive(false);
+                                setCliModelHighlightIdx(-1);
+                                setAiErr('');
+                                setAiMsg('');
                               }}
                             >
                               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 4 }}>
@@ -1461,30 +1693,223 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="pref-section">
                       <div className="pref-section-title">调用参数</div>
                       <div className="pref-group-pad">
-                        <div className="field-row">
-                          <div className="field-group grow">
-                            <label className="field-label" htmlFor="cliCommand">CLI 命令或完整路径</label>
-                            <input
-                              id="cliCommand"
-                              className="input mono"
-                              required
-                              value={cliCommand}
-                              onChange={(e) => setCliCommand(e.target.value)}
-                              placeholder="claude / codex / agy"
-                            />
-                          </div>
-                          <div className="field-group grow">
-                            <label className="field-label" htmlFor="cliModel">指定模型（可选）</label>
-                            <input
-                              id="cliModel"
-                              className="input mono"
-                              value={cliModel}
-                              onChange={(e) => setCliModel(e.target.value)}
-                              placeholder={
-                                AI_CLI_PRESETS.find((x) => x.command === cliCommand.trim().toLowerCase())?.modelHint ||
-                                '留空使用 CLI 默认模型'
-                              }
-                            />
+                        <div className="field-group">
+                          <label className="field-label" htmlFor="cliCommand">CLI 命令或完整路径</label>
+                          <input
+                            id="cliCommand"
+                            className="input mono"
+                            required
+                            value={cliCommand}
+                            onChange={(e) => setCliCommand(e.target.value)}
+                            placeholder="claude / codex / agy"
+                          />
+                        </div>
+
+                        <div className="field-group">
+                          <label className="field-label" htmlFor="cliModel">指定模型（可选）</label>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
+                            <div
+                              ref={cliModelComboRef}
+                              className="input-with-action"
+                              style={{ flex: 1, minWidth: 0, position: 'relative' }}
+                            >
+                              <input
+                                ref={cliModelInputRef}
+                                id="cliModel"
+                                className="input mono"
+                                autoComplete="off"
+                                role="combobox"
+                                aria-expanded={cliModelMenuOpen}
+                                aria-controls="cliModelMenu"
+                                aria-autocomplete="list"
+                                style={{ paddingRight: 30 }}
+                                value={cliModel}
+                                onFocus={() => {
+                                  setCliModelFilterActive(false);
+                                  setCliModelMenuOpen(true);
+                                  setCliModelHighlightIdx(-1);
+                                }}
+                                onClick={() => {
+                                  if (!cliModelMenuOpen) {
+                                    setCliModelFilterActive(false);
+                                    setCliModelMenuOpen(true);
+                                    setCliModelHighlightIdx(-1);
+                                  }
+                                }}
+                                onChange={(e) => {
+                                  setCliModel(e.target.value);
+                                  setCliModelFilterActive(true);
+                                  setCliModelMenuOpen(true);
+                                  setCliModelHighlightIdx(-1);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'ArrowDown') {
+                                    e.preventDefault();
+                                    if (!cliModelMenuOpen) {
+                                      setCliModelMenuOpen(true);
+                                      setCliModelHighlightIdx(cliMenuOptions.length > 0 ? 0 : -1);
+                                    } else if (cliMenuOptions.length > 0) {
+                                      setCliModelHighlightIdx((idx) => (idx + 1) % cliMenuOptions.length);
+                                    }
+                                  } else if (e.key === 'ArrowUp') {
+                                    e.preventDefault();
+                                    if (cliModelMenuOpen && cliMenuOptions.length > 0) {
+                                      setCliModelHighlightIdx((idx) => (idx <= 0 ? cliMenuOptions.length - 1 : idx - 1));
+                                    }
+                                  } else if (
+                                    e.key === 'Enter' &&
+                                    cliModelMenuOpen &&
+                                    cliModelHighlightIdx >= 0 &&
+                                    cliMenuOptions[cliModelHighlightIdx]
+                                  ) {
+                                    e.preventDefault();
+                                    selectCliModelOption(cliMenuOptions[cliModelHighlightIdx].value);
+                                  } else if (e.key === 'Escape' && cliModelMenuOpen) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setCliModelMenuOpen(false);
+                                    setCliModelHighlightIdx(-1);
+                                  }
+                                }}
+                                placeholder={matchedCliPreset?.modelHint || '留空使用 CLI 默认模型'}
+                              />
+                              <button
+                                type="button"
+                                className="input-eye-btn"
+                                tabIndex={-1}
+                                title={cliModelMenuOpen ? '收起模型列表' : '展开模型列表'}
+                                aria-label={cliModelMenuOpen ? '收起模型列表' : '展开模型列表'}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setCliModelMenuOpen((open) => {
+                                    const next = !open;
+                                    if (next) {
+                                      setCliModelFilterActive(false);
+                                      setCliModelHighlightIdx(-1);
+                                      cliModelInputRef.current?.focus();
+                                    }
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <ChevronDown
+                                  size={13.5}
+                                  style={{
+                                    transform: cliModelMenuOpen ? 'rotate(180deg)' : undefined,
+                                    transition: 'transform 140ms ease',
+                                  }}
+                                />
+                              </button>
+
+                              {cliModelMenuOpen && (
+                                <div
+                                  id="cliModelMenu"
+                                  role="listbox"
+                                  className="context-menu"
+                                  style={{
+                                    position: 'absolute',
+                                    top: 'calc(100% + 4px)',
+                                    left: 0,
+                                    right: 0,
+                                    maxHeight: 210,
+                                    overflowY: 'auto',
+                                    zIndex: 60,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      padding: '4px 9px 5px',
+                                      fontSize: 11,
+                                      fontWeight: 500,
+                                      color: 'var(--ink-tertiary)',
+                                      borderBottom: '1px solid var(--border-hairline)',
+                                      marginBottom: 3,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'space-between',
+                                      gap: 8,
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    <span>
+                                      {liveCliModels
+                                        ? `已获取 ${liveCliModels.length} 个可用模型`
+                                        : '常用模型（点击右侧刷新本机列表）'}
+                                    </span>
+                                    {cliModelFilterActive && cliModel.trim() && (
+                                      <span className="mono" style={{ fontSize: 10.5 }}>
+                                        匹配 {filteredCliModels.length}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {cliMenuOptions.map((opt, idx) => {
+                                    const selected = cliModel.trim() === opt.value;
+                                    const highlighted = idx === cliModelHighlightIdx;
+                                    return (
+                                      <button
+                                        key={opt.isDefault ? '__cli_default__' : opt.value}
+                                        type="button"
+                                        role="option"
+                                        aria-selected={selected}
+                                        className={`context-menu-item ${opt.isDefault ? '' : 'mono'} ${selected ? 'active-row' : ''}`.trim()}
+                                        style={{
+                                          justifyContent: 'space-between',
+                                          fontSize: 12,
+                                          padding: '6px 9px',
+                                          width: '100%',
+                                          flexShrink: 0,
+                                          color: opt.isDefault && !selected ? 'var(--ink-secondary)' : undefined,
+                                          background: !selected && highlighted ? 'var(--bg-hover)' : undefined,
+                                        }}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onMouseEnter={() => setCliModelHighlightIdx(idx)}
+                                        onClick={() => selectCliModelOption(opt.value)}
+                                      >
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                          {opt.label}
+                                        </span>
+                                        {selected && <Check size={12} style={{ flexShrink: 0 }} />}
+                                      </button>
+                                    );
+                                  })}
+
+                                  {cliModelFilterActive && cliModel.trim() && filteredCliModels.length === 0 ? (
+                                    <div
+                                      style={{
+                                        padding: '6px 10px 8px',
+                                        fontSize: 11.5,
+                                        color: 'var(--ink-tertiary)',
+                                      }}
+                                    >
+                                      无匹配预设，将使用自定义模型「{cliModel.trim()}」
+                                    </div>
+                                  ) : availableCliModels.length === 0 ? (
+                                    <div
+                                      style={{
+                                        padding: '6px 10px 8px',
+                                        fontSize: 11.5,
+                                        color: 'var(--ink-tertiary)',
+                                      }}
+                                    >
+                                      暂无预设模型，可直接输入或点击右侧刷新
+                                    </div>
+                                  ) : null}
+                                </div>
+                              )}
+                            </div>
+
+                            <button
+                              id="fetchCliModelsBtn"
+                              type="button"
+                              className="btn btn-icon-md"
+                              disabled={fetchingCliModels || aiBusy}
+                              title="刷新当前 CLI 可用模型列表"
+                              aria-label="刷新 CLI 模型列表"
+                              onClick={() => void handleFetchCliModels()}
+                            >
+                              <RefreshCw size={13.5} className={fetchingCliModels ? 'spin' : ''} />
+                            </button>
                           </div>
                         </div>
 
@@ -1607,10 +2032,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div className="pref-row-label" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                             <span>版本更新</span>
-                            {updateInfo?.hasUpdate ? (
-                              <span className="pill-badge accent mono update-badge-in">发现新版本 v{updateInfo.latestVersion}</span>
+                            {checkingUpdate ? (
+                              <span key="checking" className="pill-badge neutral update-badge-in">正在检查…</span>
+                            ) : updateInfo?.hasUpdate ? (
+                              <span key="available" className="pill-badge accent mono update-badge-in">发现新版本 v{updateInfo.latestVersion}</span>
                             ) : updateInfo ? (
-                              <span className="pill-badge safe update-badge-in">已是最新</span>
+                              <span key="latest" className="pill-badge safe update-badge-in">已是最新</span>
                             ) : null}
                           </div>
                         </div>
@@ -1630,12 +2057,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <button
                             id="checkUpdateBtn"
                             type="button"
-                            className="btn btn-sm btn-pref-action"
+                            className={`btn btn-sm btn-pref-action btn-check-update ${checkingUpdate ? 'is-checking' : ''}`}
                             disabled={checkingUpdate || updatingApp}
+                            aria-busy={checkingUpdate}
                             onClick={() => void onCheckUpdate?.()}
                           >
-                            {checkingUpdate && <Loader2 size={12} className="spin" />}
-                            检查更新
+                            <RefreshCw size={12.5} className={`update-check-icon ${checkingUpdate ? 'is-spinning' : ''}`} />
+                            <span>{checkingUpdate ? '检查中…' : '检查更新'}</span>
                           </button>
                         </div>
                       </div>
@@ -1729,6 +2157,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </button>
                       </div>
                     </div>
+
+                    <div className="pref-row">
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="pref-row-label">卸载前彻底清理</div>
+                        <div className="pref-row-sub">移除开机自启、停止后台服务并可选清空本地数据</div>
+                      </div>
+                      <div className="pref-row-actions">
+                        <button
+                          id="openUninstallBtn"
+                          type="button"
+                          className="btn btn-sm btn-danger btn-pref-action"
+                          onClick={() => {
+                            setUninstallRemoveData(true);
+                            setUninstallOpen(true);
+                          }}
+                        >
+                          清理并退出
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -1755,5 +2203,90 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
       </div>
     </div>
+
+    {uninstallOpen && (
+      <div
+        id="uninstallConfirmDialog"
+        className="modal-backdrop"
+        style={{ zIndex: 140 }}
+        onClick={() => {
+          if (!uninstalling) setUninstallOpen(false);
+        }}
+      >
+        <div className="modal-sheet" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2>彻底清理并退出</h2>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="关闭确认窗口"
+              disabled={uninstalling}
+              onClick={() => setUninstallOpen(false)}
+            >
+              <X size={15} />
+            </button>
+          </div>
+          <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.65, color: 'var(--ink-secondary)' }}>
+              <li>关闭全部活跃终端 / SSH 会话、端口转发、MCP 桥接与系统托盘</li>
+              <li>彻底清除 Windows 开机自启注册表项（含 StartupApproved 残留）</li>
+            </ul>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 8,
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                cursor: uninstalling ? 'default' : 'pointer',
+              }}
+            >
+              <Checkbox
+                checked={uninstallRemoveData}
+                disabled={uninstalling}
+                onChange={(e) => setUninstallRemoveData(e.target.checked)}
+              />
+              <span>同时彻底删除本地数据目录（配置、加密凭据、日志与 WebView2 缓存）</span>
+            </label>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-tertiary)', lineHeight: 1.5 }}>
+              退出后直接删除 Shell.exe 即可完成无残留卸载。
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button
+              type="button"
+              className="btn"
+              disabled={uninstalling}
+              onClick={() => setUninstallOpen(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger-solid"
+              disabled={uninstalling}
+              onClick={async () => {
+                const fn = getApi().UninstallAndQuit;
+                if (!fn) {
+                  onToast('当前版本暂不支持自动清理');
+                  return;
+                }
+                setUninstalling(true);
+                try {
+                  await fn(uninstallRemoveData);
+                } catch (ex) {
+                  setUninstalling(false);
+                  onToast(errorMessage(ex));
+                }
+              }}
+            >
+              {uninstalling && <Loader2 size={12.5} className="spin" />}
+              {uninstalling ? '正在清理…' : '确认清理并退出'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };

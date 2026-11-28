@@ -15,6 +15,7 @@ import type {
   ImportSummary,
   KnownHostEntry,
   LocalKeyInfo,
+  LocalShellProfile,
   PolicyConfig,
   PolicyEvaluation,
   Profile,
@@ -33,6 +34,9 @@ import type {
 interface GoAppBindings {
   AppInfo(): Promise<AppInfoView>;
   OpenDataDir(): Promise<void>;
+  GetAutoStart?(): Promise<boolean>;
+  SetAutoStart?(enabled: boolean): Promise<boolean>;
+  UninstallAndQuit?(removeData: boolean): Promise<void>;
   CheckForUpdate(): Promise<UpdateInfo>;
   DownloadAndApplyUpdate(): Promise<void>;
   TermWSURL(sessionId: string): Promise<string>;
@@ -56,6 +60,8 @@ interface GoAppBindings {
   ExportHosts(ids: string[], format: HostExportFormat): Promise<HostExportResult>;
 
   Connect(id: string, p: Profile, secret: string, remember: boolean, cols: number, rows: number): Promise<void>;
+  LocalShells?(): Promise<LocalShellProfile[]>;
+  StartLocalTerminal?(id: string, shellId: string, cwd: string, cols: number, rows: number): Promise<LocalShellProfile>;
   Disconnect(id: string): Promise<void>;
   Input(id: string, b64: string): Promise<void>;
   Resize(id: string, cols: number, rows: number): Promise<void>;

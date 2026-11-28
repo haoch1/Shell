@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeftRight,
   ArrowUpRight,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -17,9 +18,10 @@ import {
   Sparkles,
   SplitSquareHorizontal,
   SplitSquareVertical,
+  Terminal,
   X,
 } from 'lucide-react';
-import type { DrawerMode, Profile, SessionRecord, WorkspaceTab } from '../types/shell';
+import type { DrawerMode, LocalShellProfile, Profile, SessionRecord, WorkspaceTab } from '../types/shell';
 import { collectLeaves, formatHostDisplay } from '../lib/utils';
 import { getRuntime } from '../lib/bridge';
 import { HostIcon } from './HostIcon';
@@ -42,6 +44,8 @@ interface TitlebarProps {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   profiles: Profile[];
+  localShells?: LocalShellProfile[];
+  defaultLocalShellId?: string;
   tabs: WorkspaceTab[];
   activeTabId: string | null;
   sessions: Record<string, SessionRecord>;
@@ -54,6 +58,7 @@ interface TitlebarProps {
   onCloneTab: (tabId: string) => void;
   onDetachPane: (tabId: string, paneId: string) => void;
   onNewConnection?: () => void;
+  onOpenLocalTerminal?: (shellId?: string) => void;
   onSplit: (dir: 'horizontal' | 'vertical', tabId?: string) => void;
   onToggleBroadcast: () => void;
   onOpenSearch: () => void;
@@ -66,6 +71,8 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   sidebarOpen,
   onToggleSidebar,
   profiles,
+  localShells = [],
+  defaultLocalShellId,
   tabs,
   activeTabId,
   sessions,
@@ -78,6 +85,7 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onCloneTab,
   onDetachPane,
   onNewConnection: _onNewConnection,
+  onOpenLocalTerminal,
   onSplit,
   onToggleBroadcast,
   onOpenSearch,
@@ -86,12 +94,25 @@ export const Titlebar: React.FC<TitlebarProps> = ({
 }) => {
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [allTabsMenu, setAllTabsMenu] = useState<{ left: number; top: number } | null>(null);
+  const [localShellMenu, setLocalShellMenu] = useState<{ left: number; top: number } | null>(null);
   const [tabFilter, setTabFilter] = useState('');
   const [maximised, setMaximised] = useState(false);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const tabFilterRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!localShellMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setLocalShellMenu(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [localShellMenu]);
 
   useEffect(() => {
     if (!allTabsMenu) {
@@ -123,8 +144,18 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   const activeLeaf = activeLeaves.find((l) => l.paneId === activeTab?.activePaneId) ?? activeLeaves[0];
   const activeSession = activeLeaf ? sessions[activeLeaf.sessionId] : undefined;
   const isConnected = activeSession?.state === 'connected';
+  const isLocalSession = activeSession?.kind === 'local';
   const isMultiPane = activeLeaves.length > 1;
   const rt = getRuntime();
+
+  const effectiveDefaultShell = useMemo(() => {
+    if (!localShells.length) return undefined;
+    if (defaultLocalShellId) {
+      const matched = localShells.find((s) => s.id === defaultLocalShellId);
+      if (matched) return matched;
+    }
+    return localShells.find((s) => s.isDefault) ?? localShells[0];
+  }, [localShells, defaultLocalShellId]);
 
   const updateScrollState = useCallback(() => {
     const el = stripRef.current;
@@ -165,32 +196,62 @@ export const Titlebar: React.FC<TitlebarProps> = ({
     el.scrollBy({ left: delta, behavior: 'smooth' });
   };
 
-  const syncMaximised = useCallback(() => {
-    if (!rt?.WindowIsMaximised) return;
-    void rt
-      .WindowIsMaximised()
-      .then((val) => setMaximised(Boolean(val)))
-      .catch(() => {});
-  }, [rt]);
+  const toggleGuardUntilRef = useRef(0);
+  const confirmTimerRef = useRef<number | null>(null);
+
+  const syncMaximised = useCallback(
+    (force = false) => {
+      if (!rt?.WindowIsMaximised) return;
+      if (!force && Date.now() < toggleGuardUntilRef.current) return;
+      void rt
+        .WindowIsMaximised()
+        .then((val) => {
+          if (!force && Date.now() < toggleGuardUntilRef.current) return;
+          setMaximised(Boolean(val));
+        })
+        .catch(() => {});
+    },
+    [rt],
+  );
 
   useEffect(() => {
-    syncMaximised();
-    let timer: number | null = null;
+    syncMaximised(true);
+    let rafId: number | null = null;
+    let trailingTimer: number | null = null;
     const onResize = () => {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(syncMaximised, 80);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        if (Date.now() >= toggleGuardUntilRef.current) {
+          syncMaximised();
+        }
+      });
+      if (trailingTimer !== null) window.clearTimeout(trailingTimer);
+      trailingTimer = window.setTimeout(() => {
+        trailingTimer = null;
+        syncMaximised(true);
+      }, 180);
     };
     window.addEventListener('resize', onResize);
     return () => {
-      if (timer !== null) window.clearTimeout(timer);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (trailingTimer !== null) window.clearTimeout(trailingTimer);
+      if (confirmTimerRef.current !== null) window.clearTimeout(confirmTimerRef.current);
       window.removeEventListener('resize', onResize);
     };
   }, [syncMaximised]);
 
   const handleToggleMaximise = () => {
+    toggleGuardUntilRef.current = Date.now() + 140;
     rt?.WindowToggleMaximise();
     setMaximised((v) => !v);
-    window.setTimeout(syncMaximised, 120);
+    if (confirmTimerRef.current !== null) {
+      window.clearTimeout(confirmTimerRef.current);
+    }
+    confirmTimerRef.current = window.setTimeout(() => {
+      confirmTimerRef.current = null;
+      syncMaximised(true);
+    }, 180);
   };
 
   const tabState = (tab: WorkspaceTab): 'connected' | 'connecting' | 'closed' => {
@@ -211,12 +272,22 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   const tabInfo = (tab: WorkspaceTab) => {
     const leaves = collectLeaves(tab.root);
     const activeLeafForTab = leaves.find((l) => l.paneId === tab.activePaneId) ?? leaves[0];
+    const activeSessForTab = activeLeafForTab ? sessions[activeLeafForTab.sessionId] : undefined;
     const prof = activeLeafForTab ? sessionProfile(activeLeafForTab.sessionId) : undefined;
+    const isLocal = activeSessForTab?.kind === 'local';
     const isSplit = leaves.length > 1;
     const title = isSplit
-      ? leaves.map((l) => profileDisplayName(sessionProfile(l.sessionId), hideHostIp) || '终端').join(' / ')
-      : profileDisplayName(prof, hideHostIp) || tab.title;
-    return { leaves, prof, isSplit, title };
+      ? leaves
+          .map((l) => {
+            const s = sessions[l.sessionId];
+            if (s?.kind === 'local') return s.localShell?.name || s.profile.name || '本地终端';
+            return profileDisplayName(sessionProfile(l.sessionId), hideHostIp) || '终端';
+          })
+          .join(' / ')
+      : isLocal
+        ? activeSessForTab?.localShell?.name || activeSessForTab?.profile.name || tab.title
+        : profileDisplayName(prof, hideHostIp) || tab.title;
+    return { leaves, prof, isLocal, isSplit, title };
   };
 
   const hasOverflow = canScrollLeft || canScrollRight;
@@ -279,11 +350,13 @@ export const Titlebar: React.FC<TitlebarProps> = ({
         >
           {tabs.map((tab) => {
             const st = tabState(tab);
-            const { leaves, prof, isSplit, title } = tabInfo(tab);
+            const { leaves, prof, isLocal, isSplit, title } = tabInfo(tab);
             const active = tab.id === (paneDrag.hoverTab ?? activeTabId);
             const tooltip = isSplit
               ? `${title} (${leaves.length} 个分屏)\n拖动当前会话到终端边缘分屏`
-              : (prof && !hideHostIp ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port)})` : title) + '\n拖动当前会话到终端边缘分屏';
+              : isLocal
+                ? `${title} · 本地终端\n拖动当前会话到终端边缘分屏`
+                : (prof && !hideHostIp ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port)})` : title) + '\n拖动当前会话到终端边缘分屏';
             return (
               <div
                 key={tab.id}
@@ -373,6 +446,52 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           </button>
         )}
 
+        {onOpenLocalTerminal && (
+          <div className={`titlebar-local-group ${localShellMenu ? 'open' : ''}`}>
+            <Tooltip label="新建本地终端" shortcut="Ctrl+Shift+T" side="bottom">
+              <button
+                id="newLocalTermBtn"
+                type="button"
+                className="icon-btn titlebar-local-btn"
+                aria-label="新建本地终端"
+                onClick={() => {
+                  setLocalShellMenu(null);
+                  onOpenLocalTerminal();
+                }}
+              >
+                <Terminal size={13.5} strokeWidth={1.8} />
+              </button>
+            </Tooltip>
+            {localShells.length > 1 && (
+              <button
+                id="localShellMenuBtn"
+                type="button"
+                className={`titlebar-local-caret ${localShellMenu ? 'active' : ''}`}
+                title="选择本地终端"
+                aria-label="选择本地终端"
+                aria-expanded={Boolean(localShellMenu)}
+                aria-haspopup="menu"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (localShellMenu) {
+                    setLocalShellMenu(null);
+                    return;
+                  }
+                  const groupEl = e.currentTarget.closest('.titlebar-local-group') ?? e.currentTarget;
+                  const rect = groupEl.getBoundingClientRect();
+                  const menuW = 216;
+                  setLocalShellMenu({
+                    left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)),
+                    top: rect.bottom + 6,
+                  });
+                }}
+              >
+                <ChevronDown size={10.5} strokeWidth={2.2} />
+              </button>
+            )}
+          </div>
+        )}
+
         <Tooltip label="新建标签 / 命令面板" shortcut="Ctrl+K" side="bottom">
           <button
             id="newTabBtn"
@@ -431,32 +550,36 @@ export const Titlebar: React.FC<TitlebarProps> = ({
                 </button>
               </Tooltip>
             )}
-            <span className="titlebar-divider" />
-            <Tooltip label="SFTP 文件管理" side="bottom">
-              <button
-                id="sftpBtn"
-                type="button"
-                className={`icon-btn ${drawer === 'sftp' ? 'active' : ''}`}
-                disabled={!isConnected}
-                aria-label="SFTP 文件管理"
-                onClick={() => onToggleDrawer('sftp')}
-              >
-                <FolderOpen size={14} strokeWidth={1.75} />
-              </button>
-            </Tooltip>
+            {!isLocalSession && (
+              <>
+                <span className="titlebar-divider" />
+                <Tooltip label="SFTP 文件管理" side="bottom">
+                  <button
+                    id="sftpBtn"
+                    type="button"
+                    className={`icon-btn ${drawer === 'sftp' ? 'active' : ''}`}
+                    disabled={!isConnected}
+                    aria-label="SFTP 文件管理"
+                    onClick={() => onToggleDrawer('sftp')}
+                  >
+                    <FolderOpen size={14} strokeWidth={1.75} />
+                  </button>
+                </Tooltip>
 
-            <Tooltip label="端口转发隧道" side="bottom">
-              <button
-                id="tunnelsBtn"
-                type="button"
-                className={`icon-btn ${drawer === 'tunnels' ? 'active' : ''}`}
-                disabled={!isConnected}
-                aria-label="端口转发隧道"
-                onClick={() => onToggleDrawer('tunnels')}
-              >
-                <ArrowLeftRight size={14} strokeWidth={1.75} />
-              </button>
-            </Tooltip>
+                <Tooltip label="端口转发隧道" side="bottom">
+                  <button
+                    id="tunnelsBtn"
+                    type="button"
+                    className={`icon-btn ${drawer === 'tunnels' ? 'active' : ''}`}
+                    disabled={!isConnected}
+                    aria-label="端口转发隧道"
+                    onClick={() => onToggleDrawer('tunnels')}
+                  >
+                    <ArrowLeftRight size={14} strokeWidth={1.75} />
+                  </button>
+                </Tooltip>
+              </>
+            )}
           </>
         )}
 
@@ -505,8 +628,8 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label="最小化"
           onClick={() => rt?.WindowMinimise()}
         >
-          <svg width="10.5" height="10.5" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-            <path d="M1.5 5.5H9.5" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <path d="M1 5H9" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
           </svg>
         </button>
         <button
@@ -516,16 +639,32 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label={maximised ? '向下还原' : '最大化'}
           onClick={handleToggleMaximise}
         >
-          {maximised ? (
-            <svg width="10.5" height="10.5" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-              <rect x="1.5" y="3.2" width="6.3" height="6.3" rx="1" stroke="currentColor" strokeWidth="1.1" />
-              <path d="M3.4 3.2V2.2C3.4 1.75 3.75 1.4 4.2 1.4H8.8C9.25 1.4 9.6 1.75 9.6 2.2V6.8C9.6 7.25 9.25 7.6 8.8 7.6H7.8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg width="10.5" height="10.5" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-              <rect x="1.6" y="1.6" width="7.8" height="7.8" rx="1.2" stroke="currentColor" strokeWidth="1.15" />
-            </svg>
-          )}
+          <svg
+            className={`win-max-icon ${maximised ? 'is-maximised' : ''}`}
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              className="win-max-back"
+              d="M3 2.5V1.8C3 1.36 3.36 1 3.8 1H8.2C8.64 1 9 1.36 9 1.8V6.2C9 6.64 8.64 7 8.2 7H7.5"
+              stroke="currentColor"
+              strokeWidth="1.1"
+              strokeLinecap="round"
+            />
+            <rect
+              className="win-max-front"
+              x="1"
+              y="1"
+              width="8"
+              height="8"
+              rx="1.25"
+              stroke="currentColor"
+              strokeWidth="1.1"
+            />
+          </svg>
         </button>
         <button
           type="button"
@@ -534,8 +673,8 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           aria-label="关闭窗口"
           onClick={() => rt?.Quit()}
         >
-          <svg width="10.5" height="10.5" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-            <path d="M2 2L9 9M9 2L2 9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <path d="M1.5 1.5L8.5 8.5M8.5 1.5L1.5 8.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
           </svg>
         </button>
       </div>
@@ -613,13 +752,21 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               ) : (
                 filteredTabs.map((tab) => {
                   const st = tabState(tab);
-                  const { leaves, prof, isSplit, title } = tabInfo(tab);
+                  const { leaves, prof, isLocal, isSplit, title } = tabInfo(tab);
                   const active = tab.id === activeTabId;
                   return (
                     <div
                       key={tab.id}
                       className={`tabs-switcher-row ${active ? 'active' : ''}`}
-                      title={isSplit ? `${title} (${leaves.length} 个分屏)` : prof && !hideHostIp ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port)})` : title}
+                      title={
+                        isSplit
+                          ? `${title} (${leaves.length} 个分屏)`
+                          : isLocal
+                            ? `${title} · 本地终端`
+                            : prof && !hideHostIp
+                              ? `${title} (${prof.user}@${formatHostDisplay(prof.host, prof.port)})`
+                              : title
+                      }
                       onClick={() => {
                         onSelectTab(tab.id);
                         setAllTabsMenu(null);
@@ -716,7 +863,11 @@ export const Titlebar: React.FC<TitlebarProps> = ({
               <>
                 <div className="context-menu-sep" />
                 {menuLeaves.map((leaf) => {
-                  const name = profileDisplayName(sessionProfile(leaf.sessionId), hideHostIp) || '终端';
+                  const leafSess = sessions[leaf.sessionId];
+                  const name =
+                    leafSess?.kind === 'local'
+                      ? leafSess.localShell?.name || leafSess.profile.name || '本地终端'
+                      : profileDisplayName(sessionProfile(leaf.sessionId), hideHostIp) || '终端';
                   return (
                     <button
                       key={leaf.paneId}
@@ -776,6 +927,52 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             )}
           </div>
         </>
+        );
+      })()}
+
+      {localShellMenu && localShells.length > 0 && (() => {
+        const winShells = localShells.filter((s) => s.category !== 'wsl');
+        const wslShells = localShells.filter((s) => s.category === 'wsl');
+        const renderShellItem = (sh: LocalShellProfile) => {
+          const isDef = effectiveDefaultShell?.id === sh.id;
+          return (
+            <button
+              key={sh.id}
+              type="button"
+              role="menuitem"
+              className={`context-menu-item local-shell-item ${isDef ? 'active-row' : ''}`}
+              onClick={() => {
+                setLocalShellMenu(null);
+                onOpenLocalTerminal?.(sh.id);
+              }}
+            >
+              <HostIcon iconOverride={sh.icon} size="xs" />
+              <span className="local-shell-name">{sh.name}</span>
+              {isDef && <Check size={12} className="local-shell-check" />}
+            </button>
+          );
+        };
+        return (
+          <>
+            <div
+              style={{ position: 'fixed', inset: 0, zIndex: 139 }}
+              onClick={() => setLocalShellMenu(null)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setLocalShellMenu(null);
+              }}
+            />
+            <div
+              id="localShellMenu"
+              role="menu"
+              className="context-menu local-shell-menu"
+              style={{ left: localShellMenu.left, top: localShellMenu.top, minWidth: 216 }}
+            >
+              {winShells.map(renderShellItem)}
+              {winShells.length > 0 && wslShells.length > 0 && <div className="context-menu-sep" />}
+              {wslShells.map(renderShellItem)}
+            </div>
+          </>
         );
       })()}
     </header>

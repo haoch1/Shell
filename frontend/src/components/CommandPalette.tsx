@@ -16,7 +16,7 @@ import {
   Sun,
   Terminal,
 } from 'lucide-react';
-import type { Profile, Snippet } from '../types/shell';
+import type { LocalShellProfile, Profile, Snippet } from '../types/shell';
 import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { sameSessionTarget } from '../lib/sessionAttempt';
 import { HostIcon } from './HostIcon';
@@ -34,14 +34,19 @@ interface PaletteAction {
 
 interface CommandPaletteProps {
   profiles: Profile[];
+  localShells?: LocalShellProfile[];
+  defaultLocalShellId?: string;
   splitSource?: Profile;
+  splitSourceLocalShell?: LocalShellProfile;
   snippets: Snippet[];
   hasActiveSession: boolean;
+  isActiveLocalSession?: boolean;
   isDark: boolean;
   hideHostIp?: boolean;
   onClose: () => void;
   onConnectProfile: (p: Profile) => void;
   onQuickConnect: (target: { user: string; host: string; port: number }) => void;
+  onOpenLocalTerminal?: (shellId?: string) => void;
   onRunSnippet: (s: Snippet) => void;
   onNewHost: () => void;
   onImportSSH: () => void;
@@ -58,14 +63,19 @@ const MAX_PALETTE_ITEMS = 40;
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
   profiles,
+  localShells = [],
+  defaultLocalShellId,
   splitSource,
+  splitSourceLocalShell,
   snippets,
   hasActiveSession,
+  isActiveLocalSession = false,
   isDark,
   hideHostIp = false,
   onClose,
   onConnectProfile,
   onQuickConnect,
+  onOpenLocalTerminal,
   onRunSnippet,
   onNewHost,
   onImportSSH,
@@ -111,19 +121,34 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
 
     if (splitSource) {
-      const currentLabel = '当前主机';
-      if (!q || `${currentLabel} ${splitSource.name} ${splitSource.host}`.toLowerCase().includes(q)) {
-        out.push({
-          id: 'split-current',
-          label: currentLabel,
-          subtitle: hideHostIp
-            ? splitSource.user || undefined
-            : `${splitSource.user}@${formatHostDisplay(splitSource.host, splitSource.port)}`,
-          tag: splitSource.group || undefined,
-          category: '分屏',
-          icon: <HostIcon profile={splitSource} size="sm" />,
-          run: () => onConnectProfile(splitSource),
-        });
+      if (splitSourceLocalShell && onOpenLocalTerminal) {
+        const currentLabel = '当前终端';
+        if (!q || `${currentLabel} ${splitSourceLocalShell.name} 本地 local`.toLowerCase().includes(q)) {
+          out.push({
+            id: 'split-current',
+            label: currentLabel,
+            subtitle: splitSourceLocalShell.name,
+            tag: splitSourceLocalShell.category === 'wsl' ? 'WSL' : '本地',
+            category: '分屏',
+            icon: <HostIcon iconOverride={splitSourceLocalShell.icon} size="sm" />,
+            run: () => onOpenLocalTerminal(splitSourceLocalShell.id),
+          });
+        }
+      } else {
+        const currentLabel = '当前主机';
+        if (!q || `${currentLabel} ${splitSource.name} ${splitSource.host}`.toLowerCase().includes(q)) {
+          out.push({
+            id: 'split-current',
+            label: currentLabel,
+            subtitle: hideHostIp
+              ? splitSource.user || undefined
+              : `${splitSource.user}@${formatHostDisplay(splitSource.host, splitSource.port)}`,
+            tag: splitSource.group || undefined,
+            category: '分屏',
+            icon: <HostIcon profile={splitSource} size="sm" />,
+            run: () => onConnectProfile(splitSource),
+          });
+        }
       }
       if (!q || '新建 SSH 主机'.toLowerCase().includes(q)) {
         out.push({
@@ -136,9 +161,33 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     }
 
+    if (onOpenLocalTerminal && localShells.length > 0) {
+      const effectiveDefaultId =
+        (defaultLocalShellId && localShells.some((s) => s.id === defaultLocalShellId)
+          ? defaultLocalShellId
+          : localShells.find((s) => s.isDefault)?.id) ?? localShells[0]?.id;
+      for (const sh of localShells) {
+        if (splitSourceLocalShell && sh.id === splitSourceLocalShell.id) continue;
+        const hay = `${sh.name} ${sh.id} ${sh.command} ${sh.category ?? ''} 本地终端 local shell terminal pwsh powershell cmd wsl git bash`.toLowerCase();
+        if (!q || hay.includes(q)) {
+          const isDef = sh.id === effectiveDefaultId;
+          out.push({
+            id: `local-${sh.id}`,
+            label: sh.name,
+            subtitle: sh.category === 'wsl' ? 'WSL 本地终端' : '本地终端',
+            tag: sh.category === 'wsl' ? 'WSL' : isDef ? '默认' : undefined,
+            shortcut: !splitSource && isDef ? 'Ctrl+Shift+T' : undefined,
+            category: '本地终端',
+            icon: <HostIcon iconOverride={sh.icon} size="sm" />,
+            run: () => onOpenLocalTerminal(sh.id),
+          });
+        }
+      }
+    }
+
     let serverCount = 0;
     for (const p of sortedProfiles) {
-      if (splitSource && sameSessionTarget(splitSource, p)) continue;
+      if (splitSource && !splitSourceLocalShell && sameSessionTarget(splitSource, p)) continue;
       const hay = `${p.name} ${p.host} ${p.user} ${p.group ?? ''} ${(p.tags ?? []).join(' ')}`.toLowerCase();
       if (!q || hay.includes(q)) {
         if (!splitSource && !q && serverCount >= DEFAULT_VISIBLE_SERVERS) break;
@@ -165,7 +214,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     }
 
-    if (splitSource) return out.slice(0, 24);
+    if (splitSource) return out.slice(0, 28);
 
     const actions: PaletteAction[] = [
       { id: 'act-new', label: '新建 SSH 主机', shortcut: 'Ctrl+N', category: '操作', icon: <Plus size={14} />, run: onNewHost },
@@ -191,8 +240,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
     if (hasActiveSession) {
       const sessionActions: PaletteAction[] = [
-        { id: 'act-sftp', label: '打开 / 关闭 SFTP 文件管理', category: '当前会话', icon: <FolderOpen size={14} />, run: onToggleSFTP },
-        { id: 'act-tunnels', label: '管理端口转发隧道 (-L / -R / -D)', category: '当前会话', icon: <ArrowLeftRight size={14} />, run: onToggleTunnels },
+        ...(!isActiveLocalSession
+          ? [
+              { id: 'act-sftp', label: '打开 / 关闭 SFTP 文件管理', category: '当前会话', icon: <FolderOpen size={14} />, run: onToggleSFTP },
+              { id: 'act-tunnels', label: '管理端口转发隧道 (-L / -R / -D)', category: '当前会话', icon: <ArrowLeftRight size={14} />, run: onToggleTunnels },
+            ]
+          : []),
         { id: 'act-split-h', label: '向右分屏', category: '当前会话', icon: <SplitSquareHorizontal size={14} />, run: () => onSplit('horizontal') },
         { id: 'act-split-v', label: '向下分屏', category: '当前会话', icon: <SplitSquareVertical size={14} />, run: () => onSplit('vertical') },
       ];
@@ -222,13 +275,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   }, [
     query,
     sortedProfiles,
+    localShells,
+    defaultLocalShellId,
     snippets,
     splitSource,
+    splitSourceLocalShell,
     hasActiveSession,
+    isActiveLocalSession,
     isDark,
     hideHostIp,
     onConnectProfile,
     onQuickConnect,
+    onOpenLocalTerminal,
     onNewHost,
     onImportSSH,
     onToggleAI,
@@ -280,8 +338,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           <Search size={16} style={{ color: 'var(--ink-tertiary)', flexShrink: 0 }} />
           <input
             ref={inputRef}
-            aria-label={splitSource ? '选择分屏主机' : '搜索命令'}
-            placeholder={splitSource ? '选择分屏主机，或输入 user@host…' : '搜索服务器、命令片段、操作，或输入 user@host 快速连接…'}
+            aria-label={splitSource ? '选择分屏终端' : '搜索命令'}
+            placeholder={splitSource ? '选择分屏主机或本地终端，或输入 user@host…' : '搜索服务器、本地终端、命令片段、操作，或输入 user@host 快速连接…'}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {

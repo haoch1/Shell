@@ -7,9 +7,9 @@ import {
   resolveTerminalFontFamily,
 } from '../src/lib/terminalFont.ts';
 
-test('resolveTerminalFontFamily injects CJK sans-serif fallback before monospace for legacy stacks', () => {
-  const legacy = '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace';
-  const resolved = resolveTerminalFontFamily(legacy);
+test('resolveTerminalFontFamily injects CJK sans-serif fallback before monospace for custom Latin stacks', () => {
+  const customLatin = '"IBM Plex Mono", Consolas, monospace';
+  const resolved = resolveTerminalFontFamily(customLatin);
   const cjkIdx = resolved.indexOf('Microsoft YaHei UI');
   const monoIdx = resolved.lastIndexOf('monospace');
   assert.ok(cjkIdx > 0, 'Expected Microsoft YaHei UI injected');
@@ -34,14 +34,11 @@ test('resolveTerminalFontFamily falls back to DEFAULT_TERMINAL_FONT on empty inp
   assert.equal(resolveTerminalFontFamily('   '), DEFAULT_TERMINAL_FONT);
 });
 
-test('matchFontOptionValue maps legacy preset stacks cleanly to curated options', () => {
-  assert.equal(
-    matchFontOptionValue('"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace'),
-    TERMINAL_FONT_OPTIONS[0].value,
-  );
-  assert.equal(
-    matchFontOptionValue('"JetBrains Mono", "Cascadia Mono", Consolas, monospace'),
-    TERMINAL_FONT_OPTIONS[2].value,
-  );
+test('matchFontOptionValue matches curated preset options directly and classifies others as custom', () => {
+  assert.equal(matchFontOptionValue(''), TERMINAL_FONT_OPTIONS[0].value);
+  assert.equal(matchFontOptionValue('   '), TERMINAL_FONT_OPTIONS[0].value);
+  for (const option of TERMINAL_FONT_OPTIONS) {
+    assert.equal(matchFontOptionValue(option.value), option.value);
+  }
   assert.equal(matchFontOptionValue('"Custom Nerd Font", monospace'), '__custom__');
 });

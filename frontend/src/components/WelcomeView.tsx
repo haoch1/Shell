@@ -1,13 +1,17 @@
-import React, { useMemo, useState } from 'react';
-import type { Profile } from '../types/shell';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown } from 'lucide-react';
+import type { LocalShellProfile, Profile } from '../types/shell';
 import { formatHostDisplay, parseQuickConnect } from '../lib/utils';
 import { HostIcon } from './HostIcon';
 
 interface WelcomeViewProps {
   profiles: Profile[];
+  localShells?: LocalShellProfile[];
+  defaultLocalShellId?: string;
   hideHostIp?: boolean;
   onConnect: (profile: Profile) => void;
   onQuickConnect: (target: { user: string; host: string; port: number }) => void;
+  onOpenLocalTerminal?: (shellId?: string) => void;
   onNewConnection: () => void;
   onImportSSH: () => void;
   onClearRecent?: () => void;
@@ -19,15 +23,53 @@ interface WelcomeViewProps {
 
 export const WelcomeView: React.FC<WelcomeViewProps> = ({
   profiles,
+  localShells = [],
+  defaultLocalShellId,
   hideHostIp = false,
   onConnect,
   onQuickConnect,
+  onOpenLocalTerminal,
   onNewConnection,
   onImportSSH,
   onClearRecent,
 }) => {
   const [quickInput, setQuickInput] = useState('');
   const [quickErr, setQuickErr] = useState('');
+  const [shellMenuOpen, setShellMenuOpen] = useState(false);
+  const localPillRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!shellMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (localPillRef.current && !localPillRef.current.contains(e.target as Node)) {
+        setShellMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setShellMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [shellMenuOpen]);
+
+  const defaultShell = useMemo(() => {
+    if (!localShells.length) return undefined;
+    if (defaultLocalShellId) {
+      const matched = localShells.find((s) => s.id === defaultLocalShellId);
+      if (matched) return matched;
+    }
+    return localShells.find((s) => s.isDefault) ?? localShells[0];
+  }, [localShells, defaultLocalShellId]);
+
+  const winShells = useMemo(() => localShells.filter((s) => s.category !== 'wsl'), [localShells]);
+  const wslShells = useMemo(() => localShells.filter((s) => s.category === 'wsl'), [localShells]);
 
   const recentHosts = useMemo(() => {
     return profiles
@@ -46,6 +88,36 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
     setQuickErr('');
     onQuickConnect(parsed);
     setQuickInput('');
+  };
+
+  const renderShellMenu = () => {
+    if (!shellMenuOpen || localShells.length <= 1) return null;
+    const renderItem = (sh: LocalShellProfile) => {
+      const isDef = defaultShell?.id === sh.id;
+      return (
+        <button
+          key={sh.id}
+          type="button"
+          role="menuitem"
+          className={`context-menu-item local-shell-item ${isDef ? 'active-row' : ''}`}
+          onClick={() => {
+            setShellMenuOpen(false);
+            onOpenLocalTerminal?.(sh.id);
+          }}
+        >
+          <HostIcon iconOverride={sh.icon} size="xs" />
+          <span className="local-shell-name">{sh.name}</span>
+          {isDef && <Check size={12} className="local-shell-check" />}
+        </button>
+      );
+    };
+    return (
+      <div id="welcomeLocalShellMenu" role="menu" className="context-menu local-shell-menu welcome-local-menu">
+        {winShells.map(renderItem)}
+        {winShells.length > 0 && wslShells.length > 0 && <div className="context-menu-sep" />}
+        {wslShells.map(renderItem)}
+      </div>
+    );
   };
 
   return (
@@ -83,54 +155,130 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
             <button type="button" className="btn btn-sm" onClick={onImportSSH}>
               导入配置
             </button>
-          </div>
-        ) : recentHosts.length > 0 ? (
-          <div className="recent-section">
-            <div className="recent-head">
-              <div className="recent-title">最近使用</div>
-              {onClearRecent && (
+            {onOpenLocalTerminal && (
+              <div ref={localPillRef} className={`welcome-local-pill compact ${shellMenuOpen ? 'open' : ''}`}>
                 <button
-                  id="clearRecentBtn"
+                  id="welcomeLocalTermBtn"
                   type="button"
-                  className="recent-clear-btn"
-                  onClick={onClearRecent}
+                  className="welcome-local-main"
+                  onClick={() => {
+                    setShellMenuOpen(false);
+                    onOpenLocalTerminal(defaultShell?.id);
+                  }}
                 >
-                  清空
+                  <HostIcon iconOverride={defaultShell?.icon || 'powershell'} size="xs" />
+                  <span className="welcome-local-label">本地终端</span>
                 </button>
-              )}
-            </div>
-            <div className="recent-grid">
-              {recentHosts.map((p) => {
-                const displayName =
-                  p.name && (!hideHostIp || p.name !== p.host)
-                    ? p.name
-                    : hideHostIp
-                      ? p.user || 'SSH 主机'
-                      : formatHostDisplay(p.host, p.port);
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    className="recent-card"
-                    title={hideHostIp ? displayName : `${p.user}@${p.host}:${p.port}`}
-                    onClick={() => onConnect(p)}
-                  >
-                    <HostIcon profile={p} size="lg" />
-                    <div className="recent-card-meta">
-                      <div className="recent-card-name">{displayName}</div>
-                      <div
-                        className={`recent-card-sub mono ip-collapsible ${hideHostIp ? 'is-hidden' : ''}`}
-                        data-ip-hidden={hideHostIp ? 'true' : undefined}
-                      >
-                        {hideHostIp ? '' : formatHostDisplay(p.host, p.port)}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+                {localShells.length > 1 && (
+                  <>
+                    <span className="welcome-local-sep" aria-hidden="true" />
+                    <button
+                      id="welcomeLocalShellMenuBtn"
+                      type="button"
+                      className="welcome-local-caret"
+                      aria-label="切换本地终端"
+                      aria-expanded={shellMenuOpen}
+                      aria-haspopup="menu"
+                      onClick={() => setShellMenuOpen((v) => !v)}
+                    >
+                      <ChevronDown size={12} strokeWidth={2} />
+                    </button>
+                  </>
+                )}
+                {renderShellMenu()}
+              </div>
+            )}
           </div>
-        ) : null}
+        ) : (
+          <>
+            {onOpenLocalTerminal && (
+              <div className="welcome-local-bar">
+                <div ref={localPillRef} className={`welcome-local-pill ${shellMenuOpen ? 'open' : ''}`}>
+                  <button
+                    id="welcomeLocalTermBtn"
+                    type="button"
+                    className="welcome-local-main"
+                    title="打开默认本地终端 (Ctrl+Shift+T)"
+                    onClick={() => {
+                      setShellMenuOpen(false);
+                      onOpenLocalTerminal(defaultShell?.id);
+                    }}
+                  >
+                    <HostIcon iconOverride={defaultShell?.icon || 'powershell'} size="xs" />
+                    <span className="welcome-local-label">本地终端</span>
+                    {defaultShell?.name && <span className="welcome-local-shell">{defaultShell.name}</span>}
+                  </button>
+                  {localShells.length > 1 && (
+                    <>
+                      <span className="welcome-local-sep" aria-hidden="true" />
+                      <button
+                        id="welcomeLocalShellMenuBtn"
+                        type="button"
+                        className="welcome-local-caret"
+                        title="选择本机 Shell / WSL"
+                        aria-label="选择本机 Shell 或 WSL"
+                        aria-expanded={shellMenuOpen}
+                        aria-haspopup="menu"
+                        onClick={() => setShellMenuOpen((v) => !v)}
+                      >
+                        <ChevronDown size={12.5} strokeWidth={2} />
+                      </button>
+                    </>
+                  )}
+                  {renderShellMenu()}
+                </div>
+              </div>
+            )}
+
+            {recentHosts.length > 0 && (
+              <div className="recent-section">
+                <div className="recent-head">
+                  <div className="recent-title">最近使用</div>
+                  {onClearRecent && (
+                    <button
+                      id="clearRecentBtn"
+                      type="button"
+                      className="recent-clear-btn"
+                      onClick={onClearRecent}
+                    >
+                      清空
+                    </button>
+                  )}
+                </div>
+                <div className="recent-grid">
+                  {recentHosts.map((p) => {
+                    const displayName =
+                      p.name && (!hideHostIp || p.name !== p.host)
+                        ? p.name
+                        : hideHostIp
+                          ? p.user || 'SSH 主机'
+                          : formatHostDisplay(p.host, p.port);
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="recent-card"
+                        title={hideHostIp ? displayName : `${p.user}@${p.host}:${p.port}`}
+                        onClick={() => onConnect(p)}
+                      >
+                        <HostIcon profile={p} size="lg" />
+                        <div className="recent-card-meta">
+                          <div className="recent-card-name">{displayName}</div>
+                          <div
+                            className={`recent-card-sub mono ip-collapsible ${hideHostIp ? 'is-hidden' : ''}`}
+                            data-ip-hidden={hideHostIp ? 'true' : undefined}
+                          >
+                            {hideHostIp ? '' : formatHostDisplay(p.host, p.port)}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

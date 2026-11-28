@@ -13,6 +13,10 @@ const BRAND_TILE_BG: Record<Exclude<HostIconId, ''>, string> = {
   linux: '#2F6FED',
   windows: '#0078D4',
   docker: '#1D63ED',
+  powershell: '#2563EB',
+  cmd: '#374151',
+  git: '#F05032',
+  terminal: '#0F766E',
 };
 
 export const HOST_ICONS: { id: HostIconId; label: string }[] = [
@@ -74,6 +78,65 @@ export function renderHostGlyph(icon: Exclude<HostIconId, ''>, size: number) {
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d={path} />
+      </svg>
+    );
+  }
+  if (icon === 'powershell') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M6.4 6.2L13.1 12L4.9 17.8"
+          stroke="currentColor"
+          strokeWidth="2.55"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path d="M12.3 17.8H19.1" stroke="currentColor" strokeWidth="2.55" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (icon === 'cmd') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2.8" y="4.3" width="18.4" height="15.4" rx="2.6" stroke="currentColor" strokeWidth="1.95" />
+        <path
+          d="M7.2 9.8L10.6 12.4L7.2 15"
+          stroke="currentColor"
+          strokeWidth="2.1"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path d="M12.5 15H16.8" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (icon === 'git') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M7.5 7.5V16.5M7.5 15.2C7.5 12.1 10.7 11.2 14.7 10.6"
+          stroke="currentColor"
+          strokeWidth="2.3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <circle cx="7.5" cy="6.2" r="2.45" fill="currentColor" />
+        <circle cx="7.5" cy="17.8" r="2.45" fill="currentColor" />
+        <circle cx="16.8" cy="10.2" r="2.45" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (icon === 'terminal') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M5.4 7.2L10.9 12L5.4 16.8"
+          stroke="currentColor"
+          strokeWidth="2.45"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path d="M12.5 16.8H18.6" stroke="currentColor" strokeWidth="2.45" strokeLinecap="round" />
       </svg>
     );
   }

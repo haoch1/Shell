@@ -129,7 +129,12 @@ func (a *App) startup(ctx context.Context) {
 		a.ws = ws
 	}
 	a.tray = startSystemTray(a)
-	go func() { _ = local.SyncAutoStartPath() }()
+	go func() {
+		if err := local.EnsureDefaultAutoStart(); err == nil {
+			a.invalidateSettingsCache()
+		}
+		_ = local.SyncAutoStartPath()
+	}()
 }
 
 func (a *App) TermWSURL(sessionID string) string {
@@ -336,6 +341,12 @@ func (a *App) SetAutoStart(enabled bool) (bool, error) {
 	if err := local.SetAutoStart(enabled); err != nil {
 		cur, _ := local.IsAutoStartEnabled()
 		return cur, err
+	}
+	if _, err := local.UpdateSettings(func(st *local.AppSettings) error {
+		st.AutoStartInitialized = true
+		return nil
+	}); err == nil {
+		a.invalidateSettingsCache()
 	}
 	cur, err := local.IsAutoStartEnabled()
 	if err != nil {
@@ -1533,6 +1544,7 @@ func (a *App) UpdatePreferences(changes map[string]any) (local.AppSettings, erro
 		s.WindowWidth = current.WindowWidth
 		s.WindowHeight = current.WindowHeight
 		s.WindowMaximised = current.WindowMaximised
+		s.AutoStartInitialized = current.AutoStartInitialized
 		*current = s
 		return nil
 	})
@@ -1694,7 +1706,7 @@ func resolveAISettingsInput(in AIConfigInput) (local.AISettings, error) {
 		if loadErr != nil {
 			return local.AISettings{}, loadErr
 		}
-		if strings.TrimSpace(in.Endpoint) == old.Endpoint {
+		if strings.TrimRight(strings.TrimSpace(in.Endpoint), "/") == strings.TrimRight(strings.TrimSpace(old.Endpoint), "/") {
 			key = old.APIKey
 		}
 	}

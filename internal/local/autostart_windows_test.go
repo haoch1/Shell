@@ -176,3 +176,116 @@ func TestAutoStartLifecycleApprovedSyncAndZeroResidue(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureDefaultAutoStartFirstLaunchOptOutAndEnvGuards(t *testing.T) {
+	prepareExe := func(t *testing.T) string {
+		t.Helper()
+		exe := filepath.Join(t.TempDir(), "Shell.exe")
+		if err := os.WriteFile(exe, []byte("MZ"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil && resolved != "" {
+			exe = filepath.Clean(resolved)
+		}
+		return exe
+	}
+
+	t.Run("first launch enables auto-start once and respects subsequent manual disable", func(t *testing.T) {
+		t.Setenv("LocalAppData", t.TempDir())
+		t.Setenv("SHELL_EXIT_ON_CLOSE", "")
+		t.Setenv("SHELL_DATA_DIR", "")
+		exe := prepareExe(t)
+		runKey, _ := isolatedAutoStart(t, exe)
+
+		if err := EnsureDefaultAutoStart(); err != nil {
+			t.Fatalf("EnsureDefaultAutoStart first launch failed: %v", err)
+		}
+		if enabled, err := IsAutoStartEnabled(); err != nil || !enabled {
+			t.Fatalf("expected auto-start enabled after first launch, got (%v, %v)", enabled, err)
+		}
+		k, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.QUERY_VALUE)
+		if err != nil {
+			t.Fatalf("expected Run key created: %v", err)
+		}
+		gotVal, _, err := k.GetStringValue("Shell")
+		k.Close()
+		if err != nil || gotVal != `"`+exe+`" --autostart` {
+			t.Fatalf("Run\\Shell = (%q, %v), want %q", gotVal, err, `"`+exe+`" --autostart`)
+		}
+		st, err := LoadSettings()
+		if err != nil || !st.AutoStartInitialized {
+			t.Fatalf("expected AutoStartInitialized=true in settings, got (%+v, %v)", st, err)
+		}
+
+		// User manually disables auto-start; subsequent launches must NOT re-enable it.
+		if err := SetAutoStart(false); err != nil {
+			t.Fatalf("SetAutoStart(false) failed: %v", err)
+		}
+		if err := EnsureDefaultAutoStart(); err != nil {
+			t.Fatalf("EnsureDefaultAutoStart second launch failed: %v", err)
+		}
+		if enabled, err := IsAutoStartEnabled(); err != nil || enabled {
+			t.Fatalf("expected manual opt-out preserved on second launch, got (%v, %v)", enabled, err)
+		}
+	})
+
+	t.Run("respects Task Manager StartupApproved disable on first launch", func(t *testing.T) {
+		t.Setenv("LocalAppData", t.TempDir())
+		t.Setenv("SHELL_EXIT_ON_CLOSE", "")
+		t.Setenv("SHELL_DATA_DIR", "")
+		exe := prepareExe(t)
+		_, approvedKey := isolatedAutoStart(t, exe)
+
+		ak, _, err := registry.CreateKey(registry.CURRENT_USER, approvedKey, registry.SET_VALUE)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ak.SetBinaryValue("Shell", []byte{0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}); err != nil {
+			ak.Close()
+			t.Fatal(err)
+		}
+		ak.Close()
+
+		if err := EnsureDefaultAutoStart(); err != nil {
+			t.Fatalf("EnsureDefaultAutoStart failed: %v", err)
+		}
+		if enabled, err := IsAutoStartEnabled(); err != nil || enabled {
+			t.Fatalf("expected Task Manager disabled entry not overridden, got (%v, %v)", enabled, err)
+		}
+		st, err := LoadSettings()
+		if err != nil || !st.AutoStartInitialized {
+			t.Fatalf("expected AutoStartInitialized=true, got (%+v, %v)", st, err)
+		}
+	})
+
+	t.Run("skips cleanly under SHELL_EXIT_ON_CLOSE=1 or SHELL_DATA_DIR", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			env  string
+			val  string
+		}{
+			{name: "SHELL_EXIT_ON_CLOSE", env: "SHELL_EXIT_ON_CLOSE", val: "1"},
+			{name: "SHELL_DATA_DIR", env: "SHELL_DATA_DIR", val: t.TempDir()},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("LocalAppData", t.TempDir())
+				t.Setenv("SHELL_EXIT_ON_CLOSE", "")
+				t.Setenv("SHELL_DATA_DIR", "")
+				t.Setenv(tc.env, tc.val)
+				exe := prepareExe(t)
+				isolatedAutoStart(t, exe)
+
+				if err := EnsureDefaultAutoStart(); err != nil {
+					t.Fatalf("EnsureDefaultAutoStart failed: %v", err)
+				}
+				if enabled, err := IsAutoStartEnabled(); err != nil || enabled {
+					t.Fatalf("expected auto-start skipped under %s, got (%v, %v)", tc.name, enabled, err)
+				}
+				st, err := LoadSettings()
+				if err != nil || st.AutoStartInitialized {
+					t.Fatalf("expected AutoStartInitialized untouched under %s, got (%+v, %v)", tc.name, st, err)
+				}
+			})
+		}
+	})
+}

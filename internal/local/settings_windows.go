@@ -41,6 +41,7 @@ type AppSettings struct {
 	WindowHeight          int      `json:"windowHeight,omitempty"`
 	WindowMaximised       bool     `json:"windowMaximised,omitempty"`
 	DefaultLocalShell     string   `json:"defaultLocalShell,omitempty"`
+	AutoStartInitialized  bool     `json:"autoStartInitialized,omitempty"`
 }
 
 func DefaultSettings() AppSettings {

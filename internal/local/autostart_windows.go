@@ -128,6 +128,16 @@ func deleteRegValueIfExists(keyPath, valueName string) error {
 	return err
 }
 
+func isStartupApprovedDisabled() bool {
+	ak, err := registry.OpenKey(registry.CURRENT_USER, autoStart.approvedKeyPath, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	bin, _, binErr := ak.GetBinaryValue(autoStart.valueName)
+	ak.Close()
+	return binErr == nil && len(bin) >= 1 && (bin[0]&0x01) == 1
+}
+
 // IsAutoStartEnabled reports whether Shell is registered and active for Windows user logon auto-start.
 func IsAutoStartEnabled() (bool, error) {
 	k, err := registry.OpenKey(registry.CURRENT_USER, autoStart.runKeyPath, registry.QUERY_VALUE)
@@ -155,15 +165,42 @@ func IsAutoStartEnabled() (bool, error) {
 	}
 
 	// Respect Windows Task Manager StartupApproved disable state (odd first byte: 0x03, 0x07, ...).
-	ak, err := registry.OpenKey(registry.CURRENT_USER, autoStart.approvedKeyPath, registry.QUERY_VALUE)
-	if err == nil {
-		bin, _, binErr := ak.GetBinaryValue(autoStart.valueName)
-		ak.Close()
-		if binErr == nil && len(bin) >= 1 && (bin[0]&0x01) == 1 {
-			return false, nil
-		}
+	if isStartupApprovedDisabled() {
+		return false, nil
 	}
 	return true, nil
+}
+
+// EnsureDefaultAutoStart enables Windows logon auto-start once on first launch of a packaged binary,
+// while respecting explicit user opt-outs, Task Manager StartupApproved disables, and isolated test runs.
+func EnsureDefaultAutoStart() error {
+	if strings.TrimSpace(os.Getenv("SHELL_EXIT_ON_CLOSE")) == "1" || strings.TrimSpace(os.Getenv("SHELL_DATA_DIR")) != "" {
+		return nil
+	}
+	exe, err := resolvedAutoStartExe()
+	if err != nil || isTempGoBuildExe(exe) {
+		return nil
+	}
+	if info, err := os.Stat(exe); err != nil || info.IsDir() {
+		return nil
+	}
+	st, err := LoadSettings()
+	if err != nil {
+		return err
+	}
+	if st.AutoStartInitialized {
+		return nil
+	}
+	if !isStartupApprovedDisabled() {
+		if err := SetAutoStart(true); err != nil {
+			return err
+		}
+	}
+	_, err = UpdateSettings(func(cur *AppSettings) error {
+		cur.AutoStartInitialized = true
+		return nil
+	})
+	return err
 }
 
 // SetAutoStart enables or disables Windows logon auto-start cleanly under HKCU without UAC.

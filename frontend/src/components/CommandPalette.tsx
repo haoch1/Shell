@@ -161,30 +161,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     }
 
-    if (onOpenLocalTerminal && localShells.length > 0) {
-      const effectiveDefaultId =
-        (defaultLocalShellId && localShells.some((s) => s.id === defaultLocalShellId)
-          ? defaultLocalShellId
-          : localShells.find((s) => s.isDefault)?.id) ?? localShells[0]?.id;
-      for (const sh of localShells) {
-        if (splitSourceLocalShell && sh.id === splitSourceLocalShell.id) continue;
-        const hay = `${sh.name} ${sh.id} ${sh.command} ${sh.category ?? ''} 本地终端 local shell terminal pwsh powershell cmd wsl git bash`.toLowerCase();
-        if (!q || hay.includes(q)) {
-          const isDef = sh.id === effectiveDefaultId;
-          out.push({
-            id: `local-${sh.id}`,
-            label: sh.name,
-            subtitle: sh.category === 'wsl' ? 'WSL 本地终端' : '本地终端',
-            tag: sh.category === 'wsl' ? 'WSL' : isDef ? '默认' : undefined,
-            shortcut: !splitSource && isDef ? 'Ctrl+Shift+T' : undefined,
-            category: '本地终端',
-            icon: <HostIcon iconOverride={sh.icon} size="sm" />,
-            run: () => onOpenLocalTerminal(sh.id),
-          });
-        }
-      }
-    }
-
     let serverCount = 0;
     for (const p of sortedProfiles) {
       if (splitSource && !splitSourceLocalShell && sameSessionTarget(splitSource, p)) continue;
@@ -211,6 +187,38 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           run: () => onConnectProfile(p),
         });
         serverCount += 1;
+      }
+    }
+
+    if (onOpenLocalTerminal && localShells.length > 0) {
+      const effectiveDefaultId =
+        (defaultLocalShellId && localShells.some((s) => s.id === defaultLocalShellId)
+          ? defaultLocalShellId
+          : localShells.find((s) => s.isDefault)?.id) ?? localShells[0]?.id;
+      for (const sh of localShells) {
+        if (splitSourceLocalShell && sh.id === splitSourceLocalShell.id) continue;
+        const extraKeywords = [
+          sh.id === 'cmd' ? 'cmd 命令提示符' : '',
+          sh.id === 'pwsh' || sh.id === 'powershell' ? 'pwsh powershell' : '',
+          sh.category === 'wsl' ? 'wsl linux' : '',
+          sh.id === 'git-bash' ? 'git bash' : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        const hay = `${sh.name} ${sh.id} ${sh.command} ${sh.category ?? ''} ${extraKeywords} 本地终端 local shell terminal`.toLowerCase();
+        if (!q || hay.includes(q)) {
+          const isDef = sh.id === effectiveDefaultId;
+          out.push({
+            id: `local-${sh.id}`,
+            label: sh.name,
+            subtitle: sh.category === 'wsl' ? 'WSL 本地终端' : '本地终端',
+            tag: sh.category === 'wsl' ? 'WSL' : isDef ? '默认' : undefined,
+            shortcut: !splitSource && isDef ? 'Ctrl+Shift+T' : undefined,
+            category: '本地终端',
+            icon: <HostIcon iconOverride={sh.icon} size="sm" />,
+            run: () => onOpenLocalTerminal(sh.id),
+          });
+        }
       }
     }
 

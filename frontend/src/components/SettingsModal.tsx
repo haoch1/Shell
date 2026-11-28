@@ -32,6 +32,14 @@ import type {
 } from '../types/shell';
 import { resolveTerminalTheme, syncTerminalThemeForAppearance, TERMINAL_THEMES } from '../lib/themes';
 import { matchFontOptionValue, TERMINAL_FONT_OPTIONS } from '../lib/terminalFont';
+import {
+  type AIModelsCache,
+  getCachedAIModels,
+  loadAIModelsCache,
+  normalizeCliCommand,
+  normalizeEndpoint,
+  writeCachedAIModels,
+} from '../lib/aiModelCache';
 import { copyToClipboard, errorMessage, getApi, openExternalURL } from '../lib/bridge';
 import { AgentSecurityTab } from './AgentSecurityTab';
 import { Checkbox } from './ui/Checkbox';
@@ -94,8 +102,6 @@ const AI_PRESETS = [
   },
 ];
 
-const normalizeEndpoint = (ep: string) => ep.trim().replace(/\/+$/, '');
-
 const AI_CLI_PRESETS = [
   {
     id: 'claude',
@@ -137,6 +143,7 @@ const SHORTCUTS: { label: string; keys: string[] }[] = [
   { label: 'AI 助手', keys: ['Ctrl', 'Shift', 'A'] },
   { label: '切换标签页', keys: ['Ctrl', '1..9'] },
   { label: '调整字号', keys: ['Ctrl', '+ / - / 0'] },
+  { label: '切换相邻标签', keys: ['Ctrl', 'Tab'] },
 ];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -199,15 +206,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [aiMsg, setAiMsg] = useState('');
   const [aiErr, setAiErr] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
+  const [modelCache, setModelCache] = useState<AIModelsCache>(() => loadAIModelsCache());
   const [fetchingModels, setFetchingModels] = useState(false);
-  const [fetchedModels, setFetchedModels] = useState<{ endpoint: string; models: string[] } | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelFilterActive, setModelFilterActive] = useState(false);
   const [modelHighlightIdx, setModelHighlightIdx] = useState(-1);
   const modelComboRef = useRef<HTMLDivElement>(null);
   const modelInputRef = useRef<HTMLInputElement>(null);
   const [fetchingCliModels, setFetchingCliModels] = useState(false);
-  const [fetchedCliModels, setFetchedCliModels] = useState<{ command: string; models: string[] } | null>(null);
   const [cliModelMenuOpen, setCliModelMenuOpen] = useState(false);
   const [cliModelFilterActive, setCliModelFilterActive] = useState(false);
   const [cliModelHighlightIdx, setCliModelHighlightIdx] = useState(-1);
@@ -403,8 +409,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   );
 
   const liveModels = useMemo(
-    () => (fetchedModels && fetchedModels.endpoint === normalizedAiEndpoint ? fetchedModels.models : null),
-    [fetchedModels, normalizedAiEndpoint],
+    () => getCachedAIModels(modelCache, 'api', normalizedAiEndpoint),
+    [modelCache, normalizedAiEndpoint],
   );
 
   const availableModels = useMemo(
@@ -437,7 +443,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleFetchModels = async () => {
-    if (!normalizedAiEndpoint) {
+    const targetEndpoint = normalizedAiEndpoint;
+    if (!targetEndpoint) {
       setAiErr('请先填写 API 地址');
       return;
     }
@@ -458,7 +465,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setAiErr('未从接口获取到可用模型，请手动输入');
         return;
       }
-      setFetchedModels({ endpoint: normalizedAiEndpoint, models: clean });
+      setModelCache((prev) => writeCachedAIModels(prev, 'api', targetEndpoint, clean));
       setModelFilterActive(false);
       setModelMenuOpen(true);
       setModelHighlightIdx(-1);
@@ -481,7 +488,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setAiErr('');
   };
 
-  const normalizedCliCommand = cliCommand.trim().toLowerCase();
+  const normalizedCliCommand = normalizeCliCommand(cliCommand);
 
   const matchedCliPreset = useMemo(
     () => AI_CLI_PRESETS.find((p) => p.command && p.command === normalizedCliCommand) || null,
@@ -489,8 +496,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   );
 
   const liveCliModels = useMemo(
-    () => (fetchedCliModels && fetchedCliModels.command === normalizedCliCommand ? fetchedCliModels.models : null),
-    [fetchedCliModels, normalizedCliCommand],
+    () => getCachedAIModels(modelCache, 'cli', normalizedCliCommand),
+    [modelCache, normalizedCliCommand],
   );
 
   const availableCliModels = useMemo(
@@ -518,7 +525,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }, [showCliDefaultOption, filteredCliModels]);
 
   const handleFetchCliModels = async () => {
-    if (!normalizedCliCommand) {
+    const targetCliCommand = normalizedCliCommand;
+    if (!targetCliCommand) {
       setAiErr('请先选择或填写 CLI 命令');
       return;
     }
@@ -556,7 +564,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setAiErr('未获取到可用模型，请手动输入或留空使用 CLI 默认模型');
         return;
       }
-      setFetchedCliModels({ command: normalizedCliCommand, models: clean });
+      setModelCache((prev) => writeCachedAIModels(prev, 'cli', targetCliCommand, clean));
       setCliModelFilterActive(false);
       setCliModelMenuOpen(true);
       setCliModelHighlightIdx(-1);
@@ -738,10 +746,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </div>
                     </div>
                     <div className="pref-row">
-                      <div>
-                        <div className="pref-row-label">开机自动启动</div>
-                        <div className="pref-row-sub">登录 Windows 时静默启动到系统托盘</div>
-                      </div>
+                      <span className="pref-row-label">开机自动启动</span>
                       <button
                         id="autoStartSwitch"
                         type="button"
@@ -1371,7 +1376,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 setAiModel(p.model);
                                 setAiKey('');
                                 setClearAiKey(false);
-                                setFetchedModels(null);
                                 setModelMenuOpen(false);
                                 setModelFilterActive(false);
                                 setModelHighlightIdx(-1);
@@ -2160,8 +2164,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                     <div className="pref-row">
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="pref-row-label">卸载前彻底清理</div>
-                        <div className="pref-row-sub">移除开机自启、停止后台服务并可选清空本地数据</div>
+                        <div className="pref-row-label">清理本机残留</div>
+                        <div className="pref-row-sub">移除开机自启、停止后台服务，并可选清空本地数据</div>
                       </div>
                       <div className="pref-row-actions">
                         <button
@@ -2215,7 +2219,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       >
         <div className="modal-sheet" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
           <div className="modal-header">
-            <h2>彻底清理并退出</h2>
+            <h2>清理本机残留并退出</h2>
             <button
               type="button"
               className="icon-btn"
@@ -2229,7 +2233,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.65, color: 'var(--ink-secondary)' }}>
               <li>关闭全部活跃终端 / SSH 会话、端口转发、MCP 桥接与系统托盘</li>
-              <li>彻底清除 Windows 开机自启注册表项（含 StartupApproved 残留）</li>
+              <li>移除 Windows 开机自启注册表项（含 StartupApproved 残留）</li>
             </ul>
             <label
               style={{
@@ -2246,11 +2250,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 disabled={uninstalling}
                 onChange={(e) => setUninstallRemoveData(e.target.checked)}
               />
-              <span>同时彻底删除本地数据目录（配置、加密凭据、日志与 WebView2 缓存）</span>
+              <span>同时清空本地数据目录（配置、加密凭据、日志与 WebView2 缓存）</span>
             </label>
-            <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-tertiary)', lineHeight: 1.5 }}>
-              退出后直接删除 Shell.exe 即可完成无残留卸载。
-            </p>
           </div>
           <div className="modal-footer">
             <button

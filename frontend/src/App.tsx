@@ -1733,8 +1733,6 @@ export const App: React.FC = () => {
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         profiles={profiles}
-        localShells={localShells}
-        defaultLocalShellId={settings.defaultLocalShell}
         tabs={tabs}
         activeTabId={activeTabId}
         sessions={sessions}
@@ -1750,7 +1748,6 @@ export const App: React.FC = () => {
         onCloneTab={handleCloneTab}
         onDetachPane={handleDetachPane}
         onNewConnection={() => setHostModal({ open: true, profile: null })}
-        onOpenLocalTerminal={(shellId) => openLocalTerminal(shellId)}
         onSplit={(dir, tabId) => {
           const tab = tabId ? tabs.find(t => t.id === tabId) : activeTab;
           if (tab) handleSplitPane(tab.id, tab.activePaneId, dir);
@@ -1780,7 +1777,6 @@ export const App: React.FC = () => {
           onConnectNewSession={(p) => connectOrPromptProfile(p, true)}
           onQuickConnect={handleQuickConnect}
           onAddHost={() => setHostModal({ open: true, profile: null })}
-          onOpenLocalTerminal={() => openLocalTerminal()}
           onEditHost={(p) => setHostModal({ open: true, profile: p })}
           onDuplicateHost={async (p) => {
             await getApi().DuplicateProfile(p.id);
@@ -1833,12 +1829,9 @@ export const App: React.FC = () => {
               {tabs.length === 0 ? (
                 <WelcomeView
                   profiles={profiles}
-                  localShells={localShells}
-                  defaultLocalShellId={settings.defaultLocalShell}
                   hideHostIp={Boolean(settings.hideHostIp)}
                   onConnect={(p) => connectOrPromptProfile(p, false)}
                   onQuickConnect={handleQuickConnect}
-                  onOpenLocalTerminal={(shellId) => openLocalTerminal(shellId)}
                   onNewConnection={() => setHostModal({ open: true, profile: null })}
                   onImportSSH={() => setImportOpen(true)}
                   onClearRecent={() => void handleClearRecent()}

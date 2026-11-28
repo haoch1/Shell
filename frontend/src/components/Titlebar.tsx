@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeftRight,
   ArrowUpRight,
-  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -18,10 +17,9 @@ import {
   Sparkles,
   SplitSquareHorizontal,
   SplitSquareVertical,
-  Terminal,
   X,
 } from 'lucide-react';
-import type { DrawerMode, LocalShellProfile, Profile, SessionRecord, WorkspaceTab } from '../types/shell';
+import type { DrawerMode, Profile, SessionRecord, WorkspaceTab } from '../types/shell';
 import { collectLeaves, formatHostDisplay } from '../lib/utils';
 import { getRuntime } from '../lib/bridge';
 import { HostIcon } from './HostIcon';
@@ -44,8 +42,6 @@ interface TitlebarProps {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   profiles: Profile[];
-  localShells?: LocalShellProfile[];
-  defaultLocalShellId?: string;
   tabs: WorkspaceTab[];
   activeTabId: string | null;
   sessions: Record<string, SessionRecord>;
@@ -58,7 +54,6 @@ interface TitlebarProps {
   onCloneTab: (tabId: string) => void;
   onDetachPane: (tabId: string, paneId: string) => void;
   onNewConnection?: () => void;
-  onOpenLocalTerminal?: (shellId?: string) => void;
   onSplit: (dir: 'horizontal' | 'vertical', tabId?: string) => void;
   onToggleBroadcast: () => void;
   onOpenSearch: () => void;
@@ -71,8 +66,6 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   sidebarOpen,
   onToggleSidebar,
   profiles,
-  localShells = [],
-  defaultLocalShellId,
   tabs,
   activeTabId,
   sessions,
@@ -85,7 +78,6 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   onCloneTab,
   onDetachPane,
   onNewConnection: _onNewConnection,
-  onOpenLocalTerminal,
   onSplit,
   onToggleBroadcast,
   onOpenSearch,
@@ -94,25 +86,12 @@ export const Titlebar: React.FC<TitlebarProps> = ({
 }) => {
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [allTabsMenu, setAllTabsMenu] = useState<{ left: number; top: number } | null>(null);
-  const [localShellMenu, setLocalShellMenu] = useState<{ left: number; top: number } | null>(null);
   const [tabFilter, setTabFilter] = useState('');
   const [maximised, setMaximised] = useState(false);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const tabFilterRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!localShellMenu) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        setLocalShellMenu(null);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [localShellMenu]);
 
   useEffect(() => {
     if (!allTabsMenu) {
@@ -147,15 +126,6 @@ export const Titlebar: React.FC<TitlebarProps> = ({
   const isLocalSession = activeSession?.kind === 'local';
   const isMultiPane = activeLeaves.length > 1;
   const rt = getRuntime();
-
-  const effectiveDefaultShell = useMemo(() => {
-    if (!localShells.length) return undefined;
-    if (defaultLocalShellId) {
-      const matched = localShells.find((s) => s.id === defaultLocalShellId);
-      if (matched) return matched;
-    }
-    return localShells.find((s) => s.isDefault) ?? localShells[0];
-  }, [localShells, defaultLocalShellId]);
 
   const updateScrollState = useCallback(() => {
     const el = stripRef.current;
@@ -444,52 +414,6 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             <span className="tabular">{tabs.length}</span>
             <ChevronDown size={12.5} strokeWidth={2} />
           </button>
-        )}
-
-        {onOpenLocalTerminal && (
-          <div className={`titlebar-local-group ${localShellMenu ? 'open' : ''}`}>
-            <Tooltip label="新建本地终端" shortcut="Ctrl+Shift+T" side="bottom">
-              <button
-                id="newLocalTermBtn"
-                type="button"
-                className="icon-btn titlebar-local-btn"
-                aria-label="新建本地终端"
-                onClick={() => {
-                  setLocalShellMenu(null);
-                  onOpenLocalTerminal();
-                }}
-              >
-                <Terminal size={13.5} strokeWidth={1.8} />
-              </button>
-            </Tooltip>
-            {localShells.length > 1 && (
-              <button
-                id="localShellMenuBtn"
-                type="button"
-                className={`titlebar-local-caret ${localShellMenu ? 'active' : ''}`}
-                title="选择本地终端"
-                aria-label="选择本地终端"
-                aria-expanded={Boolean(localShellMenu)}
-                aria-haspopup="menu"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (localShellMenu) {
-                    setLocalShellMenu(null);
-                    return;
-                  }
-                  const groupEl = e.currentTarget.closest('.titlebar-local-group') ?? e.currentTarget;
-                  const rect = groupEl.getBoundingClientRect();
-                  const menuW = 216;
-                  setLocalShellMenu({
-                    left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)),
-                    top: rect.bottom + 6,
-                  });
-                }}
-              >
-                <ChevronDown size={10.5} strokeWidth={2.2} />
-              </button>
-            )}
-          </div>
         )}
 
         <Tooltip label="新建标签 / 命令面板" shortcut="Ctrl+K" side="bottom">
@@ -927,52 +851,6 @@ export const Titlebar: React.FC<TitlebarProps> = ({
             )}
           </div>
         </>
-        );
-      })()}
-
-      {localShellMenu && localShells.length > 0 && (() => {
-        const winShells = localShells.filter((s) => s.category !== 'wsl');
-        const wslShells = localShells.filter((s) => s.category === 'wsl');
-        const renderShellItem = (sh: LocalShellProfile) => {
-          const isDef = effectiveDefaultShell?.id === sh.id;
-          return (
-            <button
-              key={sh.id}
-              type="button"
-              role="menuitem"
-              className={`context-menu-item local-shell-item ${isDef ? 'active-row' : ''}`}
-              onClick={() => {
-                setLocalShellMenu(null);
-                onOpenLocalTerminal?.(sh.id);
-              }}
-            >
-              <HostIcon iconOverride={sh.icon} size="xs" />
-              <span className="local-shell-name">{sh.name}</span>
-              {isDef && <Check size={12} className="local-shell-check" />}
-            </button>
-          );
-        };
-        return (
-          <>
-            <div
-              style={{ position: 'fixed', inset: 0, zIndex: 139 }}
-              onClick={() => setLocalShellMenu(null)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setLocalShellMenu(null);
-              }}
-            />
-            <div
-              id="localShellMenu"
-              role="menu"
-              className="context-menu local-shell-menu"
-              style={{ left: localShellMenu.left, top: localShellMenu.top, minWidth: 216 }}
-            >
-              {winShells.map(renderShellItem)}
-              {winShells.length > 0 && wslShells.length > 0 && <div className="context-menu-sep" />}
-              {wslShells.map(renderShellItem)}
-            </div>
-          </>
         );
       })()}
     </header>

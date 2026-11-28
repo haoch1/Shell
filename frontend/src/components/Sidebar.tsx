@@ -70,7 +70,6 @@ interface SidebarProps {
   onConnectNewSession?: (profile: Profile) => void;
   onQuickConnect: (target: { user: string; host: string; port: number }) => void;
   onAddHost: () => void;
-  onOpenLocalTerminal?: () => void;
   onEditHost: (profile: Profile) => void;
   onDuplicateHost: (profile: Profile) => void;
   onDeleteHost: (profile: Profile) => void;
@@ -102,7 +101,6 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   onConnectNewSession,
   onQuickConnect,
   onAddHost,
-  onOpenLocalTerminal,
   onEditHost,
   onDuplicateHost,
   onDeleteHost,
@@ -436,7 +434,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                     }
                     const splitEl = e.currentTarget.closest('.sidebar-new-split');
                     const rect = (splitEl ?? e.currentTarget).getBoundingClientRect();
-                    const menuW = Math.max(Math.round(rect.width), 214);
+                    const menuW = Math.max(Math.round(rect.width), 160);
                     setAddMenuPos({
                       left: Math.max(8, Math.min(rect.left, window.innerWidth - menuW - 8)),
                       top: rect.bottom + 6,
@@ -880,25 +878,6 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
             className="context-menu add-host-popover"
             style={{ left: addMenuPos.left, top: addMenuPos.top, minWidth: addMenuPos.width }}
           >
-            {onOpenLocalTerminal && (
-              <>
-                <button
-                  id="sidebarLocalTermBtn"
-                  type="button"
-                  role="menuitem"
-                  className="context-menu-item"
-                  onClick={() => {
-                    setAddMenuPos(null);
-                    onOpenLocalTerminal();
-                  }}
-                >
-                  <Terminal size={13.5} strokeWidth={1.9} className="add-host-menu-icon is-local" />
-                  <span style={{ flex: 1 }}>打开本地终端</span>
-                  <span className="menu-shortcut mono">Ctrl+Shift+T</span>
-                </button>
-                <div className="context-menu-sep" />
-              </>
-            )}
             <button
               id="importSshBtn"
               type="button"

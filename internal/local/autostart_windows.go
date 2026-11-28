@@ -26,19 +26,31 @@ var autoStart = autoStartConfig{
 
 func isTempGoBuildExe(exePath string) bool {
 	cleanExe := filepath.Clean(exePath)
+	if resolved, err := filepath.EvalSymlinks(cleanExe); err == nil && resolved != "" {
+		cleanExe = filepath.Clean(resolved)
+	}
 	lowerExe := strings.ToLower(cleanExe)
 	if !strings.Contains(lowerExe, "go-build") {
 		return false
 	}
-	tmp := filepath.Clean(os.TempDir())
-	if tmp == "" {
+	rawTmp := filepath.Clean(os.TempDir())
+	if rawTmp == "" {
 		return false
 	}
-	lowerTmp := strings.ToLower(tmp)
-	if !strings.HasSuffix(lowerTmp, string(os.PathSeparator)) {
-		lowerTmp += string(os.PathSeparator)
+	candidates := []string{rawTmp}
+	if resolvedTmp, err := filepath.EvalSymlinks(rawTmp); err == nil && resolvedTmp != "" {
+		candidates = append(candidates, filepath.Clean(resolvedTmp))
 	}
-	return strings.HasPrefix(lowerExe, lowerTmp)
+	for _, tmp := range candidates {
+		lowerTmp := strings.ToLower(tmp)
+		if !strings.HasSuffix(lowerTmp, string(os.PathSeparator)) {
+			lowerTmp += string(os.PathSeparator)
+		}
+		if strings.HasPrefix(lowerExe, lowerTmp) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolvedAutoStartExe() (string, error) {

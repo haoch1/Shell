@@ -49,6 +49,12 @@ func TestAutoStartLifecycleApprovedSyncAndZeroResidue(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if resolved, err := filepath.EvalSymlinks(exe1); err == nil && resolved != "" {
+		exe1 = filepath.Clean(resolved)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe2); err == nil && resolved != "" {
+		exe2 = filepath.Clean(resolved)
+	}
 
 	runKey, approvedKey := isolatedAutoStart(t, exe1)
 

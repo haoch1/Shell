@@ -206,13 +206,13 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
       fontFamily: resolveTerminalFontFamily(settingsRef.current.fontFamily),
       fontSize: settingsRef.current.fontSize,
       fontWeight: '400',
-      fontWeightBold: '700',
+      fontWeightBold: '500',
       lineHeight: settingsRef.current.lineHeight,
       cursorStyle: settingsRef.current.cursorStyle,
       cursorBlink: settingsRef.current.cursorBlink,
       scrollback: settingsRef.current.scrollback,
       theme: getTerminalTheme(settingsRef.current.terminalTheme, initDark).theme,
-      minimumContrastRatio: 5.5,
+      minimumContrastRatio: 4.5,
       customGlyphs: true,
       rescaleOverlappingGlyphs: true,
       drawBoldTextInBrightColors: true,
@@ -515,13 +515,13 @@ export const TerminalPane: React.FC<TerminalPaneProps> = React.memo(({
     ctrl.term.options.fontFamily = resolveTerminalFontFamily(settings.fontFamily);
     ctrl.term.options.fontSize = settings.fontSize;
     ctrl.term.options.fontWeight = '400';
-    ctrl.term.options.fontWeightBold = '700';
+    ctrl.term.options.fontWeightBold = '500';
     ctrl.term.options.lineHeight = settings.lineHeight;
     ctrl.term.options.cursorStyle = settings.cursorStyle;
     ctrl.term.options.cursorBlink = settings.cursorBlink;
     ctrl.term.options.scrollback = settings.scrollback;
     ctrl.term.options.theme = getTerminalTheme(settings.terminalTheme, isAppDark).theme;
-    ctrl.term.options.minimumContrastRatio = 5.5;
+    ctrl.term.options.minimumContrastRatio = 4.5;
     ctrl.term.options.customGlyphs = true;
     ctrl.term.options.rescaleOverlappingGlyphs = true;
     ctrl.term.options.drawBoldTextInBrightColors = true;

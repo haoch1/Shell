@@ -67,7 +67,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   terminalTheme: 'auto',
   fontFamily: DEFAULT_TERMINAL_FONT,
-  fontSize: 14,
+  fontSize: 13,
   lineHeight: 1.28,
   cursorStyle: 'bar',
   cursorBlink: true,

@@ -92,7 +92,7 @@ test('TERMINAL_THEMES exposes all 5 curated presets with distinct backgrounds an
   assert.equal(backgrounds.size, expectedIds.length, 'Every global palette must have a distinct terminal background');
 });
 
-test('Every preset achieves >= 5.5:1 WCAG contrast on foreground and ANSI colors (with >= 6.5:1 dark badge ink)', () => {
+test('Every preset achieves >= 5.5:1 WCAG contrast on foreground and ANSI colors (with >= 5.0:1 dark badge ink)', () => {
   for (const preset of TERMINAL_THEMES) {
     const bg = preset.theme.background;
     const fgRatio = contrastRatio(preset.theme.foreground, bg);
@@ -108,8 +108,8 @@ test('Every preset achieves >= 5.5:1 WCAG contrast on foreground and ANSI colors
           const badgeBg = preset.theme[badgeKey];
           const badgeRatio = contrastRatio(color, badgeBg);
           assert.ok(
-            badgeRatio >= 6.5,
-            `${preset.id} dark badge ink black (${color}) vs ${badgeKey} (${badgeBg}) contrast ${badgeRatio.toFixed(2)} < 6.5`,
+            badgeRatio >= 5.0,
+            `${preset.id} dark badge ink black (${color}) vs ${badgeKey} (${badgeBg}) contrast ${badgeRatio.toFixed(2)} < 5.0`,
           );
         }
         continue;

@@ -1794,7 +1794,7 @@ export const SftpDrawer: React.FC<SftpDrawerProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className={`btn ${actionModal.kind === 'delete' ? 'btn-danger' : 'btn-primary'}`}
+                  className={`btn ${actionModal.kind === 'delete' ? 'btn-danger-solid' : 'btn-primary'}`}
                   disabled={
                     modalBusy ||
                     (actionModal.kind === 'chmod' && octalToMode(actionModal.octal) === null) ||

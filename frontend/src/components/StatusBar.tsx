@@ -36,6 +36,17 @@ export const StatusBar: React.FC<StatusBarProps> = ({
     }
   }, [session?.id, session?.state]);
 
+  useEffect(() => {
+    if (!showPopover) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowPopover(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showPopover]);
+
   if (!session) {
     return null;
   }
@@ -45,6 +56,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   const swapUsedMB = stats?.swapUsedMB ?? 0;
   const swapPct = swapTotalMB > 0 ? Math.min(100, Math.max(0, Math.round((swapUsedMB / swapTotalMB) * 100))) : 0;
   const latency = session.latencyMs ?? stats?.latencyMs;
+  const clampPct = (pct: number) => Math.min(100, Math.max(0, pct));
 
   const barTone = (pct: number) => (pct >= 85 ? 'high' : pct >= 65 ? 'warn' : '');
   const metricColor = (pct: number): string | undefined =>
@@ -55,6 +67,20 @@ export const StatusBar: React.FC<StatusBarProps> = ({
     session.profile.name && (!hideHostIp || session.profile.name !== session.profile.host)
       ? session.profile.name
       : session.profile.user || 'SSH 主机';
+
+  const rawHostname = (stats?.hostname ?? '').trim();
+  const hasRealHostname = Boolean(rawHostname) && !/^localhost(\.localdomain)?$/i.test(rawHostname);
+  const popoverTitle = displayName;
+  const popoverTitleTooltip =
+    !hideHostIp && hasRealHostname && rawHostname !== displayName
+      ? `${displayName} (${rawHostname})`
+      : displayName;
+
+  const osLabel = (stats?.os || 'Linux').trim();
+  const rawKernel = (stats?.kernel || '').trim();
+  const cleanKernel = /linux/i.test(osLabel) ? rawKernel.replace(/^linux\s+/i, '') : rawKernel;
+  const osSubtitle = cleanKernel ? `${osLabel} · ${cleanKernel}` : osLabel;
+  const effectiveLatency = latency ?? stats?.latencyMs ?? 0;
 
   return (
     <footer className="statusbar">
@@ -115,17 +141,36 @@ export const StatusBar: React.FC<StatusBarProps> = ({
         {showTelemetry && session.state === 'connected' && stats && (
           <button
             type="button"
-            className="telemetry-trigger"
+            className={`telemetry-trigger${showPopover ? ' active' : ''}`}
             onClick={() => setShowPopover((v) => !v)}
+            aria-expanded={showPopover}
             title="查看实时服务器监控详情"
           >
-            <span style={{ color: metricColor(stats.cpuPercent) }}>CPU {stats.cpuPercent.toFixed(0)}%</span>
-            <span style={{ color: metricColor(memPct) }}>MEM {memPct}%</span>
-            <span style={{ color: metricColor(stats.diskPercent) }}>DISK {stats.diskPercent}%</span>
-            {netRate && (
-              <span>
-                ↓{formatBytes(netRate.rxPerSec)}/s ↑{formatBytes(netRate.txPerSec)}/s
+            <span className="telemetry-stat">
+              <span className="telemetry-k">CPU</span>
+              <span className="telemetry-v" style={{ color: metricColor(stats.cpuPercent) }}>
+                {stats.cpuPercent.toFixed(0)}%
               </span>
+            </span>
+            <span className="telemetry-stat">
+              <span className="telemetry-k">MEM</span>
+              <span className="telemetry-v" style={{ color: metricColor(memPct) }}>
+                {memPct}%
+              </span>
+            </span>
+            <span className="telemetry-stat">
+              <span className="telemetry-k">DISK</span>
+              <span className="telemetry-v" style={{ color: metricColor(stats.diskPercent) }}>
+                {stats.diskPercent}%
+              </span>
+            </span>
+            {netRate && (
+              <>
+                <span className="telemetry-sep" aria-hidden="true" />
+                <span className="telemetry-net">
+                  ↓{formatBytes(netRate.rxPerSec)}/s ↑{formatBytes(netRate.txPerSec)}/s
+                </span>
+              </>
             )}
           </button>
         )}
@@ -135,78 +180,130 @@ export const StatusBar: React.FC<StatusBarProps> = ({
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 29 }} onClick={() => setShowPopover(false)} />
           <div className="telemetry-popover">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>
-                {stats.hostname || (hideHostIp ? displayName : formatHostDisplay(session.profile.host))}
+            <div className="telemetry-head">
+              <div className="telemetry-head-top">
+                <div className="telemetry-title" title={popoverTitleTooltip}>
+                  {popoverTitle}
+                </div>
+                <span className="pill-badge safe">在线</span>
               </div>
-              <span className="pill-badge safe">在线</span>
-            </div>
-            <div style={{ fontSize: 11.5, color: 'var(--ink-secondary)' }}>
-              {stats.os || 'Linux'} · {stats.kernel}
-            </div>
-            <div style={{ fontSize: 11.5, color: 'var(--ink-tertiary)' }} className="mono">
-              运行 {formatDuration(stats.uptimeSec)} · 负载 {stats.load1 || '-'} / {stats.load5 || '-'} /{' '}
-              {stats.load15 || '-'}
-              {(stats.processes ?? 0) > 0 && ` · ${stats.processes} 进程`}
-            </div>
-
-            <div className="field-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
-                <span className="status-chip"><Cpu size={12} />CPU ({stats.cpuCores} 核)</span>
-                <span className="mono">{stats.cpuPercent.toFixed(1)}%</span>
-              </div>
-              <div className="metric-bar-track">
-                <div className={`metric-bar-fill ${barTone(stats.cpuPercent)}`} style={{ width: `${stats.cpuPercent}%` }} />
+              <div className="telemetry-os" title={osSubtitle}>
+                {osSubtitle}
               </div>
             </div>
 
-            <div className="field-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
-                <span className="status-chip"><MemoryStick size={12} />内存</span>
-                <span className="mono">
-                  {(stats.memUsedMB / 1024).toFixed(1)} / {(stats.memTotalMB / 1024).toFixed(1)} GB ({memPct}%)
+            <div className="telemetry-kpi-grid">
+              <div className="telemetry-kpi-cell">
+                <span className="telemetry-kpi-label">运行时间</span>
+                <span className="telemetry-kpi-val">{formatDuration(stats.uptimeSec)}</span>
+              </div>
+              <div className="telemetry-kpi-cell">
+                <span className="telemetry-kpi-label">进程数</span>
+                <span className="telemetry-kpi-val">
+                  {(stats.processes ?? 0) > 0 ? String(stats.processes) : '—'}
                 </span>
               </div>
-              <div className="metric-bar-track">
-                <div className={`metric-bar-fill ${barTone(memPct)}`} style={{ width: `${memPct}%` }} />
+              <div className="telemetry-kpi-cell">
+                <span className="telemetry-kpi-label">往返延迟</span>
+                <span className="telemetry-kpi-val" style={{ color: latencyColor(effectiveLatency) }}>
+                  {effectiveLatency} ms
+                </span>
               </div>
             </div>
 
-            {swapTotalMB > 0 && (
-              <div className="field-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
-                  <span className="status-chip"><MemoryStick size={12} />Swap</span>
-                  <span className="mono">
-                    {(swapUsedMB / 1024).toFixed(1)} / {(swapTotalMB / 1024).toFixed(1)} GB ({swapPct}%)
+            <div className="telemetry-gauges">
+              <div className="telemetry-gauge">
+                <div className="telemetry-gauge-head">
+                  <span className="telemetry-gauge-label">
+                    <Cpu size={12} />
+                    <span>CPU ({stats.cpuCores} 核)</span>
+                  </span>
+                  <span className="telemetry-gauge-val">{stats.cpuPercent.toFixed(1)}%</span>
+                </div>
+                <div className="metric-bar-track">
+                  <div
+                    className={`metric-bar-fill ${barTone(stats.cpuPercent)}`}
+                    style={{ width: `${clampPct(stats.cpuPercent)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="telemetry-gauge">
+                <div className="telemetry-gauge-head">
+                  <span className="telemetry-gauge-label">
+                    <MemoryStick size={12} />
+                    <span>内存</span>
+                  </span>
+                  <span className="telemetry-gauge-val">
+                    {(stats.memUsedMB / 1024).toFixed(1)} / {(stats.memTotalMB / 1024).toFixed(1)} GB ({memPct}%)
                   </span>
                 </div>
                 <div className="metric-bar-track">
-                  <div className={`metric-bar-fill ${barTone(swapPct)}`} style={{ width: `${swapPct}%` }} />
+                  <div
+                    className={`metric-bar-fill ${barTone(memPct)}`}
+                    style={{ width: `${clampPct(memPct)}%` }}
+                  />
                 </div>
               </div>
-            )}
 
-            <div className="field-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
-                <span className="status-chip"><HardDrive size={12} />根分区 /</span>
-                <span className="mono">
-                  {stats.diskUsedGB.toFixed(1)} / {stats.diskTotalGB.toFixed(1)} GB ({stats.diskPercent}%)
+              {swapTotalMB > 0 && (
+                <div className="telemetry-gauge">
+                  <div className="telemetry-gauge-head">
+                    <span className="telemetry-gauge-label">
+                      <MemoryStick size={12} />
+                      <span>Swap</span>
+                    </span>
+                    <span className="telemetry-gauge-val">
+                      {(swapUsedMB / 1024).toFixed(1)} / {(swapTotalMB / 1024).toFixed(1)} GB ({swapPct}%)
+                    </span>
+                  </div>
+                  <div className="metric-bar-track">
+                    <div
+                      className={`metric-bar-fill ${barTone(swapPct)}`}
+                      style={{ width: `${clampPct(swapPct)}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="telemetry-gauge">
+                <div className="telemetry-gauge-head">
+                  <span className="telemetry-gauge-label">
+                    <HardDrive size={12} />
+                    <span>根分区 /</span>
+                  </span>
+                  <span className="telemetry-gauge-val">
+                    {stats.diskUsedGB.toFixed(1)} / {stats.diskTotalGB.toFixed(1)} GB ({stats.diskPercent}%)
+                  </span>
+                </div>
+                <div className="metric-bar-track">
+                  <div
+                    className={`metric-bar-fill ${barTone(stats.diskPercent)}`}
+                    style={{ width: `${clampPct(stats.diskPercent)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="telemetry-foot">
+              <div className="telemetry-foot-row">
+                <span className="telemetry-foot-label">
+                  <Activity size={12} />
+                  <span>系统负载 (1/5/15m)</span>
+                </span>
+                <span className="telemetry-foot-val">
+                  {stats.load1 || '-'} / {stats.load5 || '-'} / {stats.load15 || '-'}
                 </span>
               </div>
-              <div className="metric-bar-track">
-                <div className={`metric-bar-fill ${barTone(stats.diskPercent)}`} style={{ width: `${stats.diskPercent}%` }} />
+              <div className="telemetry-foot-row">
+                <span className="telemetry-foot-label">
+                  <Network size={12} />
+                  <span>累计流量</span>
+                </span>
+                <span className="telemetry-foot-val">
+                  ↓ {formatBytes(stats.netRxBytes)} · ↑ {formatBytes(stats.netTxBytes)}
+                </span>
               </div>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: 'var(--ink-secondary)' }}>
-              <span className="status-chip"><Network size={12} />累计流量</span>
-              <span className="mono">
-                ↓ {formatBytes(stats.netRxBytes)} · ↑ {formatBytes(stats.netTxBytes)}
-              </span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: 'var(--ink-secondary)' }}>
-              <span className="status-chip"><Activity size={12} />往返延迟</span>
-              <span className="mono">{latency ?? stats.latencyMs} ms</span>
             </div>
           </div>
         </>

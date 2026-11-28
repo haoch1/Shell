@@ -50,7 +50,7 @@ export const VerifyHostDialog: React.FC<VerifyDialogProps> = ({ request, onDecis
           </button>
           <button
             type="button"
-            className={`btn ${isChanged ? 'btn-danger' : 'btn-primary'}`}
+            className={`btn ${isChanged ? 'btn-danger-solid' : 'btn-primary'}`}
             onClick={() => onDecision(true)}
           >
             <ShieldCheck size={14} />

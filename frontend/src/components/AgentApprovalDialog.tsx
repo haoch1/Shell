@@ -18,7 +18,7 @@ export const AgentApprovalDialog: React.FC<AgentApprovalDialogProps> = ({ reques
 
   return (
     <div id="agentApprovalDialog" className="modal-backdrop">
-      <div className="modal-sheet" style={{ maxWidth: 510 }}>
+      <div className="modal-sheet" role="dialog" aria-modal="true" style={{ maxWidth: 510 }}>
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             {isDanger ? (
@@ -76,7 +76,7 @@ export const AgentApprovalDialog: React.FC<AgentApprovalDialogProps> = ({ reques
         </div>
 
         <div className="modal-footer">
-          <button type="button" className="btn btn-danger" onClick={() => onResolve('deny')}>
+          <button type="button" className="btn" onClick={() => onResolve('deny')}>
             <X size={13} />
             拒绝
           </button>
@@ -88,7 +88,7 @@ export const AgentApprovalDialog: React.FC<AgentApprovalDialogProps> = ({ reques
           )}
           <button
             type="button"
-            className={`btn ${isDanger ? 'btn-danger' : 'btn-primary'}`}
+            className={`btn ${isDanger ? 'btn-danger-solid' : 'btn-primary'}`}
             onClick={() => onResolve('allow_once')}
           >
             <Check size={13} />

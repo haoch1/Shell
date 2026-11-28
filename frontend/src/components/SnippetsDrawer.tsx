@@ -86,11 +86,10 @@ export const SnippetsDrawer: React.FC<SnippetsDrawerProps> = ({
       </div>
 
       <div className="sftp-toolbar">
-        <div className="search-box">
+        <div className="search-box search-box-sm">
           <Search size={12} />
           <input
             className="input input-sm"
-            style={{ height: 28, paddingLeft: 28, paddingRight: 8 }}
             placeholder="搜索命令片段…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -173,10 +172,10 @@ export const SnippetsDrawer: React.FC<SnippetsDrawerProps> = ({
 
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(null)}>
-          <form className="modal-sheet" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()} onSubmit={handleSave}>
+          <form className="modal-sheet" role="dialog" aria-modal="true" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()} onSubmit={handleSave}>
             <div className="modal-header">
               <h2>{editing.id ? '编辑命令片段' : '新建命令片段'}</h2>
-              <button type="button" className="icon-btn" onClick={() => setEditing(null)}>
+              <button type="button" className="icon-btn" aria-label="关闭" onClick={() => setEditing(null)}>
                 <X size={15} />
               </button>
             </div>
@@ -239,6 +238,8 @@ export const SnippetsDrawer: React.FC<SnippetsDrawerProps> = ({
         <div className="modal-backdrop" onClick={() => setVarPrompt(null)}>
           <form
             className="modal-sheet"
+            role="dialog"
+            aria-modal="true"
             style={{ maxWidth: 420 }}
             onClick={(e) => e.stopPropagation()}
             onSubmit={(e) => {
@@ -250,7 +251,7 @@ export const SnippetsDrawer: React.FC<SnippetsDrawerProps> = ({
           >
             <div className="modal-header">
               <h2>填写变量 · {varPrompt.snippet.name}</h2>
-              <button type="button" className="icon-btn" onClick={() => setVarPrompt(null)}>
+              <button type="button" className="icon-btn" aria-label="关闭" onClick={() => setVarPrompt(null)}>
                 <X size={15} />
               </button>
             </div>

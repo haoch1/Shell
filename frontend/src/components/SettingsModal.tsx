@@ -6,6 +6,8 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
   Info,
   KeyRound,
   Loader2,
@@ -35,10 +37,12 @@ import { matchFontOptionValue, TERMINAL_FONT_OPTIONS } from '../lib/terminalFont
 import {
   type AIModelsCache,
   getCachedAIModels,
+  getCachedSelectedAIModel,
   loadAIModelsCache,
   normalizeCliCommand,
   normalizeEndpoint,
   writeCachedAIModels,
+  writeCachedSelectedAIModel,
 } from '../lib/aiModelCache';
 import { copyToClipboard, errorMessage, getApi, openExternalURL } from '../lib/bridge';
 import { AgentSecurityTab } from './AgentSecurityTab';
@@ -198,6 +202,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [aiEndpoint, setAiEndpoint] = useState('');
   const [aiModel, setAiModel] = useState('');
   const [aiKey, setAiKey] = useState('');
+  const [showAiKey, setShowAiKey] = useState(false);
   const [clearAiKey, setClearAiKey] = useState(false);
   const [cliCommand, setCliCommand] = useState('agy');
   const [cliModel, setCliModel] = useState('');
@@ -222,6 +227,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Backup state
   const [vaultPass, setVaultPass] = useState('');
+  const [showVaultPass, setShowVaultPass] = useState(false);
   const [includeSecrets, setIncludeSecrets] = useState(false);
   const [backupErr, setBackupErr] = useState('');
 
@@ -261,9 +267,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           setAiEndpoint(c.endpoint || '');
           setAiModel(c.model || '');
         }
-        if (c.cliCommand) setCliCommand(c.cliCommand);
-        setCliModel(c.cliModel || '');
+        const nextCliCmd = c.cliCommand || 'agy';
+        const nextCliModel = c.cliModel || '';
+        setCliCommand(nextCliCmd);
+        setCliModel(nextCliModel);
         setCliArgs(c.cliArgs || '');
+        setModelCache((prev) => {
+          let next = prev;
+          if (c.cliCommand) {
+            next = writeCachedSelectedAIModel(next, 'cli', c.cliCommand, nextCliModel);
+          }
+          if (c.endpoint && c.model) {
+            next = writeCachedSelectedAIModel(next, 'api', c.endpoint, c.model);
+          }
+          return next;
+        });
       })
       .catch(() => {});
   }, []);
@@ -482,6 +500,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const selectModelOption = (modelId: string) => {
     setAiModel(modelId);
+    if (normalizedAiEndpoint) {
+      setModelCache((prev) => writeCachedSelectedAIModel(prev, 'api', normalizedAiEndpoint, modelId));
+    }
     setModelFilterActive(false);
     setModelMenuOpen(false);
     setModelHighlightIdx(-1);
@@ -576,6 +597,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const selectCliModelOption = (modelId: string) => {
     setCliModel(modelId);
+    if (normalizedCliCommand) {
+      setModelCache((prev) => writeCachedSelectedAIModel(prev, 'cli', normalizedCliCommand, modelId));
+    }
     setCliModelFilterActive(false);
     setCliModelMenuOpen(false);
     setCliModelHighlightIdx(-1);
@@ -605,7 +629,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ready: aiMode === 'cli' ? Boolean(payload.cliCommand) : Boolean(payload.endpoint && payload.model),
         });
       }
+      if (aiMode === 'cli' && payload.cliCommand) {
+        setModelCache((prev) => writeCachedSelectedAIModel(prev, 'cli', payload.cliCommand, payload.cliModel));
+      } else if (aiMode === 'api' && payload.endpoint && payload.model) {
+        setModelCache((prev) => writeCachedSelectedAIModel(prev, 'api', payload.endpoint, payload.model));
+      }
       setAiKey('');
+      setShowAiKey(false);
       setClearAiKey(false);
       setAiMsg('配置已保存');
       onToast('AI 配置已保存');
@@ -1372,10 +1402,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               type="button"
                               className={`provider-card ${active ? 'active' : ''}`}
                               onClick={() => {
+                                const prevEndpoint = normalizedAiEndpoint;
+                                const nextEndpoint = normalizeEndpoint(p.endpoint);
+                                let nextCache = modelCache;
+                                if (prevEndpoint && prevEndpoint !== nextEndpoint) {
+                                  nextCache = writeCachedSelectedAIModel(nextCache, 'api', prevEndpoint, aiModel);
+                                  if (nextCache !== modelCache) setModelCache(nextCache);
+                                }
                                 setAiEndpoint(p.endpoint);
-                                setAiModel(p.model);
-                                setAiKey('');
-                                setClearAiKey(false);
+                                if (prevEndpoint !== nextEndpoint) {
+                                  const remembered = getCachedSelectedAIModel(nextCache, 'api', nextEndpoint);
+                                  setAiModel(remembered || p.model);
+                                  setAiKey('');
+                                  setShowAiKey(false);
+                                  setClearAiKey(false);
+                                }
                                 setModelMenuOpen(false);
                                 setModelFilterActive(false);
                                 setModelHighlightIdx(-1);
@@ -1410,7 +1451,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         <div className="field-group" ref={modelComboRef}>
                           <label className="field-label" htmlFor="model">模型名称</label>
                           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                            <div className="input-with-action" style={{ flex: 1, position: 'relative' }}>
+                            <div className="input-with-action" style={{ flex: 1, minWidth: 0, position: 'relative' }}>
                               <input
                                 ref={modelInputRef}
                                 id="model"
@@ -1421,6 +1462,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 aria-expanded={modelMenuOpen}
                                 aria-controls="aiModelMenu"
                                 aria-autocomplete="list"
+                                style={{ paddingRight: 30 }}
                                 value={aiModel}
                                 onFocus={() => {
                                   setModelFilterActive(false);
@@ -1596,19 +1638,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                         <div className="field-group">
                           <label className="field-label" htmlFor="apiKey">API 密钥</label>
-                          <input
-                            id="apiKey"
-                            type="password"
-                            className="input mono"
-                            autoComplete="off"
-                            value={aiKey}
-                            onChange={(e) => setAiKey(e.target.value)}
-                            placeholder={
-                              hasSavedKeyForEndpoint
-                                ? '已加密保存，留空沿用'
-                                : 'sk-...'
-                            }
-                          />
+                          <div className="input-with-action">
+                            <input
+                              id="apiKey"
+                              type={showAiKey && aiKey ? 'text' : 'password'}
+                              className="input mono"
+                              autoComplete="off"
+                              style={{ paddingRight: aiKey ? 30 : 10 }}
+                              value={aiKey}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setAiKey(v);
+                                if (!v) setShowAiKey(false);
+                              }}
+                              placeholder={
+                                hasSavedKeyForEndpoint
+                                  ? '已加密保存，留空沿用'
+                                  : 'sk-...'
+                              }
+                            />
+                            {aiKey && (
+                              <button
+                                type="button"
+                                className="input-eye-btn"
+                                aria-label={showAiKey ? '隐藏密钥' : '显示密钥'}
+                                onClick={() => setShowAiKey((v) => !v)}
+                              >
+                                {showAiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         {hasSavedKeyForEndpoint && !aiKey && (
@@ -1617,7 +1676,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               checked={clearAiKey}
                               onChange={(e) => setClearAiKey(e.target.checked)}
                             />
-                            清除已保存的密钥
+                            <span>清除已保存的密钥</span>
                           </label>
                         )}
 
@@ -1658,11 +1717,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               className={`provider-card ${active ? 'active' : ''}`}
                               title={det?.path || p.label}
                               onClick={() => {
-                                if (!isCustom) {
-                                  setCliCommand(p.command);
-                                  setCliArgs('');
-                                } else if (['claude', 'codex', 'agy'].includes(cliCommand.trim().toLowerCase())) {
-                                  setCliCommand('');
+                                const prevKey = normalizedCliCommand;
+                                const nextCommand = !isCustom
+                                  ? p.command
+                                  : ['claude', 'codex', 'agy'].includes(prevKey)
+                                    ? ''
+                                    : cliCommand;
+                                const nextKey = normalizeCliCommand(nextCommand);
+                                if (nextKey !== prevKey) {
+                                  let nextCache = modelCache;
+                                  if (prevKey) {
+                                    nextCache = writeCachedSelectedAIModel(nextCache, 'cli', prevKey, cliModel);
+                                    if (nextCache !== modelCache) setModelCache(nextCache);
+                                  }
+                                  setCliCommand(nextCommand);
+                                  if (!isCustom) setCliArgs('');
+                                  setCliModel(nextKey ? getCachedSelectedAIModel(nextCache, 'cli', nextKey) : '');
                                 }
                                 setCliModelMenuOpen(false);
                                 setCliModelFilterActive(false);
@@ -1928,6 +1998,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           />
                         </div>
 
+                        <p style={{ margin: '-2px 0 0', fontSize: 11.5, color: 'var(--ink-tertiary)', lineHeight: 1.45 }}>
+                          已启用无痕调用，不会向 Codex、Claude Code 等工具写入会话历史
+                        </p>
+
                         {aiErr && <p id="settingsError" className="error-text">{aiErr}</p>}
                         {aiMsg && (
                           <p style={{ margin: 0, fontSize: 12.5, color: 'var(--green)', display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -1980,14 +2054,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="pref-section-title">加密保险库备份与恢复</div>
                   <div className="pref-group-pad">
                     <div className="field-group">
-                      <label className="field-label">备份加密口令</label>
-                      <input
-                        type="password"
-                        className="input"
-                        placeholder="留空导出不含凭据的明文 JSON"
-                        value={vaultPass}
-                        onChange={(e) => setVaultPass(e.target.value)}
-                      />
+                      <label className="field-label" htmlFor="vaultPass">备份加密口令</label>
+                      <div className="input-with-action">
+                        <input
+                          id="vaultPass"
+                          type={showVaultPass && vaultPass ? 'text' : 'password'}
+                          className="input"
+                          autoComplete="off"
+                          style={{ paddingRight: vaultPass ? 30 : 10 }}
+                          placeholder="留空导出不含凭据的明文 JSON"
+                          value={vaultPass}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setVaultPass(v);
+                            if (!v) setShowVaultPass(false);
+                          }}
+                        />
+                        {vaultPass && (
+                          <button
+                            type="button"
+                            className="input-eye-btn"
+                            aria-label={showVaultPass ? '隐藏口令' : '显示口令'}
+                            onClick={() => setShowVaultPass((v) => !v)}
+                          >
+                            {showVaultPass ? <EyeOff size={14} /> : <Eye size={14} />}
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="pref-row" style={{ padding: '4px 0', minHeight: 34, borderBottom: 'none' }}>
                       <span className="pref-row-label" style={{ fontSize: 12.5 }}>包含已保存凭据</span>
@@ -2217,7 +2310,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           if (!uninstalling) setUninstallOpen(false);
         }}
       >
-        <div className="modal-sheet" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-sheet" role="dialog" aria-modal="true" style={{ maxWidth: 468 }} onClick={(e) => e.stopPropagation()}>
           <div className="modal-header">
             <h2>清理本机残留并退出</h2>
             <button
@@ -2231,26 +2324,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
           </div>
           <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.65, color: 'var(--ink-secondary)' }}>
-              <li>关闭全部活跃终端 / SSH 会话、端口转发、MCP 桥接与系统托盘</li>
-              <li>移除 Windows 开机自启注册表项（含 StartupApproved 残留）</li>
+            <ul className="cleanup-checklist">
+              <li>
+                <span className="cleanup-checklist-dot" aria-hidden="true" />
+                <span>关闭全部活跃终端 / SSH 会话、端口转发、MCP 桥接与系统托盘</span>
+              </li>
+              <li>
+                <span className="cleanup-checklist-dot" aria-hidden="true" />
+                <span>移除 Windows 开机自启注册表项（含 StartupApproved 残留）</span>
+              </li>
             </ul>
             <label
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 8,
-                fontSize: 12.5,
-                lineHeight: 1.5,
-                cursor: uninstalling ? 'default' : 'pointer',
-              }}
+              className="cleanup-checkbox-row"
+              style={{ cursor: uninstalling ? 'default' : 'pointer' }}
             >
               <Checkbox
                 checked={uninstallRemoveData}
                 disabled={uninstalling}
                 onChange={(e) => setUninstallRemoveData(e.target.checked)}
               />
-              <span>同时清空本地数据目录（配置、加密凭据、日志与 WebView2 缓存）</span>
+              <span>同时清空本地数据目录（配置、加密凭据、日志与缓存）</span>
             </label>
           </div>
           <div className="modal-footer">

@@ -439,9 +439,9 @@ export const HostModal: React.FC<HostModalProps> = ({
                     ))}
                   </div>
                 </div>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, cursor: 'pointer', height: 22 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer', height: 24 }}>
                   <Checkbox checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
-                  置顶显示
+                  <span>置顶显示</span>
                 </label>
               </div>
             </>
@@ -565,7 +565,7 @@ export const HostModal: React.FC<HostModalProps> = ({
                 </div>
               </div>
 
-              <div className="setting-row" style={{ padding: '4px 0' }}>
+              <div className="setting-row" style={{ padding: '4px 0', borderBottom: 'none' }}>
                 <div style={{ fontWeight: 500, fontSize: 13 }}>SSH Agent 转发</div>
                 <button
                   type="button"

@@ -5,6 +5,8 @@ export type AIModelCacheMode = 'api' | 'cli';
 export interface AIModelsCache {
   api: Record<string, string[]>;
   cli: Record<string, string[]>;
+  selectedApi: Record<string, string>;
+  selectedCli: Record<string, string>;
 }
 
 export interface StorageLike {
@@ -51,6 +53,20 @@ function sanitizeBucket(value: unknown, mode: AIModelCacheMode): Record<string, 
   return out;
 }
 
+function sanitizeSelectedBucket(value: unknown, mode: AIModelCacheMode): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [rawKey, rawModel] of Object.entries(value as Record<string, unknown>)) {
+    const key = normalizeModelCacheKey(mode, rawKey);
+    if (!key || typeof rawModel !== 'string') continue;
+    const model = rawModel.trim();
+    if (model) {
+      out[key] = model;
+    }
+  }
+  return out;
+}
+
 function resolveStorage(storage?: StorageLike): StorageLike | null {
   if (storage) return storage;
   try {
@@ -63,7 +79,7 @@ function resolveStorage(storage?: StorageLike): StorageLike | null {
 }
 
 export function createEmptyAIModelsCache(): AIModelsCache {
-  return { api: {}, cli: {} };
+  return { api: {}, cli: {}, selectedApi: {}, selectedCli: {} };
 }
 
 export function loadAIModelsCache(storage?: StorageLike): AIModelsCache {
@@ -80,6 +96,8 @@ export function loadAIModelsCache(storage?: StorageLike): AIModelsCache {
     return {
       api: sanitizeBucket(obj.api, 'api'),
       cli: sanitizeBucket(obj.cli, 'cli'),
+      selectedApi: sanitizeSelectedBucket(obj.selectedApi, 'api'),
+      selectedCli: sanitizeSelectedBucket(obj.selectedCli, 'cli'),
     };
   } catch {
     return createEmptyAIModelsCache();
@@ -92,7 +110,7 @@ export function saveAIModelsCache(cache: AIModelsCache, storage?: StorageLike): 
   try {
     store.setItem(AI_MODELS_CACHE_KEY, JSON.stringify(cache));
   } catch {
-    // Ignore storage quota / privacy mode errors gracefully.
+    // Ignore storage quota or restricted storage errors gracefully.
   }
 }
 
@@ -118,8 +136,52 @@ export function writeCachedAIModels(
   const clean = sanitizeModels(models);
   if (!key || clean.length === 0) return cache;
   const next: AIModelsCache = {
+    ...cache,
     api: mode === 'api' ? { ...cache.api, [key]: clean } : cache.api,
     cli: mode === 'cli' ? { ...cache.cli, [key]: clean } : cache.cli,
+  };
+  saveAIModelsCache(next, storage);
+  return next;
+}
+
+export function getCachedSelectedAIModel(
+  cache: AIModelsCache,
+  mode: AIModelCacheMode,
+  rawKey: string,
+): string {
+  const key = normalizeModelCacheKey(mode, rawKey);
+  if (!key) return '';
+  const bucket = mode === 'api' ? cache.selectedApi : cache.selectedCli;
+  return bucket[key] ?? '';
+}
+
+export function writeCachedSelectedAIModel(
+  cache: AIModelsCache,
+  mode: AIModelCacheMode,
+  rawKey: string,
+  model: string,
+  storage?: StorageLike,
+): AIModelsCache {
+  const key = normalizeModelCacheKey(mode, rawKey);
+  if (!key) return cache;
+  const clean = model.trim();
+  const bucketKey = mode === 'api' ? 'selectedApi' : 'selectedCli';
+  const prevBucket = cache[bucketKey];
+  if (clean) {
+    if (prevBucket[key] === clean) return cache;
+    const next: AIModelsCache = {
+      ...cache,
+      [bucketKey]: { ...prevBucket, [key]: clean },
+    };
+    saveAIModelsCache(next, storage);
+    return next;
+  }
+  if (!(key in prevBucket)) return cache;
+  const nextBucket = { ...prevBucket };
+  delete nextBucket[key];
+  const next: AIModelsCache = {
+    ...cache,
+    [bucketKey]: nextBucket,
   };
   saveAIModelsCache(next, storage);
   return next;

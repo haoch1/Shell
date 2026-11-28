@@ -250,13 +250,13 @@ export const SSHConfigImportModal: React.FC<SSHConfigImportModalProps> = ({ onCl
                 </div>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--ink-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 28 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--ink-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
                   <Checkbox
                     checked={showGroupOverride}
                     onChange={(e) => setShowGroupOverride(e.target.checked)}
                   />
-                  统一覆盖分组
+                  <span>统一覆盖分组</span>
                 </label>
                 {showGroupOverride && (
                   <input

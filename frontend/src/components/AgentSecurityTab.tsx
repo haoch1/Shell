@@ -2,8 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   ChevronRight,
   Copy,
-  Eye,
-  EyeOff,
   RefreshCw,
 } from 'lucide-react';
 import type {
@@ -37,7 +35,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
   const [sub, setSub] = useState<'mcp' | 'guard' | 'audit'>('mcp');
   const [mcpClient, setMcpClient] = useState<'json' | 'claude' | 'codex' | 'antigravity'>('json');
   const [status, setStatus] = useState<AgentStatusView | null>(null);
-  const [showToken, setShowToken] = useState(false);
   const [portInput, setPortInput] = useState('17822');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -109,11 +106,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
       .map((l) => l.trim())
       .filter(Boolean);
 
-  const maskedToken =
-    status.token.length > 14
-      ? `${status.token.slice(0, 8)}••••••••${status.token.slice(-4)}`
-      : '••••••••••••';
-
   const mcpHttpConfig = JSON.stringify(
     {
       mcpServers: {
@@ -121,21 +113,6 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
           url: `http://127.0.0.1:${status.port}/mcp`,
           headers: {
             Authorization: `Bearer ${status.token}`,
-          },
-        },
-      },
-    },
-    null,
-    2,
-  );
-
-  const mcpHttpPreview = JSON.stringify(
-    {
-      mcpServers: {
-        shell: {
-          url: `http://127.0.0.1:${status.port}/mcp`,
-          headers: {
-            Authorization: `Bearer ${showToken ? status.token : maskedToken}`,
           },
         },
       },
@@ -158,29 +135,18 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
   );
 
   const exeQuoted = `"${status.exePath || 'Shell.exe'}"`;
-  const claudeCmdReal = `claude mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${status.token}"`;
-  const claudeCmdPreview = `claude mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${showToken ? status.token : maskedToken}"`;
+  const claudeCmd = `claude mcp add --transport http shell http://127.0.0.1:${status.port}/mcp --header "Authorization: Bearer ${status.token}"`;
   const codexCmd = `codex mcp add shell -- ${exeQuoted} --mcp`;
-  const agyCmdReal = `agy mcp add --type http --header "Authorization: Bearer ${status.token}" shell http://127.0.0.1:${status.port}/mcp`;
-  const agyCmdPreview = `agy mcp add --type http --header "Authorization: Bearer ${showToken ? status.token : maskedToken}" shell http://127.0.0.1:${status.port}/mcp`;
+  const agyCmd = `agy mcp add --type http --header "Authorization: Bearer ${status.token}" shell http://127.0.0.1:${status.port}/mcp`;
 
-  const activeSnippetCopy =
+  const activeSnippet =
     mcpClient === 'claude'
-      ? claudeCmdReal
+      ? claudeCmd
       : mcpClient === 'codex'
         ? codexCmd
         : mcpClient === 'antigravity'
-          ? agyCmdReal
+          ? agyCmd
           : mcpHttpConfig;
-
-  const activeSnippetPreview =
-    mcpClient === 'claude'
-      ? claudeCmdPreview
-      : mcpClient === 'codex'
-        ? codexCmd
-        : mcpClient === 'antigravity'
-          ? agyCmdPreview
-          : mcpHttpPreview;
 
   const runPolicyTest = async () => {
     const res = await getApi().TestCommandPolicy(
@@ -242,7 +208,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                 role="switch"
                 aria-checked={status.enabled}
                 disabled={busy}
-                className="apple-switch"
+                className="apple-switch accent"
                 onClick={() =>
                   void saveConfig(
                     {
@@ -317,23 +283,15 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
               </div>
 
               <div className="field-group grow">
-                <label className="field-label">访问令牌</label>
-                <div style={{ display: 'flex', gap: 5 }}>
+                <label className="field-label" htmlFor="mcpTokenInput">访问令牌</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                   <input
+                    id="mcpTokenInput"
                     className="input input-sm mono"
                     readOnly
-                    type={showToken ? 'text' : 'password'}
+                    type="text"
                     value={status.token}
                   />
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-icon-sm"
-                    title={showToken ? '隐藏' : '显示'}
-                    aria-label={showToken ? '隐藏令牌' : '显示令牌'}
-                    onClick={() => setShowToken((v) => !v)}
-                  >
-                    {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
-                  </button>
                   <button
                     type="button"
                     className="btn btn-sm btn-icon-sm"
@@ -372,7 +330,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                   type="button"
                   className="btn btn-primary btn-sm btn-pref-action"
                   onClick={() => {
-                    void copyToClipboard(activeSnippetCopy);
+                    void copyToClipboard(activeSnippet);
                     onToast(mcpClient === 'json' ? '已复制 HTTP 配置' : '已复制 CLI 接入命令');
                   }}
                 >
@@ -412,7 +370,7 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
               ))}
             </div>
             <div className="code-block" style={{ fontSize: 11.5, whiteSpace: mcpClient === 'json' ? 'pre' : 'pre-wrap', overflowX: 'auto' }}>
-              {activeSnippetPreview}
+              {activeSnippet}
             </div>
           </div>
         </>
@@ -686,14 +644,18 @@ export const AgentSecurityTab: React.FC<AgentSecurityTabProps> = ({ onStatusChan
                   <div className="mono" style={{ fontSize: 11.5, color: 'var(--ink-primary)', overflowWrap: 'anywhere' }}>
                     {entry.summary}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--ink-tertiary)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, fontSize: 11, color: 'var(--ink-tertiary)' }}>
                     <span>{new Date(entry.timestamp * 1000).toLocaleString()}</span>
-                    {entry.phases ? <details>
-                      <summary className="mono">总计 {entry.durationMs} ms</summary>
-                      {entry.phases.sessionMs != null && <div>会话准备 {entry.phases.sessionMs} ms</div>}
-                      {entry.phases.approvalMs != null && <div>工具审批 {entry.phases.approvalMs} ms</div>}
-                      {entry.phases.remoteMs != null && <div>远端命令往返 {entry.phases.remoteMs} ms</div>}
-                    </details> : <span className="mono">{entry.durationMs} ms</span>}
+                    {entry.phases ? (
+                      <details style={{ textAlign: 'right' }}>
+                        <summary className="mono" style={{ cursor: 'pointer' }}>总计 {entry.durationMs} ms</summary>
+                        {entry.phases.sessionMs != null && <div>会话准备 {entry.phases.sessionMs} ms</div>}
+                        {entry.phases.approvalMs != null && <div>工具审批 {entry.phases.approvalMs} ms</div>}
+                        {entry.phases.remoteMs != null && <div>远端命令往返 {entry.phases.remoteMs} ms</div>}
+                      </details>
+                    ) : (
+                      <span className="mono">{entry.durationMs} ms</span>
+                    )}
                   </div>
                 </div>
               ))}

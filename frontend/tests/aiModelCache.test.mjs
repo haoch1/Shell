@@ -4,10 +4,12 @@ import {
   AI_MODELS_CACHE_KEY,
   createEmptyAIModelsCache,
   getCachedAIModels,
+  getCachedSelectedAIModel,
   loadAIModelsCache,
   normalizeCliCommand,
   normalizeEndpoint,
   writeCachedAIModels,
+  writeCachedSelectedAIModel,
 } from '../src/lib/aiModelCache.ts';
 
 function createMemoryStorage(initial = {}) {
@@ -119,6 +121,8 @@ test('aiModelCache ignores empty writes and tolerates malformed or corrupted JSO
   assert.deepEqual(cleaned, {
     api: { 'https://api.example.com/v1': ['m1', 'm2'] },
     cli: { codex: ['c1', 'c2'] },
+    selectedApi: {},
+    selectedCli: {},
   });
 
   // Empty key or empty model list must not clobber existing cache
@@ -144,4 +148,35 @@ test('aiModelCache handles throwing storage gracefully without crashing', () => 
   assert.deepEqual(cache, createEmptyAIModelsCache());
   const next = writeCachedAIModels(cache, 'cli', 'agy', ['gemini-4-neon-high'], brokenStorage);
   assert.deepEqual(getCachedAIModels(next, 'cli', 'agy'), ['gemini-4-neon-high']);
+});
+
+test('aiModelCache remembers selected models per CLI tool and API endpoint independently', () => {
+  const storage = createMemoryStorage();
+  let cache = loadAIModelsCache(storage);
+
+  // Select a model under Antigravity CLI (agy) — Codex CLI must stay empty (never inherit agy's model)
+  cache = writeCachedSelectedAIModel(cache, 'cli', 'AGY', 'gemini-4-neon-medium', storage);
+  assert.equal(getCachedSelectedAIModel(cache, 'cli', 'agy'), 'gemini-4-neon-medium');
+  assert.equal(getCachedSelectedAIModel(cache, 'cli', 'codex'), '');
+  assert.equal(getCachedSelectedAIModel(cache, 'cli', 'claude'), '');
+
+  // Select a separate model under Codex CLI and an API endpoint
+  cache = writeCachedSelectedAIModel(cache, 'cli', 'codex', 'gpt-6.2-sol', storage);
+  cache = writeCachedSelectedAIModel(cache, 'api', 'https://api.anthropic.com/v1/', 'claude-opus-5-5', storage);
+
+  // Refreshing model lists must preserve remembered per-tool selections
+  cache = writeCachedAIModels(cache, 'cli', 'codex', ['gpt-6.2-sol', 'gpt-6.1-terra'], storage);
+
+  const reloaded = loadAIModelsCache(storage);
+  assert.equal(getCachedSelectedAIModel(reloaded, 'cli', 'agy'), 'gemini-4-neon-medium');
+  assert.equal(getCachedSelectedAIModel(reloaded, 'cli', 'codex'), 'gpt-6.2-sol');
+  assert.equal(getCachedSelectedAIModel(reloaded, 'api', 'https://api.anthropic.com/v1'), 'claude-opus-5-5');
+  assert.equal(getCachedSelectedAIModel(reloaded, 'api', 'https://api.openai.com/v1'), '');
+
+  // Clearing Codex back to default ('') must remove only Codex without affecting agy
+  const cleared = writeCachedSelectedAIModel(reloaded, 'cli', 'codex', '   ', storage);
+  const reloadedAfterClear = loadAIModelsCache(storage);
+  assert.equal(getCachedSelectedAIModel(cleared, 'cli', 'codex'), '');
+  assert.equal(getCachedSelectedAIModel(reloadedAfterClear, 'cli', 'codex'), '');
+  assert.equal(getCachedSelectedAIModel(reloadedAfterClear, 'cli', 'agy'), 'gemini-4-neon-medium');
 });

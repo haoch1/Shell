@@ -26,10 +26,10 @@
   --ink-tertiary: #59636e;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(31, 35, 40, 0.13);
-  --border-card: rgba(31, 35, 40, 0.18);
-  --border-control: rgba(31, 35, 40, 0.24);
-  --border-strong: rgba(31, 35, 40, 0.33);
+  --border-hairline: rgba(31, 35, 40, 0.09);
+  --border-card: rgba(31, 35, 40, 0.11);
+  --border-control: rgba(31, 35, 40, 0.17);
+  --border-strong: rgba(31, 35, 40, 0.25);
   --border-focus: rgba(9, 105, 218, 0.72);
   --focus-ring: rgba(9, 105, 218, 0.16);
   --surface-rim: inset 0 1px 0 rgba(255, 255, 255, 0.72);
@@ -48,9 +48,11 @@
   --purple: #6639ba;
   --purple-soft: rgba(102, 57, 186, 0.11);
 
-  --shadow-sm: 0 1px 2px rgba(31, 35, 40, 0.07), 0 0.5px 1px rgba(31, 35, 40, 0.04);
-  --shadow-md: 0 10px 26px rgba(31, 35, 40, 0.11), 0 1px 3px rgba(31, 35, 40, 0.06);
-  --shadow-lg: 0 24px 64px rgba(31, 35, 40, 0.18), 0 4px 16px rgba(31, 35, 40, 0.08);
+  --shadow-sm: 0 1px 2px rgba(31, 35, 40, 0.04), 0 1px 3px rgba(31, 35, 40, 0.025);
+  --shadow-card: 0 1px 2px rgba(31, 35, 40, 0.035), 0 4px 12px -2px rgba(31, 35, 40, 0.045);
+  --shadow-card-hover: 0 2px 5px rgba(31, 35, 40, 0.05), 0 10px 24px -4px rgba(31, 35, 40, 0.09);
+  --shadow-md: 0 4px 12px -2px rgba(31, 35, 40, 0.07), 0 14px 34px -6px rgba(31, 35, 40, 0.10);
+  --shadow-lg: 0 8px 24px -4px rgba(31, 35, 40, 0.09), 0 28px 64px -12px rgba(31, 35, 40, 0.17);
 
   --sftp-code: #0550ae;
   --sftp-log: #8a4f00;
@@ -110,10 +112,10 @@
   --ink-tertiary: #8b949e;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(240, 246, 252, 0.10);
-  --border-card: rgba(240, 246, 252, 0.14);
-  --border-control: rgba(240, 246, 252, 0.20);
-  --border-strong: rgba(240, 246, 252, 0.28);
+  --border-hairline: rgba(240, 246, 252, 0.08);
+  --border-card: rgba(240, 246, 252, 0.11);
+  --border-control: rgba(240, 246, 252, 0.17);
+  --border-strong: rgba(240, 246, 252, 0.24);
   --border-focus: rgba(88, 166, 255, 0.72);
   --focus-ring: rgba(56, 139, 253, 0.18);
   --surface-rim: inset 0 1px 0 rgba(240, 246, 252, 0.05);
@@ -132,9 +134,11 @@
   --purple: #d2a8ff;
   --purple-soft: rgba(210, 168, 255, 0.16);
 
-  --shadow-sm: 0 1px 2px rgba(1, 4, 9, 0.42);
-  --shadow-md: 0 12px 32px rgba(1, 4, 9, 0.56), 0 1px 3px rgba(1, 4, 9, 0.40);
-  --shadow-lg: 0 28px 72px rgba(1, 4, 9, 0.72), 0 6px 20px rgba(1, 4, 9, 0.48);
+  --shadow-sm: 0 1px 2px rgba(1, 4, 9, 0.26);
+  --shadow-card: 0 1px 2px rgba(1, 4, 9, 0.24), 0 4px 12px -2px rgba(1, 4, 9, 0.22);
+  --shadow-card-hover: 0 2px 6px rgba(1, 4, 9, 0.32), 0 12px 26px -4px rgba(1, 4, 9, 0.36);
+  --shadow-md: 0 4px 12px -2px rgba(1, 4, 9, 0.38), 0 16px 36px -6px rgba(1, 4, 9, 0.48);
+  --shadow-lg: 0 10px 26px -4px rgba(1, 4, 9, 0.48), 0 30px 68px -12px rgba(1, 4, 9, 0.66);
 
   --sftp-code: #58a6ff;
   --sftp-log: #e3b341;
@@ -181,10 +185,10 @@
   --ink-tertiary: #7e88b5;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(192, 202, 245, 0.11);
-  --border-card: rgba(192, 202, 245, 0.16);
-  --border-control: rgba(192, 202, 245, 0.22);
-  --border-strong: rgba(192, 202, 245, 0.29);
+  --border-hairline: rgba(192, 202, 245, 0.09);
+  --border-card: rgba(192, 202, 245, 0.125);
+  --border-control: rgba(192, 202, 245, 0.185);
+  --border-strong: rgba(192, 202, 245, 0.26);
   --border-focus: rgba(122, 162, 247, 0.74);
   --focus-ring: rgba(122, 162, 247, 0.18);
   --surface-rim: inset 0 1px 0 rgba(192, 202, 245, 0.06);
@@ -203,9 +207,11 @@
   --purple: #bb9af7;
   --purple-soft: rgba(187, 154, 247, 0.17);
 
-  --shadow-sm: 0 1px 2px rgba(8, 10, 20, 0.42);
-  --shadow-md: 0 12px 32px rgba(8, 10, 20, 0.56), 0 1px 3px rgba(8, 10, 20, 0.40);
-  --shadow-lg: 0 28px 72px rgba(8, 10, 20, 0.72), 0 6px 20px rgba(8, 10, 20, 0.48);
+  --shadow-sm: 0 1px 2px rgba(8, 10, 20, 0.26);
+  --shadow-card: 0 1px 2px rgba(8, 10, 20, 0.24), 0 4px 12px -2px rgba(8, 10, 20, 0.22);
+  --shadow-card-hover: 0 2px 6px rgba(8, 10, 20, 0.32), 0 12px 26px -4px rgba(8, 10, 20, 0.36);
+  --shadow-md: 0 4px 12px -2px rgba(8, 10, 20, 0.38), 0 16px 36px -6px rgba(8, 10, 20, 0.48);
+  --shadow-lg: 0 10px 26px -4px rgba(8, 10, 20, 0.48), 0 30px 68px -12px rgba(8, 10, 20, 0.66);
 
   --sftp-code: #7aa2f7;
   --sftp-log: #e0af68;
@@ -252,10 +258,10 @@
   --ink-tertiary: #9399b2;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(205, 214, 244, 0.11);
-  --border-card: rgba(205, 214, 244, 0.16);
-  --border-control: rgba(205, 214, 244, 0.22);
-  --border-strong: rgba(205, 214, 244, 0.29);
+  --border-hairline: rgba(205, 214, 244, 0.09);
+  --border-card: rgba(205, 214, 244, 0.125);
+  --border-control: rgba(205, 214, 244, 0.185);
+  --border-strong: rgba(205, 214, 244, 0.26);
   --border-focus: rgba(203, 166, 247, 0.72);
   --focus-ring: rgba(203, 166, 247, 0.18);
   --surface-rim: inset 0 1px 0 rgba(205, 214, 244, 0.06);
@@ -274,9 +280,11 @@
   --purple: #cba6f7;
   --purple-soft: rgba(203, 166, 247, 0.18);
 
-  --shadow-sm: 0 1px 2px rgba(11, 11, 19, 0.42);
-  --shadow-md: 0 12px 32px rgba(11, 11, 19, 0.56), 0 1px 3px rgba(11, 11, 19, 0.40);
-  --shadow-lg: 0 28px 72px rgba(11, 11, 19, 0.72), 0 6px 20px rgba(11, 11, 19, 0.48);
+  --shadow-sm: 0 1px 2px rgba(11, 11, 19, 0.26);
+  --shadow-card: 0 1px 2px rgba(11, 11, 19, 0.24), 0 4px 12px -2px rgba(11, 11, 19, 0.22);
+  --shadow-card-hover: 0 2px 6px rgba(11, 11, 19, 0.32), 0 12px 26px -4px rgba(11, 11, 19, 0.36);
+  --shadow-md: 0 4px 12px -2px rgba(11, 11, 19, 0.38), 0 16px 36px -6px rgba(11, 11, 19, 0.48);
+  --shadow-lg: 0 10px 26px -4px rgba(11, 11, 19, 0.48), 0 30px 68px -12px rgba(11, 11, 19, 0.66);
 
   --sftp-code: #89b4fa;
   --sftp-log: #f9e2af;
@@ -323,10 +331,10 @@
   --ink-tertiary: #6b627d;
   --ink-on-accent: #ffffff;
 
-  --border-hairline: rgba(43, 38, 56, 0.13);
-  --border-card: rgba(43, 38, 56, 0.18);
-  --border-control: rgba(43, 38, 56, 0.25);
-  --border-strong: rgba(43, 38, 56, 0.34);
+  --border-hairline: rgba(43, 38, 56, 0.095);
+  --border-card: rgba(43, 38, 56, 0.12);
+  --border-control: rgba(43, 38, 56, 0.18);
+  --border-strong: rgba(43, 38, 56, 0.26);
   --border-focus: rgba(40, 105, 131, 0.72);
   --focus-ring: rgba(40, 105, 131, 0.16);
   --surface-rim: inset 0 1px 0 rgba(255, 253, 249, 0.78);
@@ -345,9 +353,11 @@
   --purple: #744496;
   --purple-soft: rgba(116, 68, 150, 0.11);
 
-  --shadow-sm: 0 1px 2px rgba(43, 38, 56, 0.075), 0 0.5px 1px rgba(43, 38, 56, 0.04);
-  --shadow-md: 0 10px 26px rgba(43, 38, 56, 0.12), 0 1px 3px rgba(43, 38, 56, 0.07);
-  --shadow-lg: 0 24px 64px rgba(43, 38, 56, 0.19), 0 4px 16px rgba(43, 38, 56, 0.08);
+  --shadow-sm: 0 1px 2px rgba(43, 38, 56, 0.04), 0 1px 3px rgba(43, 38, 56, 0.025);
+  --shadow-card: 0 1px 2px rgba(43, 38, 56, 0.035), 0 4px 12px -2px rgba(43, 38, 56, 0.045);
+  --shadow-card-hover: 0 2px 5px rgba(43, 38, 56, 0.05), 0 10px 24px -4px rgba(43, 38, 56, 0.09);
+  --shadow-md: 0 4px 12px -2px rgba(43, 38, 56, 0.07), 0 14px 34px -6px rgba(43, 38, 56, 0.10);
+  --shadow-lg: 0 8px 24px -4px rgba(43, 38, 56, 0.09), 0 28px 64px -12px rgba(43, 38, 56, 0.17);
 
   --sftp-code: #286983;
   --sftp-log: #8d4f06;
@@ -941,6 +951,10 @@ html, body, #root {
   color: var(--accent);
 }
 
+[data-theme="dark"] .icon-btn.active {
+  color: var(--brand-accent);
+}
+
 .icon-btn.active-purple {
   background: var(--purple-soft);
   color: var(--purple);
@@ -1122,23 +1136,17 @@ html, body, #root {
   color: var(--ink-tertiary);
 }
 
-/* Segmented Control (Recessed Well + Tactile Elevated Cap — concentric 6px/9px) */
+/* Segmented Control (Flat Bordered Track + Soft-Accent Active Pill) */
 .segmented {
   display: inline-flex;
   align-items: center;
   height: var(--ctrl-md);
-  padding: 3px;
-  border-radius: 9px;
-  background: var(--bg-surface-subtle);
-  border: 1px solid var(--border-hairline);
-  box-shadow: inset 0 1px 2px rgba(31, 35, 40, 0.05);
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-control);
   gap: 2px;
-}
-
-[data-theme="dark"] .segmented {
-  background: color-mix(in srgb, var(--bg-app) 78%, black);
-  border: 1px solid var(--border-hairline);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.30);
+  box-shadow: none;
 }
 
 .segmented button {
@@ -1146,12 +1154,12 @@ html, body, #root {
   height: 100%;
   border: none;
   background: transparent;
-  color: var(--ink-tertiary);
+  color: var(--ink-secondary);
   font-family: inherit;
   font-size: 12.5px;
   font-weight: 500;
   padding: 0 11px 1px;
-  border-radius: 6px;
+  border-radius: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1166,24 +1174,17 @@ html, body, #root {
 }
 
 .segmented button.active {
-  background: var(--bg-surface);
-  color: var(--ink-primary);
+  background: var(--bg-accent-soft);
+  color: var(--accent);
   font-weight: 600;
-  box-shadow:
-    0 1px 3px rgba(15, 23, 42, 0.11),
-    0 0.5px 1px rgba(15, 23, 42, 0.07),
-    inset 0 0 0 0.5px var(--border-card),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent);
 }
 
 [data-theme="dark"] .segmented button.active {
-  background: color-mix(in srgb, var(--bg-surface) 74%, var(--ink-primary) 12%);
-  color: var(--ink-primary);
+  background: var(--bg-accent-soft);
+  color: var(--brand-accent);
   font-weight: 600;
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.42),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 0 1px color-mix(in srgb, var(--border-control) 85%, var(--accent) 22%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-accent) 38%, transparent);
 }
 
 .segmented button:focus-visible {
@@ -1193,16 +1194,16 @@ html, body, #root {
 
 .modal-header .segmented,
 .pref-row .segmented {
-  height: 30px;
-  padding: 3px;
-  border-radius: 8px;
+  height: var(--ctrl-sm);
+  padding: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .modal-header .segmented button,
 .pref-row .segmented button {
   font-size: 12px;
   padding: 0 10px 1px;
-  border-radius: 5.5px;
+  border-radius: 4px;
 }
 
 /* Switch */
@@ -1773,8 +1774,9 @@ html, body, #root {
   color: var(--ink-primary);
 }
 
-.icon-choice-btn.is-auto.selected {
-  border-color: var(--accent);
+.icon-choice-btn.is-auto.selected,
+.icon-choice-btn.is-auto.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   background: var(--bg-accent-soft);
   color: var(--accent);
   font-weight: 600;
@@ -1797,10 +1799,20 @@ html, body, #root {
   filter: brightness(1.06);
 }
 
-.icon-choice-btn.is-tile.selected {
-  border-color: var(--accent);
+.icon-choice-btn.is-tile.selected,
+.icon-choice-btn.is-tile.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   background: var(--bg-accent-soft);
   box-shadow: 0 0 0 1px var(--bg-accent-soft);
+}
+
+[data-theme="dark"] .icon-choice-btn.is-auto.selected,
+[data-theme="dark"] .icon-choice-btn.is-auto.active,
+[data-theme="dark"] .icon-choice-btn.is-tile.selected,
+[data-theme="dark"] .icon-choice-btn.is-tile.active {
+  background: var(--bg-accent-soft);
+  color: var(--brand-accent);
+  border-color: color-mix(in srgb, var(--brand-accent) 60%, transparent);
 }
 
 .input-with-action {
@@ -2317,7 +2329,7 @@ html, body, #root {
   border-radius: var(--radius-lg);
   background: var(--bg-surface);
   border: 1px solid var(--border-card);
-  box-shadow: var(--surface-rim), var(--shadow-md);
+  box-shadow: var(--surface-rim), var(--shadow-card);
   animation: connectCardIn 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
@@ -2695,12 +2707,12 @@ html, body, #root {
   font-size: 21px;
   font-weight: 700;
   letter-spacing: -0.04em;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 10px 24px rgba(15, 23, 42, 0.24), 0 2px 6px rgba(0, 0, 0, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 20px -4px rgba(15, 23, 42, 0.20), 0 2px 6px -1px rgba(15, 23, 42, 0.10);
 }
 
 [data-theme="dark"] .welcome-app-icon {
   border-color: rgba(255, 255, 255, 0.24);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 0 0 1px rgba(255, 255, 255, 0.06), 0 12px 30px rgba(0, 0, 0, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 0 0 1px rgba(255, 255, 255, 0.06), 0 10px 26px -4px rgba(0, 0, 0, 0.50);
 }
 
 .welcome-app-icon span {
@@ -2729,10 +2741,10 @@ html, body, #root {
   align-items: center;
   gap: 7px;
   padding: 0 5px 0 12px;
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   background: var(--bg-surface);
   border: 1px solid var(--border-control);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-card);
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
@@ -2815,10 +2827,10 @@ html, body, #root {
   gap: 10px;
   min-height: 58px;
   padding: 10px 12px;
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   border: 1px solid var(--border-card);
   background: var(--bg-surface);
-  box-shadow: var(--surface-rim), var(--shadow-sm);
+  box-shadow: var(--surface-rim), var(--shadow-card);
   text-align: left;
   cursor: pointer;
   min-width: 0;
@@ -2827,7 +2839,7 @@ html, body, #root {
 
 .recent-card:hover {
   border-color: var(--border-control);
-  box-shadow: var(--surface-rim), var(--shadow-md);
+  box-shadow: var(--surface-rim), var(--shadow-card-hover);
   transform: translateY(-1px);
 }
 
@@ -3404,10 +3416,11 @@ html, body, #root {
   border-radius: var(--radius-md);
   border: 1px solid var(--border-card);
   background: var(--bg-surface-subtle);
+  box-shadow: var(--shadow-card);
   display: flex;
   flex-direction: column;
   gap: 7px;
-  transition: border-color 130ms ease;
+  transition: border-color 130ms ease, box-shadow 130ms ease;
 }
 
 .soft-card:hover {
@@ -3893,7 +3906,7 @@ html, body, #root {
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+  transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
 
 .settings-nav-btn:hover {
@@ -3904,6 +3917,12 @@ html, body, #root {
 .settings-nav-btn.active {
   background: var(--bg-accent-soft);
   color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+[data-theme="dark"] .settings-nav-btn.active {
+  color: var(--brand-accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-accent) 26%, transparent);
 }
 
 .settings-content {
@@ -3971,16 +3990,16 @@ html, body, #root {
 .pref-group {
   background: var(--bg-surface);
   border: 1px solid var(--border-card);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 
 .pref-group-pad {
   background: var(--bg-surface);
   border: 1px solid var(--border-card);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card);
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
@@ -4073,12 +4092,16 @@ html, body, #root {
 
 .stepper span {
   min-width: 44px;
+  padding: 0 4px;
   text-align: center;
   font-size: 12px;
   font-weight: 500;
   color: var(--ink-primary);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  border-left: 1px solid var(--border-hairline);
+  border-right: 1px solid var(--border-hairline);
+  line-height: calc(var(--ctrl-sm) - 2px);
 }
 
 /* Provider Selection Grid */
@@ -4097,6 +4120,7 @@ html, body, #root {
   border-radius: var(--radius-md);
   border: 1px solid var(--border-card);
   background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
   cursor: pointer;
   text-align: left;
   transition: border-color 130ms ease, background 130ms ease, box-shadow 130ms ease;
@@ -4105,11 +4129,16 @@ html, body, #root {
 .provider-card:hover {
   border-color: var(--border-control);
   background: var(--bg-hover);
+  box-shadow: var(--shadow-card-hover);
 }
 
 .provider-card.active {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   background: var(--bg-accent-soft);
+}
+
+[data-theme="dark"] .provider-card.active {
+  border-color: color-mix(in srgb, var(--brand-accent) 55%, transparent);
 }
 
 /* About Hero & Tactile Keycaps */
@@ -4362,21 +4391,27 @@ html, body, #root {
   border-radius: var(--radius-md);
   border: 1.5px solid var(--border-card);
   background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 5px;
   text-align: left;
-  transition: border-color 140ms ease;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .theme-tile:hover {
   border-color: var(--border-control);
+  box-shadow: var(--shadow-card-hover);
 }
 
 .theme-tile.active {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--bg-accent-soft);
+}
+
+[data-theme="dark"] .theme-tile.active {
+  border-color: var(--brand-accent);
 }
 
 .theme-swatch-box {
@@ -4718,12 +4753,14 @@ input[type="checkbox"]:focus-visible {
   font-size: 12.5px;
   line-height: 1.45;
   color: var(--ink-primary);
-  transition: background 120ms ease, border-color 120ms ease;
+  box-shadow: var(--shadow-card);
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .ai-example-btn:hover {
   background: var(--bg-hover);
   border-color: var(--border-control);
+  box-shadow: var(--shadow-card-hover);
 }
 
 /* Multi-line Paste Guard Sheet */

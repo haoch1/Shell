@@ -108,6 +108,12 @@
   color: var(--accent);
 }
 
+[data-theme="dark"] .sftp-tool-btn.active,
+[data-theme="dark"] .sftp-nav-btn.active,
+[data-theme="dark"] .sftp-bookmark-item.active {
+  color: var(--brand-accent);
+}
+
 .sftp-tool-btn:disabled {
   opacity: 0.34;
   cursor: default;
@@ -685,6 +691,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
   border: 1px solid var(--border-card);
+  box-shadow: var(--shadow-card);
   font-size: 11.5px;
 }
 
@@ -941,8 +948,13 @@
 
 .sftp-preset-pill.active {
   background: var(--bg-accent-soft);
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   color: var(--accent);
+}
+
+[data-theme="dark"] .sftp-preset-pill.active {
+  border-color: color-mix(in srgb, var(--brand-accent) 55%, transparent);
+  color: var(--brand-accent);
 }
 
 /* Properties Detail Modal */

@@ -137,7 +137,7 @@ const BRIDGE_MOCK_SCRIPT = `
   const emit = (ev, ...args) => { for (const fn of listeners.get(ev) || []) fn(...args); };
   let settings = {
     theme: 'light', terminalTheme: 'auto',
-    fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
+    fontFamily: '"Cascadia Mono", "JetBrains Mono", "SF Mono", Consolas, "Sarasa Mono SC", "Maple Mono SC NF", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", monospace',
     fontSize: 14, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
     showTelemetry: true, syntaxHighlight: true, autoReconnect: true, confirmMultilinePaste: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false, groupOrder: []
@@ -225,6 +225,7 @@ const BRIDGE_MOCK_SCRIPT = `
         await new Promise(r => setTimeout(r, 40));
         throw new Error('dial tcp 10.24.0.99:22: connectex: No connection could be made because the target machine actively refused it.');
       }
+      window.__lastConnectedSessionId = id;
       setTimeout(() => emit('ssh:status', id, 'dial', '正在连接 ' + p.host + ':' + p.port + '…'), 20);
       setTimeout(() => emit('ssh:status', id, 'auth', '正在校验指纹与认证…'), 55);
       setTimeout(() => emit('ssh:status', id, 'shell', '正在打开远程终端…'), 90);
@@ -762,6 +763,8 @@ async function verifyFrontendUI() {
       return { indeterminate: Boolean(master?.indeterminate), hasCount: txt.includes('已选 1/3') };
     })()`);
     assert.deepEqual(batchIndeterminate, { indeterminate: true, hasCount: true }, 'Expected indeterminate master checkbox with 1/3 selected');
+    const batchDangerBg = await evaluate("getComputedStyle(document.querySelector('.sidebar-footer.batch-bar .btn-danger')).backgroundColor");
+    assert.match(batchDangerBg, /^rgb\(\d+,\s*\d+,\s*\d+\)$/, 'Expected solid opaque rgb(...) background on batch .btn-danger (no translucent rgba wash), got ' + batchDangerBg);
     await shot('21-Sidebar-BatchSelect');
     // Verify Escape cleanly exits batch select mode
     await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -946,13 +949,52 @@ async function verifyFrontendUI() {
     assert.ok(barAlign && Math.abs(barAlign.fTop - barAlign.sTop) <= 1 && Math.abs(barAlign.fH - barAlign.sH) <= 1, 'Expected aligned bottom strip, got ' + JSON.stringify(barAlign));
 
     await sleep(900); // let telemetry poll populate
-    // Verify enriched Telemetry Popover renders Swap bar and process count from GetStats/FetchStats
+    // Verify refactored 4-zone Telemetry Popover (3-col KPI grid, Swap bar, single-line OS, floating above statusbar)
     await until(() => evaluate("!!document.querySelector('.statusbar-right .telemetry-trigger')"), 'telemetry trigger button');
     await click('.statusbar-right .telemetry-trigger');
     await until(() => evaluate("!!document.querySelector('.telemetry-popover')"), 'telemetry popover');
-    const telemetryPopText = await evaluate("document.querySelector('.telemetry-popover')?.textContent || ''");
-    assert.ok(telemetryPopText.includes('142 进程'), 'Expected process count in telemetry popover, got ' + telemetryPopText);
-    assert.ok(telemetryPopText.includes('Swap') && telemetryPopText.includes('0.5 / 2.0 GB (25%)'), 'Expected Swap bar in telemetry popover, got ' + telemetryPopText);
+    const telemetryAudit = await evaluate(`(() => {
+      const pop = document.querySelector('.telemetry-popover');
+      const bar = document.querySelector('.statusbar');
+      const kpiGrid = pop?.querySelector('.telemetry-kpi-grid');
+      const kpiCells = [...(kpiGrid?.querySelectorAll('.telemetry-kpi-cell') || [])].map(c => ({
+        label: c.querySelector('.telemetry-kpi-label')?.textContent?.trim() || '',
+        val: c.querySelector('.telemetry-kpi-val')?.textContent?.trim() || '',
+      }));
+      const osEl = pop?.querySelector('.telemetry-os');
+      const osRect = osEl?.getBoundingClientRect();
+      const osStyle = osEl ? getComputedStyle(osEl) : null;
+      const popRect = pop?.getBoundingClientRect();
+      const barRect = bar?.getBoundingClientRect();
+      return {
+        text: pop?.textContent || '',
+        hasKpiGrid: Boolean(kpiGrid),
+        kpiCells,
+        osText: osEl?.textContent?.trim() || '',
+        osWhiteSpace: osStyle?.whiteSpace || '',
+        osHeight: osRect ? Math.round(osRect.height) : 0,
+        osLineHeight: osStyle ? parseFloat(osStyle.lineHeight) || parseFloat(osStyle.fontSize) * 1.4 : 0,
+        popBottom: popRect ? Math.round(popRect.bottom) : 9999,
+        barTop: barRect ? Math.round(barRect.top) : 0,
+      };
+    })()`);
+    assert.equal(telemetryAudit.hasKpiGrid, true, 'Expected .telemetry-kpi-grid in telemetry popover: ' + JSON.stringify(telemetryAudit));
+    assert.ok(
+      telemetryAudit.kpiCells.some(c => c.label === '进程数' && c.val === '142'),
+      'Expected 进程数=142 in .telemetry-kpi-grid, got ' + JSON.stringify(telemetryAudit.kpiCells),
+    );
+    assert.ok(
+      telemetryAudit.text.includes('Swap') && telemetryAudit.text.includes('0.5 / 2.0 GB (25%)'),
+      'Expected Swap bar 0.5 / 2.0 GB (25%) in telemetry popover, got ' + telemetryAudit.text,
+    );
+    assert.ok(
+      telemetryAudit.osWhiteSpace === 'nowrap' && telemetryAudit.osHeight > 0 && telemetryAudit.osHeight <= Math.max(22, Math.ceil(telemetryAudit.osLineHeight * 1.45)),
+      'Expected single-line .telemetry-os without multi-line wrap, got ' + JSON.stringify(telemetryAudit),
+    );
+    assert.ok(
+      telemetryAudit.popBottom < telemetryAudit.barTop,
+      'Expected telemetry popover floating above .statusbar (popoverRect.bottom < statusbarRect.top), got ' + JSON.stringify(telemetryAudit),
+    );
     await evaluate("document.querySelector('.telemetry-popover')?.previousElementSibling?.click()");
     await until(() => evaluate("!document.querySelector('.telemetry-popover')"), 'closed telemetry popover');
 
@@ -1159,6 +1201,11 @@ async function verifyFrontendUI() {
     await click('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]');
     assert.equal(await evaluate(`document.querySelector('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]')?.checked`), false, 'Master checkbox should deselect all');
     await sleep(180);
+    const knownHostsDangerBgs = await evaluate(`[...document.querySelectorAll('#settingsDialog .btn-danger')].map(el => getComputedStyle(el).backgroundColor)`);
+    assert.ok(
+      knownHostsDangerBgs.length >= 2 && knownHostsDangerBgs.every(bg => /^rgb\(\d+,\s*\d+,\s*\d+\)$/.test(bg)),
+      'Expected solid opaque rgb(...) background on known_hosts .btn-danger buttons (no translucent rgba wash), got ' + JSON.stringify(knownHostsDangerBgs),
+    );
     await shot('13-Settings-SSH-KnownHosts');
 
     // Settings -> SSH Keys right-edge alignment & screenshot
@@ -1369,33 +1416,96 @@ async function verifyFrontendUI() {
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings after restoring Obsidian Graphite');
     await sleep(250);
-    // Verify 曜石深灰 (#1B1C20) daylight-legible elevated graphite terminal background, crisp neutral cursor (#F3F6FA), vivid ANSI green (#4ADE80), no blue active accent bars & full tab title visibility
+    // Verify 曜石深灰 (#1B1C20) elevated graphite terminal background, crisp cursor (#F8FAFC), vivid ANSI green (#56E39F), CJK sans-serif font stack, no blue active accent bars & full tab title visibility
     const darkPaletteAudit = await evaluate(`(() => {
       const wrap = document.querySelector('.pane-xterm-wrap');
       const bg = wrap ? getComputedStyle(wrap).backgroundColor : '';
+      const rows = document.querySelector('.pane-xterm-wrap .xterm-rows');
+      const xtermFontFamily = rows ? getComputedStyle(rows).fontFamily : '';
       const greenSpan = document.querySelector('.pane-xterm-wrap .xterm-fg-2');
       const greenColor = greenSpan ? getComputedStyle(greenSpan).color : '';
       const styleText = [...document.querySelectorAll('.pane-xterm-wrap style')].map(s => s.textContent || '').join('\\n');
       const cursorEl = document.querySelector('.pane-xterm-wrap .xterm-cursor');
       const cursorBoxShadow = cursorEl ? getComputedStyle(cursorEl).boxShadow : '';
-      const hasCrispCursor = /#f3f6fa/i.test(styleText) || styleText.includes('243, 246, 250') || cursorBoxShadow.includes('243, 246, 250');
-      const hasCrispGreen = /#4ade80/i.test(styleText) || greenColor === 'rgb(74, 222, 128)';
+      const hasCrispCursor = /#f8fafc/i.test(styleText) || styleText.includes('248, 250, 252') || cursorBoxShadow.includes('248, 250, 252');
+      const hasCrispGreen = /#56e39f/i.test(styleText) || greenColor === 'rgb(86, 227, 159)';
       const activeTab = document.querySelector('.tab-item.active');
       const activeHost = document.querySelector('.host-row.active');
       const tabAfterContent = activeTab ? getComputedStyle(activeTab, '::after').content : null;
       const hostBeforeContent = activeHost ? getComputedStyle(activeHost, '::before').content : null;
       const firstTabLabel = activeTab?.querySelector('.tab-label') ?? document.querySelector('.tab-item .tab-label');
       const tabFullVisible = firstTabLabel ? firstTabLabel.scrollWidth <= firstTabLabel.clientWidth + 1 : false;
-      return { bg, greenColor, cursorBoxShadow, hasCrispCursor, hasCrispGreen, tabAfterContent, hostBeforeContent, tabFullVisible };
+      return { bg, xtermFontFamily, greenColor, cursorBoxShadow, hasCrispCursor, hasCrispGreen, tabAfterContent, hostBeforeContent, tabFullVisible };
     })()`);
     assert.equal(darkPaletteAudit.bg, 'rgb(27, 28, 32)', 'Expected 曜石深灰 canvas background #1B1C20, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.greenColor, 'rgb(74, 222, 128)', 'Expected crisp 曜石深灰 ANSI green #4ADE80, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.hasCrispCursor, true, 'Expected crisp neutral cursor #F3F6FA in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.hasCrispGreen, true, 'Expected crisp green #4ADE80 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.greenColor, 'rgb(86, 227, 159)', 'Expected crisp 曜石深灰 ANSI green #56E39F, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCrispCursor, true, 'Expected crisp neutral cursor #F8FAFC in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCrispGreen, true, 'Expected crisp green #56E39F in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.ok(darkPaletteAudit.xtermFontFamily.includes('Microsoft YaHei'), 'Expected .xterm-rows computed fontFamily to include Microsoft YaHei CJK sans-serif fallback, got ' + JSON.stringify(darkPaletteAudit.xtermFontFamily));
     assert.equal(darkPaletteAudit.tabAfterContent, 'none', 'Expected no blue ::after accent bar on .tab-item.active, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.hostBeforeContent, 'none', 'Expected no blue ::before accent bar on .host-row.active, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.tabFullVisible, true, 'Expected full host name visible on tab without premature truncation, got ' + JSON.stringify(darkPaletteAudit));
     await shot('09-Terminal-Dark');
+
+    // Capture Dark Mode 4-zone Telemetry Popover (35-Telemetry-Popover-Dark)
+    await click('.statusbar-right .telemetry-trigger');
+    await until(() => evaluate("!!document.querySelector('.telemetry-popover')"), 'dark telemetry popover');
+    await sleep(160);
+    const darkTelemetryAudit = await evaluate(`(() => {
+      const pop = document.querySelector('.telemetry-popover');
+      const bar = document.querySelector('.statusbar');
+      const osEl = pop?.querySelector('.telemetry-os');
+      const osRect = osEl?.getBoundingClientRect();
+      const popRect = pop?.getBoundingClientRect();
+      const barRect = bar?.getBoundingClientRect();
+      return {
+        hasKpiGrid: Boolean(pop?.querySelector('.telemetry-kpi-grid')),
+        osHeight: osRect ? Math.round(osRect.height) : 0,
+        popBottom: popRect ? Math.round(popRect.bottom) : 9999,
+        barTop: barRect ? Math.round(barRect.top) : 0,
+      };
+    })()`);
+    assert.ok(
+      darkTelemetryAudit.hasKpiGrid && darkTelemetryAudit.osHeight > 0 && darkTelemetryAudit.osHeight <= 24 && darkTelemetryAudit.popBottom < darkTelemetryAudit.barTop,
+      'Expected dark telemetry popover floating cleanly above statusbar with single-line OS, got ' + JSON.stringify(darkTelemetryAudit),
+    );
+    await shot('35-Telemetry-Popover-Dark');
+    await evaluate("document.querySelector('.telemetry-popover')?.previousElementSibling?.click()");
+    await until(() => evaluate("!document.querySelector('.telemetry-popover')"), 'closed dark telemetry popover');
+
+    // Capture Dark Mode mixed CJK + English + ANSI bold/italic/inverted badges (36-Terminal-CJK-Dark)
+    await evaluate(`(() => {
+      const sid = window.__lastConnectedSessionId;
+      if (!sid) throw new Error('Missing active session id for CJK terminal capture');
+      const report = [
+        '\\x1b[2J\\x1b[H',
+        '\\x1b[1;36m########################################################################\\x1b[0m',
+        '\\x1b[1;97m                   IP质量体检报告：203.0.113.* (Tokyo)                   \\x1b[0m',
+        '\\x1b[1;36m########################################################################\\x1b[0m',
+        '\\x1b[1;34m一、基础信息 (Basic Info)\\x1b[0m',
+        '  自治系统号：        \\x1b[1;37mAS15169\\x1b[0m   组织：\\x1b[36mGoogle Cloud (ap-northeast-1)\\x1b[0m',
+        '  注册地 / 使用地：   \\x1b[32m[JP] 日本 东京 (Tokyo)\\x1b[0m  时区：Asia/Tokyo (UTC+9)',
+        '  IP 类型属性：       \\x1b[1;30;42m [原生IP] \\x1b[0m  \\x1b[1;30;46m [机房] \\x1b[0m  \\x1b[3;90m(商业数据中心 / 非住宅)\\x1b[0m',
+        '',
+        '\\x1b[1;34m二、风险评分与因子 (Risk & Reputation)\\x1b[0m',
+        '  欺诈风险等级：      \\x1b[1;30;42m 极低 \\x1b[0m | \\x1b[32m低\\x1b[0m | \\x1b[33m中等\\x1b[0m | \\x1b[31m高\\x1b[0m | \\x1b[1;97;41m 极高 \\x1b[0m   \\x1b[1;32m[极低 | 低 | 中等 | 高 | 极高]\\x1b[0m',
+        '  数据库校验：        Scamalytics \\x1b[32m0/100 (低风险)\\x1b[0m  IPQS \\x1b[32m12/100\\x1b[0m  AbuseIPDB \\x1b[32m0%\\x1b[0m',
+        '  字体混排校验：      \\x1b[1m粗体中文 Bold English 1234\\x1b[0m  \\x1b[3m斜体中文 Italic Latin 5678\\x1b[0m  常规中文 Regular',
+        '',
+        '\\x1b[1;34m三、流媒体及 AI 服务解锁状态 (Streaming & AI Unlock)\\x1b[0m',
+        '  服务商        状态             地区    方式',
+        '  Netflix       \\x1b[1;30;42m 完整解锁 \\x1b[0m      JP      \\x1b[32m原生\\x1b[0m',
+        '  OpenAI / API  \\x1b[1;30;42m 原生支持 \\x1b[0m      JP      \\x1b[32m直连\\x1b[0m',
+        '  Claude Web    \\x1b[1;30;43m 仅部分区 \\x1b[0m      US      \\x1b[33mDNS\\x1b[0m',
+        '  TikTok        \\x1b[1;97;41m 限制访问 \\x1b[0m      --      \\x1b[31m屏蔽\\x1b[0m',
+        '',
+        'deploy@tokyo-production:~/app$ ',
+      ].join('\\r\\n');
+      window.runtime.EventsEmit('ssh:data', sid, btoa(unescape(encodeURIComponent(report))));
+    })()`);
+    await until(() => evaluate("(document.querySelector('.pane-xterm-wrap .xterm-rows')?.textContent || '').includes('原生IP') && (document.querySelector('.pane-xterm-wrap .xterm-rows')?.textContent || '').includes('极低')"), 'CJK IPQuality terminal payload rendered');
+    await sleep(220);
+    await shot('36-Terminal-CJK-Dark');
 
     // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #1B1C20 canvas)
     await click('#sftpBtn');
@@ -1684,7 +1794,7 @@ async function verifyFrontendUI() {
 
     assert.deepEqual(exceptions, [], 'Expected zero uncaught runtime exceptions');
     assert.deepEqual(consoleErrors, [], 'Expected zero console.error messages');
-    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 34 Retina screenshots.');
+    console.log('[Stage 2] Verified all interactive UI views, zero exceptions/console errors, and captured 36 Retina screenshots.');
   } finally {
     socket?.close();
     if (edge.exitCode === null) edge.kill();

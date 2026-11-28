@@ -234,8 +234,9 @@ export const Titlebar: React.FC<TitlebarProps> = ({
           <button
             id="toggleSidebar"
             type="button"
-            className={`icon-btn ${sidebarOpen ? 'active' : ''}`}
+            className="icon-btn"
             aria-label="切换侧栏"
+            aria-pressed={sidebarOpen}
             onClick={onToggleSidebar}
           >
             <PanelLeft size={14} strokeWidth={1.7} />

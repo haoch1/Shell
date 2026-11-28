@@ -36,15 +36,32 @@ interface AIDrawerProps {
 
 const QUICK_PROMPTS = [
   '查看占用 8080 端口的进程',
-  '查找 /var/log 下超过 100MB 的文件',
-  '查看最近 50 条 SSH 登录失败记录',
+  '实时查看 CPU 与内存占用前 10 进程',
   '统计当前目录各子文件夹体积并排序',
+  '查找 /var/log 下超过 100MB 的文件',
+  '查看所有监听端口及对应服务进程',
+  '查看最近 50 条 SSH 登录失败记录',
+  '查看运行中的 Docker 容器及资源占用',
+  '检查 Nginx 配置语法并平滑重载',
+  '列出异常失败的 systemd 服务并查看日志',
+  '清理超过 7 天的 systemd journal 日志',
+];
+
+const EXPLAIN_PROMPTS = [
+  '分析报错根本原因并给出直接修复命令',
+  '排查端口被占用或权限拒绝（Permission denied）问题',
+  '结合 systemd / journalctl 定位服务启动失败原因',
+  '排查网络连接超时、DNS 解析或 TLS 证书异常',
+  '定位磁盘空间已满或 inode 耗尽的目录',
 ];
 
 const AGENT_PROMPTS = [
   '巡检当前服务器的 CPU、内存、磁盘占用及异常 systemd 服务',
   '排查 Docker 运行状态与最近报错日志，给出修复建议',
-  '检查监听端口与 Nginx 配置是否存在语法错误',
+  '检查监听端口、防火墙规则与 Nginx 配置是否存在异常',
+  '扫描 /var/log 与大文件占用，列出可安全清理的日志',
+  '检查近期 SSH 登录安全记录与可疑暴力破解来源 IP',
+  '定位当前系统高负载来源及最耗 CPU / 磁盘 IO 的进程',
 ];
 
 interface HistoryItem {
@@ -307,16 +324,13 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
           {mode === 'agent' ? (
             <>
               {agentSteps.length === 0 && !running && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 4 }}>
-                  <div style={{ fontSize: 11.5, color: 'var(--ink-tertiary)', paddingLeft: 2 }}>
-                    示例
-                  </div>
+                <div className="ai-examples-section">
+                  <div className="ai-examples-heading">常用巡检与排查</div>
                   {AGENT_PROMPTS.map((q) => (
                     <button
                       key={q}
                       type="button"
-                      className="soft-card"
-                      style={{ textAlign: 'left', cursor: 'pointer', padding: '8px 11px', fontSize: 12 }}
+                      className="soft-card ai-example-btn"
                       onClick={() => {
                         setPrompt(q);
                         if (aiReady && hasActiveSession) void run(q);
@@ -403,17 +417,35 @@ export const AIDrawer: React.FC<AIDrawerProps> = ({
               )}
 
               {history.length === 0 && !running && mode === 'command' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 4 }}>
-                  <div style={{ fontSize: 11.5, color: 'var(--ink-tertiary)', paddingLeft: 2 }}>快捷示例</div>
+                <div className="ai-examples-section">
+                  <div className="ai-examples-heading">常用示例</div>
                   {QUICK_PROMPTS.map((q) => (
                     <button
                       key={q}
                       type="button"
-                      className="soft-card"
-                      style={{ textAlign: 'left', cursor: 'pointer', padding: '8px 11px', fontSize: 12 }}
+                      className="soft-card ai-example-btn"
                       onClick={() => {
                         setPrompt(q);
                         if (aiReady) void run(q);
+                      }}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {history.length === 0 && !running && mode === 'explain' && (
+                <div className="ai-examples-section">
+                  <div className="ai-examples-heading">常用排查方向</div>
+                  {EXPLAIN_PROMPTS.map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      className="soft-card ai-example-btn"
+                      onClick={() => {
+                        setPrompt(q);
+                        if (aiReady && explainContext.trim()) void run(q);
                       }}
                     >
                       {q}

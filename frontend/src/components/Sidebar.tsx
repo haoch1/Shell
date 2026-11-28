@@ -12,7 +12,6 @@ import {
   Folder,
   FolderMinus,
   GripVertical,
-  KeyRound,
   Moon,
   Pencil,
   Pin,
@@ -452,8 +451,9 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
               <button
                 id="sortHostsBtn"
                 type="button"
-                className={`btn sidebar-sort-btn ${sortMode !== 'default' || sortMenuPos ? 'active' : ''}`}
+                className={`btn sidebar-sort-btn ${sortMenuPos ? 'open' : ''}`}
                 aria-label="主机排序"
+                aria-expanded={Boolean(sortMenuPos)}
                 onClick={(e) => {
                   e.stopPropagation();
                   setAddMenuPos(null);
@@ -742,12 +742,25 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
         </div>
       ) : (
         <div className="sidebar-footer">
+          <Tooltip label={hasUpdate ? '发现新版本 · 查看更新' : '偏好设置'} shortcut={hasUpdate ? undefined : 'Ctrl+,'} side="top">
+            <button
+              id="settingsBtn"
+              type="button"
+              className="sidebar-footer-settings"
+              aria-label="偏好设置"
+              onClick={() => onOpenSettings(hasUpdate ? 'about' : 'appearance')}
+            >
+              <Settings size={14} strokeWidth={1.7} />
+              <span>设置</span>
+              {hasUpdate && <span className="update-dot inline" />}
+            </button>
+          </Tooltip>
           <div className="sidebar-footer-group">
             <Tooltip label={hideHostIp ? '显示主机 IP' : '隐藏主机 IP'} side="top">
               <button
                 id="toggleHideIpBtn"
                 type="button"
-                className={`icon-btn ${hideHostIp ? 'active' : ''}`}
+                className={`icon-btn ${hideHostIp ? 'is-muted-active' : ''}`}
                 aria-label="切换隐藏主机 IP"
                 aria-pressed={hideHostIp}
                 onClick={() => onToggleHideIp?.()}
@@ -767,32 +780,6 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
                 </button>
               </Tooltip>
             )}
-          </div>
-          <div className="sidebar-footer-group">
-            <Tooltip label="SSH 密钥管理" side="top">
-              <button
-                id="keysBtn"
-                type="button"
-                className="icon-btn"
-                aria-label="SSH 密钥管理"
-                onClick={() => onOpenSettings('keys')}
-              >
-                <KeyRound size={14} strokeWidth={1.7} />
-              </button>
-            </Tooltip>
-            <Tooltip label={hasUpdate ? '发现新版本 · 查看更新' : '偏好设置'} shortcut={hasUpdate ? undefined : 'Ctrl+,'} side="top">
-              <button
-                id="settingsBtn"
-                type="button"
-                className="icon-btn"
-                style={{ position: 'relative' }}
-                aria-label="偏好设置"
-                onClick={() => onOpenSettings(hasUpdate ? 'about' : 'appearance')}
-              >
-                <Settings size={14} strokeWidth={1.7} />
-                {hasUpdate && <span className="update-dot" />}
-              </button>
-            </Tooltip>
           </div>
         </div>
       )}

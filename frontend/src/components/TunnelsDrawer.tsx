@@ -3,6 +3,7 @@ import { ArrowLeftRight, Copy, Plus, Trash2, X } from 'lucide-react';
 import type { Profile, SessionRecord, TunnelMode, TunnelRule, TunnelStatus } from '../types/shell';
 import { copyToClipboard, errorMessage, getApi } from '../lib/bridge';
 import { formatBytes, randomId } from '../lib/utils';
+import { Checkbox } from './ui/Checkbox';
 
 interface TunnelsDrawerProps {
   session: SessionRecord;
@@ -225,13 +226,12 @@ export const TunnelsDrawer: React.FC<TunnelsDrawerProps> = ({
               )}
 
               {profile?.id && (
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
+                  <Checkbox
                     checked={form.autoStart}
                     onChange={(e) => setForm({ ...form, autoStart: e.target.checked })}
                   />
-                  连接此主机时自动开启
+                  <span>连接此主机时自动开启</span>
                 </label>
               )}
 

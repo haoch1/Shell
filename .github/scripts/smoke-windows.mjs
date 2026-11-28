@@ -138,7 +138,7 @@ const BRIDGE_MOCK_SCRIPT = `
     fontFamily: '"SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, monospace',
     fontSize: 13, lineHeight: 1.28, cursorStyle: 'bar', cursorBlink: true,
     scrollback: 10000, copyOnSelect: false, rightClickPaste: false,
-    showTelemetry: true, syntaxHighlight: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false, groupOrder: []
+    showTelemetry: true, syntaxHighlight: true, autoReconnect: true, confirmMultilinePaste: true, webglEnabled: false, defaultKeepAlive: 30, confirmOnClose: true, closeToTray: true, hideHostIp: false, groupOrder: []
   };
   let profiles = new URLSearchParams(location.search).has('empty-hosts') ? [] : [
     { id: 'p1', name: 'Tokyo Production', group: '生产集群', icon: 'ubuntu', pinned: true, host: '10.24.0.10', port: 22, user: 'deploy', auth: 'agent', keepAliveSec: 30, lastUsedAt: Math.floor(Date.now()/1000) - 300 },
@@ -247,6 +247,7 @@ const BRIDGE_MOCK_SCRIPT = `
       }, 120);
     },
     Disconnect: async () => {},
+    ProbeSession: async () => 18,
     Input: async () => {},
     Resize: async () => {},
     ConfirmHost: async () => {},
@@ -573,12 +574,52 @@ async function verifyFrontendUI() {
     await sleep(250);
     await shot('01-Workbench-Light');
 
-    // Verify sidebar sort button popover actually opens inside viewport (regression guard)
+    // Verify sidebar sort button popover actually opens inside viewport and stays neutral after non-default sort
     await click('#sortHostsBtn');
     const sortRect = await evaluate(`(() => { const el = document.querySelector('.sort-popover'); if (!el) return null; const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width, height: r.height }; })()`);
     assert.ok(sortRect && sortRect.top > 0 && sortRect.bottom < 820 && sortRect.width > 100, 'Expected visible sort popover inside viewport, got ' + JSON.stringify(sortRect));
     await click('.sort-popover .context-menu-item:nth-child(2)');
     await sleep(150);
+    const chromeMinimalAudit = await evaluate(`(() => {
+      const sortBtn = document.querySelector('#sortHostsBtn');
+      const batchBtn = document.querySelector('#batchManageBtn');
+      const toggleSidebar = document.querySelector('#toggleSidebar');
+      const footer = document.querySelector('.sidebar-footer');
+      const settingsBtn = footer?.querySelector('#settingsBtn.sidebar-footer-settings');
+      const hideIpBtn = footer?.querySelector('#toggleHideIpBtn');
+      const keysBtn = document.querySelector('#keysBtn');
+      const sortStyle = sortBtn ? getComputedStyle(sortBtn) : null;
+      const batchStyle = batchBtn ? getComputedStyle(batchBtn) : null;
+      const fRect = footer?.getBoundingClientRect();
+      const sRect = settingsBtn?.getBoundingClientRect();
+      const hRect = hideIpBtn?.getBoundingClientRect();
+      return {
+        sortHasActive: Boolean(sortBtn?.classList.contains('active')),
+        sortBgMatchesBatch: sortStyle && batchStyle ? sortStyle.backgroundColor === batchStyle.backgroundColor : false,
+        sortColorMatchesBatch: sortStyle && batchStyle ? sortStyle.color === batchStyle.color : false,
+        sortBorderMatchesBatch: sortStyle && batchStyle ? sortStyle.borderColor === batchStyle.borderColor : false,
+        toggleSidebarHasActive: Boolean(toggleSidebar?.classList.contains('active')),
+        hasKeysBtn: Boolean(keysBtn),
+        settingsText: settingsBtn?.textContent?.trim() || '',
+        settingsOnLeft: Boolean(fRect && sRect && hRect && sRect.left < hRect.left && sRect.right <= fRect.left + fRect.width * 0.55),
+        hideIpOnRight: Boolean(fRect && hRect && hRect.left >= fRect.left + fRect.width * 0.55),
+      };
+    })()`);
+    assert.deepEqual(
+      chromeMinimalAudit,
+      {
+        sortHasActive: false,
+        sortBgMatchesBatch: true,
+        sortColorMatchesBatch: true,
+        sortBorderMatchesBatch: true,
+        toggleSidebarHasActive: false,
+        hasKeysBtn: false,
+        settingsText: '设置',
+        settingsOnLeft: true,
+        hideIpOnRight: true,
+      },
+      'Expected neutral #sortHostsBtn, non-active #toggleSidebar, absent #keysBtn, and balanced left-settings / right-hideIp footer: ' + JSON.stringify(chromeMinimalAudit),
+    );
 
     // Toggle Dark Mode on Welcome Workbench to verify dark OS icons + IPv6 display
     await click('button[aria-label="切换深浅色外观"]');
@@ -594,14 +635,34 @@ async function verifyFrontendUI() {
     }))()`);
     await click('#toggleHideIpBtn');
     await until(() => evaluate("window.go.main.App.GetSettings().then(s => s.hideHostIp === true)"), 'persisted hideHostIp=true');
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 0, y: 0 });
     await sleep(240);
-    const hiddenPrivacy = await evaluate(`(() => ({
-      sidebarText: document.querySelector('.sidebar-list')?.textContent || '',
-      recentText: document.querySelector('.recent-grid')?.textContent || '',
-      hiddenSubCount: document.querySelectorAll('.host-row .host-sub[data-ip-hidden="true"]').length,
-      rowHeights: [...document.querySelectorAll('.host-row')].map(el => el.getBoundingClientRect().height),
-      cardHeights: [...document.querySelectorAll('.recent-card')].map(el => el.getBoundingClientRect().height),
-    }))()`);
+    const hiddenPrivacy = await evaluate(`(() => {
+      const hideBtn = document.querySelector('#toggleHideIpBtn');
+      const hideStyle = hideBtn ? getComputedStyle(hideBtn) : null;
+      return {
+        sidebarText: document.querySelector('.sidebar-list')?.textContent || '',
+        recentText: document.querySelector('.recent-grid')?.textContent || '',
+        hiddenSubCount: document.querySelectorAll('.host-row .host-sub[data-ip-hidden="true"]').length,
+        rowHeights: [...document.querySelectorAll('.host-row')].map(el => el.getBoundingClientRect().height),
+        cardHeights: [...document.querySelectorAll('.recent-card')].map(el => el.getBoundingClientRect().height),
+        hideBtnHasActive: Boolean(hideBtn?.classList.contains('active')),
+        hideBtnBg: hideStyle?.backgroundColor || '',
+        hideBtnBorderWidth: hideStyle?.borderTopWidth || '',
+        hideBtnBorderColor: hideStyle?.borderTopColor || '',
+        hideBtnColor: hideStyle?.color || '',
+      };
+    })()`);
+    assert.equal(hiddenPrivacy.hideBtnHasActive, false, 'Expected #toggleHideIpBtn not to carry blue .active class when toggled on');
+    assert.equal(hiddenPrivacy.hideBtnBg, 'rgba(0, 0, 0, 0)', 'Expected zero blue background box on #toggleHideIpBtn when toggled on, got ' + hiddenPrivacy.hideBtnBg);
+    assert.ok(
+      hiddenPrivacy.hideBtnBorderWidth === '0px' || hiddenPrivacy.hideBtnBorderColor === 'rgba(0, 0, 0, 0)',
+      'Expected zero visible border box on #toggleHideIpBtn when toggled on, got ' + JSON.stringify({ width: hiddenPrivacy.hideBtnBorderWidth, color: hiddenPrivacy.hideBtnBorderColor }),
+    );
+    assert.ok(
+      hiddenPrivacy.hideBtnColor !== 'rgb(0, 113, 227)' && hiddenPrivacy.hideBtnColor !== 'rgb(10, 132, 255)',
+      'Expected neutral icon color on #toggleHideIpBtn when toggled on, got ' + hiddenPrivacy.hideBtnColor,
+    );
     assert.ok(
       hiddenPrivacy.hiddenSubCount === 3 &&
         !hiddenPrivacy.sidebarText.includes('10.24.0.10') &&
@@ -963,10 +1024,19 @@ async function verifyFrontendUI() {
     await sleep(250);
     await shot('05-Terminal-Tunnels');
 
-    // AI Drawer
+    // AI Drawer (verify expanded quick examples across 写命令 / 查报错 / 自动运维)
     await click('#aiOpen');
     await until(() => evaluate("!!document.querySelector('#aiDrawer')"), 'AI drawer');
+    const aiCmdExamples = await evaluate("document.querySelectorAll('#aiDrawer .ai-example-btn').length");
+    assert.ok(aiCmdExamples >= 8, 'Expected >= 8 quick examples in AIDrawer 写命令 mode, got ' + aiCmdExamples);
     await shot('06-Terminal-AI');
+    await click('#aiDrawer .segmented button:nth-child(2)');
+    await until(() => evaluate("document.querySelectorAll('#aiDrawer .ai-example-btn').length >= 5"), 'AI drawer 查报错 examples');
+    await click('#aiDrawer .segmented button:nth-child(3)');
+    await until(() => evaluate("document.querySelectorAll('#aiDrawer .ai-example-btn').length >= 6"), 'AI drawer 自动运维 examples');
+    const aiAgentExamples = await evaluate("document.querySelectorAll('#aiDrawer .ai-example-btn').length");
+    assert.ok(aiAgentExamples >= 6, 'Expected >= 6 quick examples in AIDrawer 自动运维 mode, got ' + aiAgentExamples);
+    await click('#aiDrawer .segmented button:nth-child(1)');
     await click('#aiOpen');
 
     // Universal Importer Modal (accessed via split New Host dropdown menu)
@@ -1000,6 +1070,25 @@ async function verifyFrontendUI() {
 
     await evaluate(`document.querySelector('.settings-nav-btn:nth-child(2)').click()`);
     await until(() => evaluate("!!document.querySelector('#settingsDialog .pref-group > .pref-select-header input[aria-label=\"全选主机指纹\"]')"), 'known_hosts select header');
+    const sshSessionToggles = await evaluate(`(() => {
+      const findSwitch = (label) => {
+        const row = [...document.querySelectorAll('#settingsDialog .pref-row')].find(r => r.querySelector('.pref-row-label')?.textContent?.trim() === label);
+        const sw = row?.querySelector('button[role="switch"]');
+        return { found: Boolean(row && sw), checked: sw?.getAttribute('aria-checked') ?? null };
+      };
+      return {
+        autoReconnect: findSwitch('网络波动断线后自动重连'),
+        multilinePaste: findSwitch('终端多行粘贴确认'),
+      };
+    })()`);
+    assert.deepEqual(
+      sshSessionToggles,
+      {
+        autoReconnect: { found: true, checked: 'true' },
+        multilinePaste: { found: true, checked: 'true' },
+      },
+      'Expected autoReconnect & confirmMultilinePaste toggles in 连接与指纹 settings tab, got ' + JSON.stringify(sshSessionToggles),
+    );
     const knownHostsLayout = await evaluate(`(() => {
       const strayBtns = document.querySelectorAll('#settingsDialog .pref-section-head button').length;
       const master = document.querySelector('#settingsDialog .pref-select-header input[aria-label="全选主机指纹"]');
@@ -1146,7 +1235,7 @@ async function verifyFrontendUI() {
     assert.equal(settingsV157.hideIpLabel, '隐藏主机 IP', 'Expected concise 隐藏主机 IP label, got ' + JSON.stringify(settingsV157));
     assert.equal(settingsV157.hasDisallowedPrivacyTerm, false, 'Expected zero disallowed privacy suffix in Settings/Sidebar: ' + JSON.stringify(settingsV157));
     assert.ok(settingsV157.sectionTitles.includes('全局配色'), 'Expected 全局配色 section title, got ' + JSON.stringify(settingsV157.sectionTitles));
-    const expectedPalettes = ['跟随界面外观', '曜石深黑', '东京夜色', '摩卡暮紫', '极简浅白', '暖纸米白'];
+    const expectedPalettes = ['跟随界面外观', '曜石深灰', '东京夜色', '摩卡暮紫', '极简浅白', '暖纸米白'];
     assert.equal(settingsV157.themeTiles.length, 6, 'Expected 6 tiles (auto + 5 curated palettes) in 全局配色 grid, got ' + JSON.stringify(settingsV157.themeTiles));
     for (const label of expectedPalettes) {
       assert.ok(
@@ -1173,7 +1262,7 @@ async function verifyFrontendUI() {
     }))()`);
     assert.equal(tokyoState.palette, 'tokyo-night');
     assert.equal(tokyoState.theme, 'dark');
-    assert.equal(tokyoState.sidebarBg, 'rgb(25, 27, 37)', 'Expected Tokyo Night sidebar bg #191b25, got ' + JSON.stringify(tokyoState));
+    assert.equal(tokyoState.sidebarBg, 'rgb(34, 37, 54)', 'Expected Tokyo Night sidebar bg #222536, got ' + JSON.stringify(tokyoState));
     assert.deepEqual(tokyoState.cached, { theme: 'dark', terminalTheme: 'tokyo-night' }, 'Expected localStorage shell:appearance:v1 persisted for Tokyo Night');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings for Tokyo Night screenshot');
@@ -1193,7 +1282,7 @@ async function verifyFrontendUI() {
     }))()`);
     assert.equal(warmState.palette, 'warm-paper');
     assert.equal(warmState.theme, 'light');
-    assert.equal(warmState.sidebarBg, 'rgb(242, 237, 227)', 'Expected Warm Paper sidebar bg #f2ede3, got ' + JSON.stringify(warmState));
+    assert.equal(warmState.sidebarBg, 'rgb(234, 228, 215)', 'Expected Warm Paper sidebar bg #eae4d7, got ' + JSON.stringify(warmState));
     assert.deepEqual(warmState.cached, { theme: 'light', terminalTheme: 'warm-paper' }, 'Expected localStorage shell:appearance:v1 persisted for Warm Paper');
     await click('#settingsDialog button[aria-label="关闭设置"]');
     await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings for Warm Paper screenshot');
@@ -1201,15 +1290,15 @@ async function verifyFrontendUI() {
     await shot('32-GlobalTheme-WarmPaper');
 
     await click('#settingsBtn');
-    await until(() => evaluate("document.querySelectorAll('#settingsDialog .theme-tile').length === 6"), 'reopened settings to restore Obsidian Dark');
-    await selectGlobalPalette('曜石深黑');
-    await until(() => evaluate("document.documentElement.dataset.palette === 'shell-dark' && document.documentElement.dataset.theme === 'dark'"), 'restored Obsidian Dark global palette');
+    await until(() => evaluate("document.querySelectorAll('#settingsDialog .theme-tile').length === 6"), 'reopened settings to restore Obsidian Graphite');
+    await selectGlobalPalette('曜石深灰');
+    await until(() => evaluate("document.documentElement.dataset.palette === 'shell-dark' && document.documentElement.dataset.theme === 'dark'"), 'restored Obsidian Graphite global palette');
     const obsidianCache = await evaluate("JSON.parse(localStorage.getItem('shell:appearance:v1') || 'null')");
-    assert.deepEqual(obsidianCache, { theme: 'dark', terminalTheme: 'shell-dark' }, 'Expected localStorage shell:appearance:v1 persisted for Obsidian Dark');
+    assert.deepEqual(obsidianCache, { theme: 'dark', terminalTheme: 'shell-dark' }, 'Expected localStorage shell:appearance:v1 persisted for Obsidian Graphite');
     await click('#settingsDialog button[aria-label="关闭设置"]');
-    await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings after restoring Obsidian Dark');
+    await until(() => evaluate("!document.querySelector('#settingsDialog')"), 'closed settings after restoring Obsidian Graphite');
     await sleep(250);
-    // Verify 曜石深黑 (#121316) pure-neutral obsidian dark terminal background, crisp neutral cursor (#E6EDF3), GitHub Dark ANSI green (#3FB950), no blue active accent bars & full tab title visibility
+    // Verify 曜石深灰 (#1B1C20) daylight-legible elevated graphite terminal background, crisp neutral cursor (#F3F6FA), vivid ANSI green (#4ADE80), no blue active accent bars & full tab title visibility
     const darkPaletteAudit = await evaluate(`(() => {
       const wrap = document.querySelector('.pane-xterm-wrap');
       const bg = wrap ? getComputedStyle(wrap).backgroundColor : '';
@@ -1218,8 +1307,8 @@ async function verifyFrontendUI() {
       const styleText = [...document.querySelectorAll('.pane-xterm-wrap style')].map(s => s.textContent || '').join('\\n');
       const cursorEl = document.querySelector('.pane-xterm-wrap .xterm-cursor');
       const cursorBoxShadow = cursorEl ? getComputedStyle(cursorEl).boxShadow : '';
-      const hasCrispCursor = /#e6edf3/i.test(styleText) || styleText.includes('230, 237, 243') || cursorBoxShadow.includes('230, 237, 243');
-      const hasCrispGreen = /#3fb950/i.test(styleText) || greenColor === 'rgb(63, 185, 80)';
+      const hasCrispCursor = /#f3f6fa/i.test(styleText) || styleText.includes('243, 246, 250') || cursorBoxShadow.includes('243, 246, 250');
+      const hasCrispGreen = /#4ade80/i.test(styleText) || greenColor === 'rgb(74, 222, 128)';
       const activeTab = document.querySelector('.tab-item.active');
       const activeHost = document.querySelector('.host-row.active');
       const tabAfterContent = activeTab ? getComputedStyle(activeTab, '::after').content : null;
@@ -1228,16 +1317,16 @@ async function verifyFrontendUI() {
       const tabFullVisible = firstTabLabel ? firstTabLabel.scrollWidth <= firstTabLabel.clientWidth + 1 : false;
       return { bg, greenColor, cursorBoxShadow, hasCrispCursor, hasCrispGreen, tabAfterContent, hostBeforeContent, tabFullVisible };
     })()`);
-    assert.equal(darkPaletteAudit.bg, 'rgb(18, 19, 22)', 'Expected 曜石深黑 canvas background #121316, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.greenColor, 'rgb(63, 185, 80)', 'Expected crisp 曜石深黑 ANSI green #3FB950, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.hasCrispCursor, true, 'Expected crisp neutral cursor #E6EDF3 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
-    assert.equal(darkPaletteAudit.hasCrispGreen, true, 'Expected crisp green #3FB950 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.bg, 'rgb(27, 28, 32)', 'Expected 曜石深灰 canvas background #1B1C20, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.greenColor, 'rgb(74, 222, 128)', 'Expected crisp 曜石深灰 ANSI green #4ADE80, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCrispCursor, true, 'Expected crisp neutral cursor #F3F6FA in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
+    assert.equal(darkPaletteAudit.hasCrispGreen, true, 'Expected crisp green #4ADE80 in xterm renderer, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.tabAfterContent, 'none', 'Expected no blue ::after accent bar on .tab-item.active, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.hostBeforeContent, 'none', 'Expected no blue ::before accent bar on .host-row.active, got ' + JSON.stringify(darkPaletteAudit));
     assert.equal(darkPaletteAudit.tabFullVisible, true, 'Expected full host name visible on tab without premature truncation, got ' + JSON.stringify(darkPaletteAudit));
     await shot('09-Terminal-Dark');
 
-    // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #121316 canvas)
+    // Open SFTP + CodeMirror 6 Remote Editor in Dark theme (Nginx config highlighting + #1B1C20 canvas)
     await click('#sftpBtn');
     await until(() => evaluate("document.querySelectorAll('.sftp-row').length >= 4"), 'SFTP drawer in dark theme');
     await evaluate(`(() => {
@@ -1250,7 +1339,7 @@ async function verifyFrontendUI() {
       bg: getComputedStyle(document.querySelector('.remote-editor-cm-host .cm-editor')).backgroundColor,
     }))()`);
     assert.equal(cmDarkCheck.lang, 'Nginx', 'Expected Nginx auto-detection, got ' + JSON.stringify(cmDarkCheck));
-    assert.equal(cmDarkCheck.bg, 'rgb(18, 19, 22)', 'Expected Dark CodeMirror 6 editor canvas #121316, got ' + cmDarkCheck.bg);
+    assert.equal(cmDarkCheck.bg, 'rgb(27, 28, 32)', 'Expected Dark CodeMirror 6 editor canvas #1B1C20, got ' + cmDarkCheck.bg);
     await shot('25-Remote-Editor-Dark');
     await click('.modal-sheet.editor button[aria-label="关闭"]');
     await until(() => evaluate("!document.querySelector('.modal-sheet.editor')"), 'closed dark editor');
